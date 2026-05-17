@@ -32,7 +32,8 @@ AIADRA/
 └── Docs/
     ├── Manifesto.md               # Durable project thesis + principles + non-goals (in git)
     ├── Glossary.md                # Pinned term definitions (in git)
-    ├── ArchitectureOverview.md    # Layer model (coming, in git)
+    ├── ArchitectureOverview.md    # Layer model (in git)
+    ├── ArchitectureGraph.json     # On-demand visualization snapshot of the Overview (in git)
     ├── OpenQuestions.md           # Register of unresolved questions (in git)
     ├── ADR/                       # Architecture Decision Records (in git)
     ├── Discussions/               # Inter-AI dialogue, dated subfolders (GIT-IGNORED)
@@ -53,8 +54,10 @@ Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
 - [Glossary.md](Docs/Glossary.md) — v0.4
-- [OpenQuestions.md](Docs/OpenQuestions.md) — v0.3
+- [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
+- [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
+- [OpenQuestions.md](Docs/OpenQuestions.md) — v0.4
 
 ## Planning framework (rings)
 
-Planning happens in concentric rings around the Product Truth Model. See [Docs/Discussions/20260517/Claude1.md](Docs/Discussions/20260517/Claude1.md) §3 for the original framework. Current ring is recorded in the latest snapshot.
+Planning happens in concentric rings around the Product Truth Model. See [Docs/ArchitectureOverview.md](Docs/ArchitectureOverview.md) for the current five-layer model (Truth Model → Validation → AI Action Protocol → Project Control → Domain Engines) and how the Ring 0 ADRs realize it. [Docs/Discussions/20260517/Claude1.md](Docs/Discussions/20260517/Claude1.md) §3 holds the original framework, refined by the Overview. Current ring is recorded in the latest snapshot.
