@@ -1,7 +1,7 @@
 ---
 name: aiadra-manifesto
 status: draft
-version: 0.2
+version: 0.3
 last_updated: 2026-05-17
 ---
 
@@ -14,7 +14,7 @@ last_updated: 2026-05-17
 
 AIADRA is an open-source platform for engineering real products — mechanical, electrical, software, procurement, verification, documentation — around a single source of truth designed from the ground up for AI-agent access.
 
-Existing open-source tools provide the authoring substrate: FreeCAD/OpenCascade for mechanical, KiCad (planned) for electrical, Git for software, standard formats for the rest. AIADRA does not wrap these tools loosely. It modifies them so they expose their kernels natively and synchronize with AIADRA's Product Truth Model.
+Existing open-source tools provide the authoring substrate: FreeCAD/OpenCascade for mechanical, KiCad (planned) for electrical, Git for software, standard formats for the rest. AIADRA does not wrap these tools loosely. It modifies them so they expose their kernels natively and synchronize with AIADRA's Product Truth Model. Truth lives in the project's own Git repo and a pluggable blob vault; AIADRA Core runs locally and operates no shared services of its own.
 
 The AI is treated as an engineering participant, not a chat panel. It inspects, queries, proposes, and explains through stable structured contracts. It never mutates released truth silently. A human always approves.
 
@@ -33,7 +33,27 @@ Mechanical, electrical, and systems engineers; makers and small manufacturers; s
 7. **Every fact carries provenance and uncertainty.** Released vs. computed vs. AI inference vs. assumption is always knowable.
 8. **Released truth is immutable.** Changes require new revision + change order + impact analysis + approval.
 9. **Geometry access is layered.** Engineering features → parametric features → sketch constraints → topological references → raw BRep, in that order of preference.
-10. **History is event-based.** Engineering decisions, lifecycle transitions, and approved changes are recorded as structured events. Current state remains directly inspectable.
+10. **History is event-based; current state is flat.** Sidecars hold current authoritative object state. Events record approved transitions and provenance. If they disagree, validation fails — neither silently wins.
+11. **AIADRA Core hosts nothing.** Projects own their truth, infrastructure, identity, and access control. Future hosted services (registries, validators, shared libraries) belong to separate ecosystem projects, not to the core.
+12. **Three-tier separation, on Git.** AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized on Git (Commonspace) and pluggable blob storage (Vault). The developer's local clone plus live Domain Engine sessions form the Workspace.
+13. **AI is Workspace-native.** It reads from the Workspace's local mirror of Commonspace, syncing first when staleness is unacceptable. It writes to Commonspace only through the change-order pipeline.
+
+## Scale targets
+
+AIADRA must be **architecturally compatible with large open-source product projects (Tier L) from day one**, and **operationally smooth at small-team scale (Tier M)**. The Wedge proves the architecture at solo scale (Tier S). Enterprise PLM (Tier XL) is out of scope by non-goal.
+
+| Tier | Description | Examples |
+|---|---|---|
+| **S — Solo** | 1 developer, tens of parts | Maker designing a 3D-printed Arduino enclosure |
+| **M — Small team** | 5–20 contributors, hundreds to thousands of parts | Most open-source hardware projects today |
+| **L — Large OSS** | 50–500 contributors, tens of thousands of parts | Open-source EV, robotic arm, satellite, drone platform |
+| **XL — Enterprise** | Out of scope — see Non-goals | Windchill / Teamcenter territory |
+
+Scale-sensitive decisions fall into three buckets:
+
+- **Decide early, validate with scale probes.** Settled in Ring 0; stress-tested against synthetic Tier-M / Tier-L data before committing in production. Examples: canonical on-disk format, UUID encoding and shardability, schema-versioning discipline.
+- **Design with scale in mind; must not preclude.** The Ring 0–1 architecture must remain compatible with scale-time refinements. Examples: directory sharding by UUID prefix, event-log sharding strategy, acceleration cache structure, role-based change-order gating, Vault adapter pluggability.
+- **Defer with acknowledgement.** Real Tier-L concerns; not blockers for Ring 0–4. Examples: distributed validation, multi-agent conflict resolution at high contributor counts, advanced cross-100k-object search, cryptographic signing of releases, derivation-graph queries at scale.
 
 ## Non-goals
 
@@ -46,8 +66,8 @@ Mechanical, electrical, and systems engineers; makers and small manufacturers; s
 
 ## About this document
 
-This is a **working manifesto**, not a final text. It is expected to evolve as ADRs are written and as prototypes meet reality. When this document and an ADR disagree, the ADR is canonical and this document is stale until updated.
+This is a **working manifesto**, not a final text. It evolves as ADRs are written and prototypes meet reality. When this document and an ADR disagree, the ADR is canonical and the manifesto is stale until updated. Open architectural questions live in [OpenQuestions.md](OpenQuestions.md); resolved decisions live in `ADR/NNNN-*.md`.
 
-Terms in this document (UUID, Released Truth, Domain Engine, etc.) are defined in [Glossary.md](Glossary.md).
+Terms in this document (UUID, Released Truth, Domain Engine, Commonspace, Vault, Workspace, etc.) are defined in [Glossary.md](Glossary.md).
 
-The version above is `0.1`. Significant changes increment the version; the rationale lives in the ADR log.
+Significant changes increment the version recorded in the frontmatter above; rationale lives in the relevant ADR.

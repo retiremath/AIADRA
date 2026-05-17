@@ -1,7 +1,7 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.2
+version: 0.3
 last_updated: 2026-05-17
 ---
 
@@ -17,7 +17,9 @@ This is a **working document**. Entries are expected to gain precision over time
 
 **AIADRA** — The project itself. Treat as a brand name; pronounced /ai-AH-dra/. The original acronym AIAD (AI-Augmented Design) is the project's intellectual lineage but no longer fits the scope (which is product engineering, not only design). AIADRA stands on its own.
 
-**Product Truth Model** — The canonical, authoritative representation of a product as a graph of engineering Objects, relationships, parameters, requirements, events, and history. Everything else — files, exports, drawings, dashboards, AI views — is a projection of this model. The *storage substrate* of the model (filesystem-canonical with sidecars and event logs vs. database-canonical with file projections) is an open ADR; current instinct is filesystem-canonical, but this is recorded as a question, not a decision.
+**AIADRA Core** — The library, CLI, and tooling that we maintain under the AIADRA project. Distinguished from any future ecosystem projects (registries, hosted validators, shared part libraries) that may consume AIADRA but are not part of the core. Per Manifesto Principle 11, AIADRA Core hosts nothing.
+
+**Product Truth Model** — The canonical, authoritative representation of a product as a graph of engineering Objects, relationships, parameters, requirements, events, and history. Everything else — files, exports, drawings, dashboards, AI views — is a projection of this model. Current architectural instinct (open until `ADR/0001`): the Truth Model is realized as canonical text artifacts (sidecars + event log + manifests) in the project's Git repo, with binary artifacts in a pluggable Vault and a local derived acceleration cache.
 
 **Object (Managed Object)** — Any engineering entity tracked in the Product Truth Model: parts, assemblies, features, requirements, electrical components, software modules, purchased items, suppliers, drawings, tests, evidence, releases, ECOs, AI decisions. Every Object has a stable UUID, a human-readable Number, a Type, and metadata.
 
@@ -29,11 +31,42 @@ This is a **working document**. Entries are expected to gain precision over time
 
 ---
 
+## Three-tier architecture
+
+AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized on top of Git and a pluggable blob store (Manifesto Principle 12).
+
+**Commonspace** — The project's shared, official, governed record. Realized as the Git remote — `origin/main`, protected branches, signed tags, the change-order pipeline gating writes. Holds canonical text artifacts (sidecars, event log, release manifests) and references (by content hash) to Vault blobs. Released revisions live here. Every Workspace clone contains a local mirror of Commonspace within its fetched scope.
+
+**Vault** — Pluggable storage for large binary artifacts: STEP exports, mesh files, drawings, PDFs, simulation outputs, renders. The repository holds references and hashes; the Vault holds the bytes. Default Vault implementation is GitHub LFS; pluggable alternatives include S3 / MinIO, IPFS, NAS, project-local filesystem, via the Vault Adapter contract. The Vault is blob storage only — it holds no engineering decisions, no events, no metadata that belongs in the Commonspace text record.
+
+**Vault Adapter** — The contract any blob backend must implement to serve as a Vault: content-addressable read/write by hash, presence-check, fetch, garbage collection cooperation. AIADRA Core ships at least one default adapter (GitHub LFS) and project maintainers may configure others. The adapter is the only place Vault choice leaks into the rest of the system.
+
+**Workspace** — A developer's local environment: the Git clone + working tree + live Domain Engine sessions (FreeCAD, KiCad, etc.) currently open. Per-developer, high-bandwidth, where work-in-progress and AI activity live. The Workspace is the natural operating context for AI agents (Manifesto Principle 13).
+
+**Workspace Browser** — The UI through which a human (and AI) inspects and manipulates the Workspace. Primary Workspace Browser is VSCode + the AIADRA extension; Domain Engines (FreeCAD, KiCad) act as tool-specific sub-browsers that present authoring surfaces over the same Workspace state.
+
+---
+
+## Locality and synchronization
+
+**Locality tier** — Where data physically resides relative to a given Workspace. Three tiers:
+- **Always-local.** Text artifacts in the current checkout (working tree). Free, instant.
+- **Local-if-fetched.** Other branches, LFS pointer-resolved blobs, history beyond shallow-clone depth. Free if already pulled; one fetch otherwise.
+- **Remote-only.** Untracked branches, never-fetched blobs, refs not yet pulled. Requires a `git fetch` or `git lfs pull`.
+
+AI queries and AIADRA Core APIs declare what locality they require; the system reports what is already local and what would need to be fetched.
+
+**Staleness tolerance** — A property of a read operation: is it correct to answer from the Workspace's local mirror of Commonspace (possibly out of date), or must the local mirror first be synchronized? Most queries tolerate staleness (looking up the prior parameter value, the release history, the where-used graph). A few do not (generating a release manifest against the *current* released revisions). AIADRA Core exposes this distinction at the API surface so callers choose deliberately.
+
+**Reservation file** — A Git-tracked file (or set of files) recording locally-claimed allocations that must be unique project-wide — most prominently human-readable **Numbers**. Allocations are made locally and resolved through Git's normal merge mechanics: two developers claiming the same Number in parallel branches produce a merge conflict at PR time, and the second one rebases. AIADRA Core never requires or provides a live allocator. Exact file shape is open until `ADR/0004` (see OQ-0015).
+
+---
+
 ## Identity and lifecycle
 
 **UUID** — Globally unique, opaque, stable identifier for an Object. Assigned at creation, never reused, never changes. Filenames, Numbers, and storage paths can change; UUID does not.
 
-**Number** — Human-readable identifier (e.g., `P-000123`, `REQ-0014`, `DV-0007`). Stable within a project. Distinct from UUID — Number serves humans, UUID serves the system.
+**Number** — Human-readable identifier (e.g., `P-000123`, `REQ-0014`, `DV-0007`). Stable within a project, intended for humans (UUID serves the system). Allocated through a Reservation file merged via Git; conflicts resolve at PR time. The Number is presentation, not truth.
 
 **Revision** — A formally released state of an Object (e.g., Rev A, Rev B). Released revisions are immutable. New work happens on the next revision.
 
@@ -61,13 +94,15 @@ This is a **working document**. Entries are expected to gain precision over time
 
 ## Records and storage
 
-**Sidecar** — A structured, human-readable, machine-validatable metadata file (YAML or JSON, schema-validated) associated with a managed artifact. Diffable in Git, reviewable in pull requests, readable by AI agents without opening heavy binary files. Whether sidecars are *canonical truth* or *projections of canonical truth* is the open storage-substrate ADR.
+**Sidecar** — A structured, human-readable, machine-validatable metadata file (format candidates: YAML / KiCad-style S-expressions, open until `ADR/0002`) associated with a managed artifact. Holds the **current authoritative state** of the Object. Diffable in Git, reviewable in pull requests, readable by AI agents without opening heavy binary files.
 
-**Event** — A structured, append-only record of something that happened to the model: object created, parameter changed, revision released, ECO approved, AI proposal accepted, validation failed. Events carry provenance and link to the Transaction that produced them. Whether events are *canonical* (current state = fold over events) or *audit trail alongside flat current-state sidecars* is an open ADR. Current instinct: events canonical for *decisions and lifecycle transitions*; flat sidecars for *current parameter values*; hybrid overall.
+**Event** — A structured, append-only record of approved transitions: object created, parameter changed, revision released, ECO approved, AI proposal accepted, validation failed. Events carry provenance and link to the Transaction that produced them. Stored as JSONL (instinct, open until `ADR/0002`).
 
-**Vault** — Storage for large binary artifacts (CAD files, STEP, STL, PDFs, simulation outputs). Git LFS at first; S3-compatible object storage later. The repository holds references and hashes; the vault holds the bytes.
+**Sidecar / event invariant** — Sidecars hold current authoritative object state; events record approved transitions and provenance. If they disagree, validation fails — neither silently wins. The invariant is enforced at commit time: folding the event log must produce a state consistent with the sidecars (Manifesto Principle 10).
 
-**Sidecar Projection** — A sidecar file generated from the Product Truth Model. If the storage-substrate ADR resolves to "DB-canonical," sidecars are projections; if "filesystem-canonical," sidecars are the source and the model is loaded from them.
+**Acceleration Cache** — A local derived index (DuckDB or SQLite) that supports parametric, graph, and where-used queries at interactive speed. Per-clone, rebuildable from canonical text artifacts, never canonical, never shared, never networked.
+
+**Release Manifest** — The structured document defining a Release: every Object UUID and Revision in scope, every artifact hash, every validation outcome, every approval signature. Stored as deterministic JSON (instinct, open until `ADR/0002`) so manifests are content-hashable and signable.
 
 ---
 
@@ -75,17 +110,17 @@ This is a **working document**. Entries are expected to gain precision over time
 
 **Transaction** — A bracketed, atomic, reversible unit of change. Lifecycle: `begin → modify → recompute → validate → compare → human approval → commit-or-rollback`. Every AI-driven change happens inside a Transaction. Failed Transactions leave no trace on canonical product truth, but may be recorded in an operational audit log along with their proposed changes and validation results.
 
-**Validation** — Rule-based, deterministic checking of the model against constraints: required metadata present, all references resolve, BOM is fresh, released objects unmodified, requirement-test traceability complete, artifact hashes match, etc. Validation is engineering discipline, not AI opinion.
+**Validation** — Rule-based, deterministic checking of the model against constraints: required metadata present, all references resolve, BOM is fresh, released objects unmodified, requirement-test traceability complete, artifact hashes match, **sidecar/event invariant holds**. Validation is engineering discipline, not AI opinion.
 
 **Where-Used** — A query returning every Object that depends on a given Object. Generated deterministically from the dependency graph. Essential AI infrastructure: "what breaks if I change this?"
 
-**ECR (Engineering Change Request)** — A proposal that something needs to change, with rationale. In the GitHub-native PLM layer, typically captured as a GitHub Issue. Does not by itself modify anything.
+**Change-order pipeline** — The mechanism by which writes promote from Workspace to Commonspace: a branch is pushed, a Pull Request opened (the ECR/ECO), impact analysis and validation results attached, maintainers review, the PR merges into a protected branch. Same machinery for AI-authored and human-authored changes (Manifesto Principles 5, 8, 13).
 
-**ECO (Engineering Change Order)** — An approved, scoped change carrying the actual modifications, impact analysis, validation results, and approvals. In the GitHub-native PLM layer, typically captured as a Pull Request.
+**ECR (Engineering Change Request)** — A proposal that something needs to change, with rationale. Captured as a Pull Request (or Issue, when earlier-stage) in the Git host's interface. Does not by itself modify Commonspace.
+
+**ECO (Engineering Change Order)** — An approved, scoped change carrying the actual modifications, impact analysis, validation results, and approvals. Captured as a Pull Request that has cleared the change-order pipeline.
 
 **Release** — A formally controlled engineering baseline: a frozen, reproducible snapshot of object revisions, vault artifact hashes, BOMs, drawings, exports, software versions, electrical files, DV evidence, known issues, and approval records. More than a tag — a Release is reconstructable years later.
-
-**Release Manifest** — The structured document defining a Release: every Object UUID and Revision in scope, every artifact hash, every validation outcome, every approval signature.
 
 **BOM (Bill of Materials)** — Generated, not authored. The list of purchased and made items required to build a product (or sub-assembly), derived from the Product Truth Model at a given Revision or Release.
 
@@ -93,7 +128,7 @@ This is a **working document**. Entries are expected to gain precision over time
 
 ## Planning and process
 
-**Ring** — A unit of planning work, organized concentrically around the Product Truth Model. Ring 0 = foundation docs (Manifesto, Glossary, Architecture, ADR log, Open Questions). Ring 1 = core design specs. Ring 2 = interface contracts. Ring 3 = control layer. Ring 4 = the wedge. Ring 5 = implementation roadmap. See [Discussions/20260517/Claude1.md](Discussions/20260517/Claude1.md).
+**Ring** — A unit of planning work, organized concentrically around the Product Truth Model. Ring 0 = foundation docs (Manifesto, Glossary, Architecture, ADR log, Open Questions). Ring 1 = core design specs. Ring 2 = interface contracts. Ring 3 = control layer. Ring 4 = the Wedge. Ring 5 = implementation roadmap. See [Discussions/20260517/Claude1.md](Discussions/20260517/Claude1.md).
 
 **Wedge** — The smallest end-to-end vertical slice that exercises all architectural layers. Used to stress-test the architecture by building the minimum viable end-to-end loop. Current scope: *one part + one named parameter + one requirement + one sidecar + one event-log entry + one AI transaction modifying the parameter + one deterministic validation against the requirement + one release manifest*.
 
@@ -101,4 +136,6 @@ This is a **working document**. Entries are expected to gain precision over time
 
 **Spike** — Throwaway prototype code written to test a design assumption. Allowed in any Ring; explicitly not the same as production implementation. Spikes are how design choices meet reality before getting baked in.
 
-**Open Questions Register** — The living list of unresolved architectural and scoping questions. Each entry has a status: `resolved` (with link to ADR), `deferred-to-ring-X`, or `accepted-as-unresolved`.
+**Open Questions Register** — The living list of unresolved architectural and scoping questions. Each entry has a status: `under-investigation`, `deferred-to-ring-X`, `accepted-as-unresolved`, or `resolved` (with link to ADR).
+
+**Scale targets** — The S / M / L / XL tier ladder defined in the Manifesto. AIADRA Core is architecturally compatible with Tier L from day one, operationally smooth at Tier M, with the Wedge at Tier S; Tier XL (enterprise PLM) is out of scope. Scale-sensitive decisions are bucketed as *decide-early-and-probe*, *design-with-scale-in-mind*, or *defer-with-acknowledgement*.
