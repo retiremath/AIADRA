@@ -28,3 +28,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# AIADRA inter-session communication (local-only, not for git)
+Docs/Discussions/
+Docs/Snapshots/
