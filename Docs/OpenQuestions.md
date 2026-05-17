@@ -200,7 +200,7 @@ This separation is structural going forward.
 
 ### OQ-0011: Canonical on-disk format
 
-- **Status:** `under-investigation` — to be resolved in `ADR/0002-canonical-format.md`
+- **Status:** `resolved` — see [ADR/0002](ADR/0002-canonical-format.md). Decision: the **AIADRA YAML Profile** for sidecars; JSONL for events; deterministic JSON for release manifests. S-expressions held as recorded fallback if Ring 1 stress tests reveal unacceptable YAML merge churn.
 - **Surfaced in:** [Claude3.md §6](Discussions/20260517/Claude3.md), refined in [GPT3.md](Discussions/20260517/GPT3.md) and [Claude4.md](Discussions/20260517/Claude4.md)
 - **Affects:** Layer 1 (Product Truth Model), tooling parsers, AI token cost, merge ergonomics, schema migration
 

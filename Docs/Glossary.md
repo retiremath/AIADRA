@@ -1,7 +1,7 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.3
+version: 0.4
 last_updated: 2026-05-17
 ---
 
@@ -94,15 +94,17 @@ AI queries and AIADRA Core APIs declare what locality they require; the system r
 
 ## Records and storage
 
-**Sidecar** — A structured, human-readable, machine-validatable metadata file (format candidates: YAML / KiCad-style S-expressions, open until `ADR/0002`) associated with a managed artifact. Holds the **current authoritative state** of the Object. Diffable in Git, reviewable in pull requests, readable by AI agents without opening heavy binary files.
+**Sidecar** — A structured, human-readable, machine-validatable metadata file (format: the AIADRA YAML Profile, settled in [ADR/0002](ADR/0002-canonical-format.md)) associated with a managed artifact. Holds the **current authoritative state** of the Object. Diffable in Git, reviewable in pull requests, readable by AI agents without opening heavy binary files.
 
-**Event** — A structured, append-only record of approved transitions: object created, parameter changed, revision released, ECO approved, AI proposal accepted, validation failed. Events carry provenance and link to the Transaction that produced them. Stored as JSONL (instinct, open until `ADR/0002`).
+**AIADRA YAML Profile** — The strict YAML 1.2 dialect AIADRA Core's parser enforces on every sidecar: YAML 1.2 only; one managed Object per file; all ambiguous scalars (UUIDs, Numbers, version strings, anything coercible to bool) quoted; no anchors, aliases, merge keys, or custom tags; duplicate keys rejected; JSON Schema validation at every read. Enforcement is split between AIADRA Core's parser (structural rules) and a token-level linter (the quoting rule, which JSON Schema cannot catch post-parse, since the parser has already resolved the scalar). Settled in [ADR/0002](ADR/0002-canonical-format.md).
+
+**Event** — A structured, append-only record of approved transitions: object created, parameter changed, revision released, ECO approved, AI proposal accepted, validation failed. Events carry provenance and link to the Transaction that produced them. Stored as JSONL, one event per line (settled in [ADR/0002](ADR/0002-canonical-format.md)).
 
 **Sidecar / event invariant** — Sidecars hold current authoritative object state; events record approved transitions and provenance. If they disagree, validation fails — neither silently wins. The invariant is enforced at commit time: folding the event log must produce a state consistent with the sidecars (Manifesto Principle 10).
 
 **Acceleration Cache** — A local derived index (DuckDB or SQLite) that supports parametric, graph, and where-used queries at interactive speed. Per-clone, rebuildable from canonical text artifacts, never canonical, never shared, never networked.
 
-**Release Manifest** — The structured document defining a Release: every Object UUID and Revision in scope, every artifact hash, every validation outcome, every approval signature. Stored as deterministic JSON (instinct, open until `ADR/0002`) so manifests are content-hashable and signable.
+**Release Manifest** — The structured document defining a Release: every Object UUID and Revision in scope, every artifact hash, every validation outcome, every approval signature. Stored as deterministic JSON — sorted keys, canonical numeric serialization, normalized whitespace — so manifests are content-hashable and signable (settled in [ADR/0002](ADR/0002-canonical-format.md)).
 
 ---
 

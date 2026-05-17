@@ -52,7 +52,7 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.3
+- [Glossary.md](Docs/Glossary.md) — v0.4
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.2
 
 ## Planning framework (rings)
