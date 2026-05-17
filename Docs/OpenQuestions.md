@@ -1,7 +1,7 @@
 ---
 name: aiadra-open-questions
 status: draft
-version: 0.2
+version: 0.3
 last_updated: 2026-05-17
 ---
 
@@ -247,8 +247,8 @@ This separation is structural going forward.
 
 ### OQ-0013: Schema governance and versioning
 
-- **Status:** `under-investigation` — to be resolved in `ADR/0003-schema-governance.md`
-- **Surfaced in:** [Claude3.md §6](Discussions/20260517/Claude3.md), endorsed in [GPT3.md](Discussions/20260517/GPT3.md) and [Claude4.md](Discussions/20260517/Claude4.md)
+- **Status:** `resolved` — see [ADR/0003](ADR/0003-schema-governance.md). Decision: JSON Schema Draft 2020-12; schemas bundled and versioned in AIADRA Core; per-artifact `schema_version` selects a bundle, plus an artifact-kind discriminator (`object.type` / `event_type` / `manifest_type`) selects the schema within it; per-event-type schemas with a shared `_base.schema.json`; SemVer taxonomy with breaking changes always MAJOR even pre-1.0; three-way migration asymmetry (sidecars migrate forward via `aiadra migrate`, events immortal at declared version, manifests frozen); active-authoring vs archival mode split (read path validates against any historical bundle forever, write path enforces deprecation horizon); project pin file with bundle version + digest covering schemas, linter rules, and migrators; migrator constraints (deterministic, dry-run, idempotent, no-network, fixture-tested, human-readable diffs); governance ceremony scaled by bump class (PATCH/MINOR by PR + changelog/note, MAJOR by ADR); default deprecation horizon of two MAJOR bumps.
+- **Surfaced in:** [Claude3.md §6](Discussions/20260517/Claude3.md), endorsed in [GPT3.md](Discussions/20260517/GPT3.md) and [Claude4.md](Discussions/20260517/Claude4.md); designed in [Claude6.md](Discussions/20260517/Claude6.md) → [GPT6.md](Discussions/20260517/GPT6.md) → [Claude7.md](Discussions/20260517/Claude7.md); ADR draft reviewed in GPT8 with four corrections folded in before landing.
 - **Affects:** Every canonical artifact (sidecar, event, manifest), every migration, every validator, AI parsing
 
 **Context.** Whatever on-disk format ADR/0002 picks, the more load-bearing discipline is schema governance: every artifact declares a `schema_version`; schemas are themselves versioned; migrations have explicit forward paths; the AIADRA Core validator rejects unrecognized or stale schemas loudly. Without this, format choice rots into a thousand bespoke variants and AI agents cannot trust the structure of what they read.
