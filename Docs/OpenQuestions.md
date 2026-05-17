@@ -50,7 +50,7 @@ Entry schema:
 
 ### OQ-0001: Storage substrate for the Product Truth Model
 
-- **Status:** `under-investigation` — to be resolved in `ADR/0001-storage-substrate.md`
+- **Status:** `resolved` — see [ADR/0001](ADR/0001-storage-substrate.md)
 - **Surfaced in:** [Claude1.md §2 tension #1](Discussions/20260517/Claude1.md), refined in [GPT1.md](Discussions/20260517/GPT1.md), [Claude2.md](Discussions/20260517/Claude2.md), [Claude3.md](Discussions/20260517/Claude3.md), [GPT3.md](Discussions/20260517/GPT3.md), [Claude4.md](Discussions/20260517/Claude4.md), [GPT4.md](Discussions/20260517/GPT4.md)
 - **Affects:** Layer 1 (Product Truth Model), Layer 4 (Project Control / OpenPLM), every downstream design that touches persistence
 
@@ -67,7 +67,7 @@ Entry schema:
 
 ### OQ-0002: Event-canonicity scope (child of OQ-0001)
 
-- **Status:** `under-investigation` — to be resolved alongside OQ-0001 in `ADR/0001`
+- **Status:** `resolved` — see [ADR/0001](ADR/0001-storage-substrate.md) §4 (the sidecar/event invariant)
 - **Surfaced in:** [Claude2.md §"On the storage substrate" point 2](Discussions/20260517/Claude2.md), refined by [GPT3.md](Discussions/20260517/GPT3.md) and [Claude4.md](Discussions/20260517/Claude4.md)
 - **Affects:** Layer 1 (Product Truth Model), Layer 3 (Transaction model), Principle 10
 
@@ -264,7 +264,7 @@ This separation is structural going forward.
 
 ### OQ-0014: Inter-Workspace coordination semantics
 
-- **Status:** `under-investigation` — to be resolved alongside OQ-0001 in `ADR/0001`
+- **Status:** `resolved` — see [ADR/0001](ADR/0001-storage-substrate.md) §5 (no live coordination; pure Git mechanics)
 - **Surfaced in:** [Claude3.md §3](Discussions/20260517/Claude3.md), debated through [GPT3.md](Discussions/20260517/GPT3.md), [Claude4.md](Discussions/20260517/Claude4.md), [GPT4.md](Discussions/20260517/GPT4.md)
 - **Affects:** AI behavior on read paths, conflict handling, the no-live-coordination posture, OQ-0015 (Number allocation)
 

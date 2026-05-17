@@ -33,8 +33,8 @@ AIADRA/
     ├── Manifesto.md               # Durable project thesis + principles + non-goals (in git)
     ├── Glossary.md                # Pinned term definitions (in git)
     ├── ArchitectureOverview.md    # Layer model (coming, in git)
-    ├── OpenQuestions.md           # Register of unresolved questions (coming, in git)
-    ├── ADR/                       # Architecture Decision Records (coming, in git)
+    ├── OpenQuestions.md           # Register of unresolved questions (in git)
+    ├── ADR/                       # Architecture Decision Records (in git)
     ├── Discussions/               # Inter-AI dialogue, dated subfolders (GIT-IGNORED)
     └── Snapshots/                 # Session-end state for handoff (GIT-IGNORED)
 ```
