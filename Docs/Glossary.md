@@ -1,7 +1,7 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.8
+version: 0.9
 last_updated: 2026-05-18
 ---
 
@@ -63,7 +63,7 @@ AI queries and AIADRA Core APIs declare what locality they require; the system r
 
 **Staleness tolerance** — A property of a read operation: is it correct to answer from the Workspace's local mirror of Commonspace (possibly out of date), or must the local mirror first be synchronized? Most queries tolerate staleness (looking up the prior parameter value, the release history, the where-used graph). A few do not (generating a release manifest against the *current* released revisions). AIADRA Core exposes this distinction at the API surface so callers choose deliberately.
 
-**Reservation file** — A Git-tracked file (or set of files) recording locally-claimed allocations that must be unique project-wide — most prominently human-readable **Numbers**. Allocations are made locally and resolved through Git's normal merge mechanics: two developers claiming the same Number in parallel branches produce a merge conflict at PR time, and the second one rebases. AIADRA Core never requires or provides a live allocator. Exact file shape is open until `ADR/0004` (see OQ-0015).
+**Reservation file** — A schema-governed canonical artifact recording Number allocations for one Object Type prefix per [ADR/0004](ADR/0004-number-allocation.md). One Reservation artifact per prefix at `Docs/Reservations/<TypePrefix>.yaml`; the Number is the YAML mapping key so duplicate claims collide at parse time via the AIADRA YAML Profile's duplicate-key rejection. Each entry binds a Number to an Object UUID with status `current` or `retired` plus audit metadata; retired entries are permanent aliases per [S2.5 commitment 7](TruthModelSchema.md#7-number_rebound-retires-the-old-number-as-an-alias). Allocations are Transaction-atomic across sidecar + event + Reservation per ADR/0004 §6 — the Layer-2 validator hard-rejects any commit touching a Reservation entry without the full coherent set. Conflict resolution at PR time via Git rebase per [S2.5 commitment 3](TruthModelSchema.md#3-reservation-conflicts-resolve-pre-merge-through-git-rebase). AIADRA Core never requires or provides a live allocator.
 
 ---
 
@@ -105,7 +105,7 @@ AI queries and AIADRA Core APIs declare what locality they require; the system r
 
 **Sidecar** — A structured, human-readable, machine-validatable metadata file (format: the AIADRA YAML Profile, settled in [ADR/0002](ADR/0002-canonical-format.md)) associated with a managed artifact. Holds the **current authoritative state** of the Object. Diffable in Git, reviewable in pull requests, readable by AI agents without opening heavy binary files.
 
-**AIADRA YAML Profile** — The strict YAML 1.2 dialect AIADRA Core's parser enforces on every sidecar: YAML 1.2 only; one managed Object per file; all ambiguous scalars (UUIDs, Numbers, version strings, anything coercible to bool) quoted; no anchors, aliases, merge keys, or custom tags; duplicate keys rejected; JSON Schema validation at every read. Enforcement is split between AIADRA Core's parser (structural rules) and a token-level linter (the quoting rule, which JSON Schema cannot catch post-parse, since the parser has already resolved the scalar). Settled in [ADR/0002](ADR/0002-canonical-format.md).
+**AIADRA YAML Profile** — The strict YAML 1.2 dialect AIADRA Core's parser enforces on every YAML-shaped canonical artifact (sidecar, Revision, Reservation): YAML 1.2 only; one managed artifact per file (cardinality scoped per kind — sidecar = one Object; Revision = one frozen Object snapshot; Reservation = one Number prefix's allocations); all ambiguous scalars (UUIDs, Numbers, version strings, anything coercible to bool) quoted; no anchors, aliases, merge keys, or custom tags; duplicate keys rejected; JSON Schema validation at every read. The duplicate-key rejection is load-bearing for Reservation conflict detection per [ADR/0004 §7](ADR/0004-number-allocation.md). Enforcement is split between AIADRA Core's parser (structural rules including duplicate-key rejection) and a token-level linter (the quoting rule, which JSON Schema cannot catch post-parse, since the parser has already resolved the scalar). Settled in [ADR/0002](ADR/0002-canonical-format.md); cardinality generalized per [ADR/0004](ADR/0004-number-allocation.md).
 
 **Event** — A structured, append-only record of approved transitions: object created, parameter changed, revision released, ECO approved, AI proposal accepted, validation failed. Events carry provenance and link to the Transaction that produced them. Stored as JSONL, one event per line (settled in [ADR/0002](ADR/0002-canonical-format.md)).
 

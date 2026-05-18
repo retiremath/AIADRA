@@ -1,7 +1,7 @@
 ---
 name: aiadra-open-questions
 status: draft
-version: 0.5
+version: 0.6
 last_updated: 2026-05-18
 ---
 
@@ -281,19 +281,21 @@ This separation is structural going forward.
 
 ### OQ-0015: Human-readable Number allocation strategy
 
-- **Status:** `under-investigation` — target `ADR/0004-number-allocation.md` (after Ring 1 settles what the Reservation file actually contains)
+- **Status:** `resolved` — see [ADR/0004](ADR/0004-number-allocation.md)
 - **Surfaced in:** [GPT3.md](Discussions/20260517/GPT3.md) §"Important Corrections", elaborated in [Claude4.md](Discussions/20260517/Claude4.md)
 - **Affects:** Identity scheme (Principle 3), every Object's lifecycle, AI behavior on Object creation, OQ-0014
 
+**Resolution** ([ADR/0004](ADR/0004-number-allocation.md), 2026-05-18). **Option 1: per-prefix Reservation artifacts** at `Docs/Reservations/<TypePrefix>.yaml`, with the Number as the YAML mapping key (so duplicate claims collide at parse time via the AIADRA YAML Profile's duplicate-key rejection). `reservation` joins the artifact-kind set as the fifth kind under [ADR/0003 §2](ADR/0003-schema-governance.md). Allocation is Transaction-atomic across sidecar + event + Reservation per ADR/0004 §6 — the Layer-2 validator hard-rejects commits touching a Reservation entry without the full coherent set. Status transitions are monotonic forward (`current → retired` only; retired aliases permanent per S2.5 commitment 7). Conflict resolution at PR time via Git rebase per S2.5 commitment 3. Block allocation (Option 4) deferred to future Schema Change Note for Tier-L scale.
+
 **Context.** UUIDs are easy: locally generated, collision-resistant, never coordinated. Human-readable Numbers (`P-000123`, `REQ-0014`) are not — they imply stability and uniqueness within a project, and they are surfaces humans grow attached to. The naive solution ("check the project for the next free Number, claim it") would require live Commonspace coordination and violate Principle 11. The right model is **allocation through a Git-tracked Reservation file** with conflicts resolved at PR time.
 
-**Options:**
-1. **Per-Type Reservation file** — `Docs/numbering/P.yaml`, `REQ.yaml`, etc., each recording claimed Numbers and the UUID they bind to. Conflicts produce merge conflicts on the relevant file.
-2. **Single project Reservation file** — one file per project; coarser merge granularity.
-3. **No Reservation file** — Numbers are assigned at PR-merge time from the merge commit's monotonic counter. Numbers are not stable until merged.
-4. **Block-allocation per Workspace** — each Workspace pre-reserves a block (`P-001000` through `P-001099`) at first use. Reduces conflict surface but introduces sparse Number sequences.
+**Options (historical, evaluated and resolved in [ADR/0004](ADR/0004-number-allocation.md)):**
+1. **Per-Type Reservation file** — `Docs/Reservations/P.yaml`, `REQ.yaml`, etc., each recording claimed Numbers and the UUID they bind to. Conflicts produce merge conflicts on the relevant file. ***Adopted, with Number as YAML mapping key (not list-of-records) so duplicate claims collide at parse time — see [ADR/0004](ADR/0004-number-allocation.md).***
+2. **Single project Reservation file** — one file per project; coarser merge granularity. *Rejected — different artifact shape; would require separate schema and validation. Consolidated Reservation artifacts may land in a future Schema Change Note with their own discriminator.*
+3. **No Reservation file** — Numbers are assigned at PR-merge time from the merge commit's monotonic counter. Numbers are not stable until merged. *Rejected — S2.5 commitment 5 requires Numbers stable after merge, and events on the working branch reference Numbers that must exist pre-merge.*
+4. **Block-allocation per Workspace** — each Workspace pre-reserves a block (`P-001000` through `P-001099`) at first use. Reduces conflict surface but introduces sparse Number sequences. *Deferred to future Schema Change Note for Tier-L scale (50K+ Objects, 50+ contributors with frequent allocation) when Option 1's merge churn becomes unacceptable.*
 
-**Current instinct.** Option 1 (per-Type Reservation files), with the file format defined by Ring 1's Truth Model Schema work. UUID remains underlying truth; the Number is presentation. Rebase-and-retry semantics for merge conflicts. Block allocation (Option 4) is held in reserve for Tier-L scale if Option 1 produces too much merge churn at high contributor counts. AIADRA Core never requires or provides a live allocator (Manifesto Principle 11).
+**Original deferral rationale (preserved for context).** "Option 1 is the current instinct, with the file format defined by Ring 1's Truth Model Schema work. UUID remains underlying truth; the Number is presentation. Rebase-and-retry semantics for merge conflicts." Ring 1's S2.5 settled the Number-binding lifecycle and handed off seven explicit acceptance criteria to ADR/0004 (current + retired binding, reuse rejection, atomic create / rebind, merge-conflict detection on the Number key, retirement history). ADR/0004 satisfies all seven.
 
 ---
 
