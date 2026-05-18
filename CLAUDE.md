@@ -56,9 +56,9 @@ Update this list when versions change.
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
 - [Glossary.md](Docs/Glossary.md) — v0.8 (Promotion Rule catalogue verdicts in *Object*; *Part* entry per ADR/0005; *Requirement* entry per ADR/0006; *Assembly* entry per ADR/0007 — seed catalogue complete)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
-- [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.7 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned 2026-05-18 with 12 commitments; **commitment 6 amended to decouple governance ceremony from bundle bump class**; catalogue work continues with Requirement next; same stale-when-overridden authority as ArchitectureOverview)
+- [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
-- [OpenQuestions.md](Docs/OpenQuestions.md) — v0.4
+- [OpenQuestions.md](Docs/OpenQuestions.md) — v0.5 (OQ-0016 resolved by ADR/0008 — cross-project Object identity framework)
 
 ## Planning framework (rings)
 

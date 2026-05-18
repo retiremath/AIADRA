@@ -1,7 +1,7 @@
 ---
 name: aiadra-truth-model-schema
 status: draft
-version: 0.7
+version: 0.8
 last_updated: 2026-05-18
 ---
 
@@ -86,9 +86,14 @@ References across Objects use the base form:
 (project_scope?, object_uuid, fact_ref?)
 ```
 
-- **`project_scope`** is implicit/local for Ring 1. [OQ-0016](OpenQuestions.md) (cross-project Object identity, deferred to Ring 2) may make it explicit additively; Ring-1 references must round-trip through any Ring-2 extension without rewriting.
+- **`project_scope`** is null / omitted for within-project references (Ring 1 default; unchanged). For cross-project references, `project_scope` is a structured object with stable `project_id` and optional non-authoritative `locator_hint` per [ADR/0008](ADR/0008-cross-project-object-identity.md). Cross-project canonical identity is `(project_id, object_uuid)`. Ring 1 references round-trip through this extension without rewriting; existing single-project sidecars need no migration.
 - **`object_uuid`** is the load-bearing identity. UUID, not Number — [Manifesto P3](Manifesto.md) and the [Glossary](Glossary.md) entry for *Number* both make Number presentation-only.
 - **`fact_ref`** is optional. When present, it uses the within-artifact form from commitment 4. When absent, the reference targets the Object as a whole.
+
+**Cross-project references additionally observe** (per [ADR/0008](ADR/0008-cross-project-object-identity.md)):
+
+- **Direct external endpoint policy.** Engineering and product-structure relationships in a consumer project MUST target local Binding Objects (Component, SoftwareModule, etc.) unless the relationship-type schema explicitly permits direct external endpoints. Direct cross-project endpoints are reserved for Binding Object payloads, provenance / source records, or relationship types whose schema explicitly opts in.
+- **Revision integrity for fixed bindings.** Fixed cross-project bindings MUST include or resolve to the catalog Object's `revision_content_hash` per [S2 commitment 2](#2-revision-identity-is-object_uuid-revision_id-with-content-hash-as-integrity). The hash proves the consumer is using the exact frozen artifact it approved across mirrors, archives, or future fetches.
 
 The UUID-keyed shape preserves the four-state locality distinction that Layer 3's API surface will need to expose ([ADR/0001 §6](ADR/0001-storage-substrate.md)): present-and-valid-locally, known-by-UUID-but-not-fetched, absent-because-stale, absent-because-invalid. A validator can answer locality questions from the UUID alone before reading the target.
 

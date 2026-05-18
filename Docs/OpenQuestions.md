@@ -1,8 +1,8 @@
 ---
 name: aiadra-open-questions
 status: draft
-version: 0.4
-last_updated: 2026-05-17
+version: 0.5
+last_updated: 2026-05-18
 ---
 
 # AIADRA Open Questions Register
@@ -299,22 +299,24 @@ This separation is structural going forward.
 
 ### OQ-0016: Cross-project Object identity and reuse semantics
 
-- **Status:** `deferred-to-ring-2`
+- **Status:** `resolved` — see [ADR/0008](ADR/0008-cross-project-object-identity.md)
 - **Surfaced in:** [Snapshot 2026-05-17-03](Snapshots/2026-05-17-03.md) "Open threads" — surfaced by Petre as the "file management as afterthought" inversion concern
 - **Affects:** Layer 1 (Product Truth Model identity scheme — Principle 3), Layer 4 (Project Control across project boundaries), shared-library / part-catalog ecosystem (out-of-core, but constrained by the answer here)
 
-**Context.** Principle 3 establishes UUID as identity *within a project*. The cross-project case is unstated. When Project B reuses a part (e.g., a standard M8 bolt, a motor, a board module) originally authored in Project A, what is the identity relationship between the two? The naive answers each have real costs:
+**Resolution** ([ADR/0008](ADR/0008-cross-project-object-identity.md), 2026-05-18). Option 4 reframed: **catalog projects** (regular AIADRA projects publishing reusable Objects; no Catalog Object Type) + **consumer-side Binding Object Types** (Component for physical / procurement; SoftwareModule for software; other domains may define their own) via the [External pointer Object pattern](TruthModelSchema.md#5-two-named-non-disqualifier-patterns) (Binding lifecycle). Cross-project canonical identity is `(project_id, object_uuid)`; `revision_content_hash` proves integrity for fixed bindings; `project_scope` splits stable `project_id` from non-authoritative `locator_hint`. Engineering relationships in consumer projects target local Binding Objects unless the relationship-type schema explicitly permits direct external endpoints. Transport / discovery / federation are out of scope for AIADRA Core (per Manifesto P11).
+
+**Context.** Principle 3 establishes UUID as identity *within a project*. The cross-project case was unstated. When Project B reuses a part (e.g., a standard M8 bolt, a motor, a board module) originally authored in Project A, what is the identity relationship between the two? The naive answers each had real costs:
 
 - *Same UUID across projects* — preserves identity perfectly but requires global UUID coordination (which Principle 11 forbids as a live service) and means a Project A revision change quietly affects Project B's snapshot of "the same Object."
 - *Different UUID with a "derived-from" link* — preserves no-HQ posture but breaks "what depends on this part?" queries at the ecosystem level; the same physical fastener now has N identities.
 - *Shared library substrate* — a third class of Object (catalog entry) with its own identity, referenced by per-project Objects that bind to a specific revision. Cleanest but introduces new infrastructure.
 
-Largely covered by existing principles for the *within-project* case (Principle 3 UUID, Principle 1 tools-sync-to-truth, ADR/0001's acceleration cache for where-used). The gap is the *across-project* case, which Ring 1's Truth Model Schema cannot avoid: the relationship taxonomy must decide whether `references_external` is a first-class shape or an emergent pattern.
+Largely covered by existing principles for the *within-project* case (Principle 3 UUID, Principle 1 tools-sync-to-truth, ADR/0001's acceleration cache for where-used). The gap was the *across-project* case, which Ring 1's Truth Model Schema could not avoid: the relationship taxonomy needed the answer.
 
-**Options:**
-1. **Project-scoped UUIDs, no cross-project link.** Reused parts are re-authored in each project. Simple; loses ecosystem-level traceability entirely.
-2. **Project-scoped UUIDs + `derived-from` relationship.** Each project owns its own UUID; the relationship carries (source_project, source_uuid, source_revision). Cross-project where-used is a federated query.
-3. **Global UUID namespace + per-project revision binding.** UUID is shared; each project pins a specific revision of the upstream Object. Requires only naming convention (no live coordination if UUID generation remains v4-random), but creates a strong implicit contract on upstream stability.
-4. **Catalog Objects as a separate class.** Standard parts, common modules, and reusable assets live as Catalog Objects in shared library projects; consumer projects reference them by (catalog_uuid, revision). Closest to existing component-library practice.
+**Options (historical, evaluated and resolved in [ADR/0008](ADR/0008-cross-project-object-identity.md)):**
+1. **Project-scoped UUIDs, no cross-project link.** Reused parts are re-authored in each project. Simple; loses ecosystem-level traceability entirely. *Rejected — too lossy for AIADRA's open-source-hardware-ecosystem positioning.*
+2. **Project-scoped UUIDs + `derived-from` relationship.** Each project owns its own UUID; the relationship carries (source_project, source_uuid, source_revision). Cross-project where-used is a federated query. *Rejected — semantic ambiguity (binding vs genuine derivation) plus federated-query cost.*
+3. **Global UUID namespace + per-project revision binding.** UUID is shared; each project pins a specific revision of the upstream Object. Requires only naming convention (no live coordination if UUID generation remains v4-random), but creates a strong implicit contract on upstream stability. *Rejected — violates the spirit of "each project owns its truth" per Manifesto P11; implicit cross-project ownership questions.*
+4. **Catalog Objects as a separate class.** Standard parts, common modules, and reusable assets live as Catalog Objects in shared library projects; consumer projects reference them by (catalog_uuid, revision). Closest to existing component-library practice. ***Adopted, reframed as catalog projects (regular AIADRA projects publishing reusable Objects, not a distinct Object Type) + consumer-side Binding Object Types — see [ADR/0008](ADR/0008-cross-project-object-identity.md).***
 
-**Current instinct.** Not yet — deliberately deferred. Ring 1's basic identity model (single-project) must settle before this question's answer becomes legible. Resurfacing rule: when Ring 2 begins designing the relationship taxonomy, this question must be reopened before relationship-class enumeration is finalized, because the answer materially shapes that enumeration. Petre asked to hold this for now ("Don't do anything about that now"); captured here so it cannot be answered silently.
+**Original deferral rationale (preserved for context).** "Ring 1's basic identity model (single-project) must settle before this question's answer becomes legible. Resurfacing rule: when Ring 2 begins designing the relationship taxonomy, this question must be reopened before relationship-class enumeration is finalized, because the answer materially shapes that enumeration." This reopening happened on 2026-05-18 after the seed catalogue (Part / Requirement / Assembly) was complete and before the relationship-type ADRs.
