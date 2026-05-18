@@ -1,8 +1,8 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.4
-last_updated: 2026-05-17
+version: 0.5
+last_updated: 2026-05-18
 ---
 
 # AIADRA Glossary
@@ -21,7 +21,12 @@ This is a **working document**. Entries are expected to gain precision over time
 
 **Product Truth Model** — The canonical, authoritative representation of a product as a graph of engineering Objects, relationships, parameters, requirements, events, and history. Everything else — files, exports, drawings, dashboards, AI views — is a projection of this model. Current architectural instinct (open until `ADR/0001`): the Truth Model is realized as canonical text artifacts (sidecars + event log + manifests) in the project's Git repo, with binary artifacts in a pluggable Vault and a local derived acceleration cache.
 
-**Object (Managed Object)** — Any engineering entity tracked in the Product Truth Model: parts, assemblies, features, requirements, electrical components, software modules, purchased items, suppliers, drawings, tests, evidence, releases, ECOs, AI decisions. Every Object has a stable UUID, a human-readable Number, a Type, and metadata.
+**Object (Managed Object)** — An engineering entity tracked as a first-class managed artifact in the Product Truth Model, with stable UUID identity, Number, Type, and metadata. The Promotion Rule in [TruthModelSchema.md](TruthModelSchema.md) determines which entities qualify. Current catalogue (as of TruthModelSchema v0.6):
+
+- **Seed Object Types** (pinned by [ADR/0003 §1 / §2](ADR/0003-schema-governance.md) named examples): Part, Requirement, Assembly.
+- **Tier-2 Object Types** (cleared the rule; per-Type ADRs follow as the Wedge surfaces need): Drawing, TestProcedure, EvidenceArtifact.
+- **Candidate pool, deferred** (pass the capability test plausibly; deferred until concrete use case or [OQ-0016](OpenQuestions.md) reopening): Supplier, Component (purchased item), Software module, Electrical component.
+- **Recognized non-Objects** (handled by other spine artifact kinds): Feature (CAD construction-history) as records under parent Part; Test execution / Evidence citation / measurement as records under their parent; Release as Release Manifest + release transaction + events (optional derived Release index for query ergonomics); ECR / ECO as externally governed workflow artifact in the Git host, referenced via PR URL / commit hash; AI Decision as event payload (reopenable through [OQ-0003](OpenQuestions.md)); BOM and similar derived reports (where-used, dashboards, trace matrices, validation summaries, impact-analysis reports, generated exports) as D7-disqualified derived views.
 
 **Domain Engine** — An external tool that authors data in a specific domain: FreeCAD/OpenCascade for mechanical geometry, KiCad (planned) for electrical, Git for software source, etc. AIADRA modifies these tools where necessary so they expose kernel-level access and synchronize natively with the Product Truth Model.
 

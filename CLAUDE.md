@@ -33,7 +33,7 @@ AIADRA/
     ├── Manifesto.md               # Durable project thesis + principles + non-goals (in git)
     ├── Glossary.md                # Pinned term definitions (in git)
     ├── ArchitectureOverview.md    # Layer model (in git)
-    ├── TruthModelSchema.md        # Ring 1 abstract Truth Model Schema spine — grows as S0–S3 close (in git)
+    ├── TruthModelSchema.md        # Ring 1 abstract Truth Model Schema spine (S0–S3) + Promotion Rule for first-class Object Types (in git)
     ├── ArchitectureGraph.json     # On-demand visualization snapshot of the Overview (in git)
     ├── OpenQuestions.md           # Register of unresolved questions (in git)
     ├── ADR/                       # Architecture Decision Records (in git)
@@ -54,9 +54,9 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.4
+- [Glossary.md](Docs/Glossary.md) — v0.5 (*Object (Managed Object)* entry updated with Promotion Rule catalogue verdicts)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
-- [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.5 (Ring 1 abstract spine **complete**; S0+S1+S2+S2.5+S3 all pinned; catalogue work opens next; same stale-when-overridden authority as ArchitectureOverview)
+- [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.6 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; **Promotion Rule for first-class Object Types pinned 2026-05-18** with 12 commitments; catalogue work opens with seed Object Type ADRs next; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.4
 

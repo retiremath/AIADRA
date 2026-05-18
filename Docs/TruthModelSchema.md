@@ -1,7 +1,7 @@
 ---
 name: aiadra-truth-model-schema
 status: draft
-version: 0.5
+version: 0.6
 last_updated: 2026-05-18
 ---
 
@@ -792,20 +792,154 @@ With S0, S1, S2, S2.5, and S3 all pinned, the Ring 1 abstract Truth Model Schema
 
 **Catalogue work opens next.** Per [ADR/0003](ADR/0003-schema-governance.md) and the [Architecture Overview](ArchitectureOverview.md):
 
-1. **Promotion rule** — the criterion for whether an entity becomes a first-class Object Type.
+1. **Promotion rule** — **pinned 2026-05-18**, see the [Promotion rule for first-class Object Types](#promotion-rule-for-first-class-object-types) section below. Twelve commitments establish the criterion for first-class Object Type promotion, the two non-disqualifier patterns (Attachment-bearing Object, External pointer Object), and the four-tier deprecation ceremony.
 2. **Seed Object Type catalogue** — Part, Requirement, Assembly first per ADR/0003's named examples.
 3. **Concrete relationship types** — first wave of `satisfy`, `composed_of`, `derived_from`, `mated_to`, `derived_geometry_from`, `parameter_expression` schemas drawing on S3's type-schema framework.
 4. **First Revision schema and Manifest schema concrete content** — drawing on S2 commitment 1's artifact-kind framework.
 5. **[OQ-0016](OpenQuestions.md) reopened** — cross-project Object identity, before relationship taxonomy completes (per S3 and [ArchitectureOverview.md](ArchitectureOverview.md)).
 6. **Per-type Reservation file shape and [OQ-0015](OpenQuestions.md) / ADR/0004** — closes out S2.5's downstream constraints.
 
+## Promotion rule for first-class Object Types
+
+The spine settles the abstract shape every Object shares. It does not settle which entities become first-class Object Types in the first place. Catalogue work answers that question per-Type, and the Promotion Rule is the criterion each catalogue decision follows.
+
+Same authority status as the rest of this document — stale when overridden by ADRs or the Manifesto. Twelve commitments, pinned 2026-05-18. Full reasoning trail in the discussion folder.
+
+### Pinned core
+
+> A first-class Object Type is justified only when the entity needs AIADRA-owned UUID identity, lifecycle, referenceability, and approval / provenance independent of any parent Object, and when no existing artifact kind — record, event, Revision, Manifest, Vault blob, external workflow reference, or derived projection — already carries the semantics.
+
+C1–C4 unpack the affirmative criteria. D1–D7 enumerate the existing artifact kinds and the rule for each. Commitment 5 names the two non-disqualifier patterns for Objects whose payload or upstream truth lives outside the sidecar.
+
+### 1. Default is record; promotion is the exception
+
+The compositional schema ([S0 commitment 1](#1-compositional-schema-governance)) and the namespace + local-id record model ([S0 commitment 4](#4-hybrid-within-artifact-addressing)) handle the common case. Promotion to first-class Object Type is justified explicitly per the criteria below, not by default.
+
+### 2. Capability test — four affirmative criteria
+
+An entity is a candidate for first-class Object Type only if all four hold:
+
+- **C1 — Independent identity.** Identity meaningful outside any one parent context. A Part `P-000123` is the same Part regardless of which Assembly contains it. A parameter `param_plate_thickness` is meaningful only inside its Part.
+- **C2 — Independent lifecycle.** Progresses through `in_work → under_review → released → superseded → obsolete` on its own cadence, not derivatively from a parent. For External pointer Objects (commitment 5), the lifecycle may be a binding lifecycle rather than a wrapper lifecycle — both satisfy C2.
+- **C3 — Independent referenceability.** Referenced by UUID, not through a parent. If every reference targets it as "the Nth record of parent X," it is a record.
+- **C4 — Independent provenance / approval.** Commit-time approval distinct from any parent's.
+
+### 3. Disqualifier test — seven negative criteria
+
+A candidate that passes the capability test is still not promoted if any disqualifier holds:
+
+- **D1 — Wholly contained.** Every fact about the entity is meaningful only inside one parent Object. Parameters, relationships, published refs, design-intent entries, test execution records, evidence citations, measurement records.
+- **D2 — Append-only / transition-only.** Content is a record of a state change, not state itself. Events.
+- **D3 — Frozen snapshot of another Object.** Bound to a parent Object UUID, immutable, governed by [S2 commitment 1](#1-revisions-are-separate-immutable-schema-governed-artifacts). Revisions.
+- **D4 — Governance artifact, not engineering fact.** Records a release event or policy decision rather than an engineering property. Manifests.
+- **D5 — Externally governed workflow artifact.** Lifecycle and approval live in an external workflow system; AIADRA only needs immutable references to its outcome. ECR / ECO and Git-host-side PR state. **Does not include** the AIADRA-owned attachment-bearing or external pointer Object patterns (commitment 5).
+- **D6 — Opaque bytes.** Engineering meaning is just "this hash." Vault blobs *standing alone*. An Object Type that owns a Vault attachment as part of its payload is not D6-disqualified — see the Attachment-bearing Object pattern in commitment 5.
+- **D7 — Derived projection / cache / view.** Deterministically generated from canonical Objects, Revisions, Events, Manifests, or Vault hashes. Stored as derived cache, export, report, or manifest content; not promoted as authored Object Type. BOMs, where-used reports, release dashboards, validation summaries, trace matrices, impact-analysis reports, generated exports. **Partially-derived test:** a partially-derived artifact is not D7-disqualified only when its authored layer contains canonical facts that cannot be deterministically reconstructed from existing Truth Model state, AND that authored layer independently passes C1–C4. A Drawing's authored annotations / dimensions / design-intent text tip it out of D7; a generated STEP export does not; an annotated simulation packet is a candidate only if its annotation layer itself passes C1–C4.
+
+### 4. Both tests must pass
+
+Capability all-affirmative AND disqualifiers all-negative. A candidate failing either is not promoted; the spine has a non-Object-Type kind for it.
+
+### 5. Two named non-disqualifier patterns
+
+When an Object's content, payload, or upstream truth lives partly outside the sidecar, the rule recognizes two patterns. Both are explicit non-disqualifiers under D5 and D6; both require AIADRA-owned UUID identity, relationship endpoint surface, and approval boundary on the local Object. They differ in authority direction.
+
+**Attachment-bearing Object.** AIADRA owns the engineering meaning; Vault holds byte payloads subordinate to that meaning. The Object owns its own (wrapper) lifecycle, fully. Examples: an EvidenceArtifact with a simulation output; a Drawing with a rendered PDF; future annotated-simulation candidates whose annotation layer is canonical. The bytes are subordinate to AIADRA truth.
+
+**External pointer Object.** Another system owns some upstream truth (a supplier datasheet, an external Git repo, a catalog project's Object); AIADRA owns the local wrapper or binding. The wrapper-vs-binding distinction is load-bearing:
+
+- *Wrapper lifecycle* — AIADRA owns the lifecycle of the represented thing locally. Example: a Supplier Object whose existence and lifecycle are project-local even though the underlying real-world supplier is external. The pointer Object passes C2 with an independent lifecycle.
+- *Binding lifecycle* — AIADRA owns the lifecycle of the project's adoption of an upstream entity. Example: "we pinned to upstream Component v1.2 in Q2; we superseded our binding to v1.4 in Q3." The upstream entity's lifecycle stays externally owned; the binding's lifecycle is AIADRA-local. This is what makes catalog-project / consumer-project patterns viable under [OQ-0016](OpenQuestions.md).
+
+If neither wrapper lifecycle nor binding lifecycle exists, it is not an Object Type — it is just an external reference field or record on some other Object.
+
+Per-Type ADRs using either pattern must explicitly state which pattern applies; for External pointer, whether the lifecycle is wrapper or binding; what AIADRA owns; and what AIADRA merely points at.
+
+### 6. Promotion ceremony
+
+Adding an Object Type to the catalogue requires:
+
+- New `sidecar/<Type>.schema.json` in the active bundle, composed `BaseObject ⨁ TypeSpecific` per [S0 commitment 1](#1-compositional-schema-governance).
+- Number prefix mapping declared at promotion per [S2.5 commitment 10](#10-number-format-and-type--prefix-mapping-are-per-project-policy).
+- Optional Revision schema if the Type participates in formal release per [S2 commitment 1](#1-revisions-are-separate-immutable-schema-governed-artifacts).
+- Relationship endpoint constraint table updates in every relationship type schema where the new Type is a valid endpoint per [S3 commitment 7](#7-relationship-types-are-schema-governed-under-adr0003).
+- Bundle bump per [ADR/0003 §11](ADR/0003-schema-governance.md): MAJOR if the promotion breaks existing endpoint constraints; MINOR if purely additive.
+- ADR for the new Type if MAJOR; Schema Change Note if MINOR.
+- For Types using commitment 5 patterns: an explicit "what AIADRA owns vs what it points at" section in the per-Type ADR, naming the pattern (Attachment-bearing vs External pointer) and, for External pointer, the lifecycle kind (wrapper vs binding).
+
+### 7. Demotion is deprecation-first, four-tier ceremony
+
+A promoted Type that proves unnecessary follows this path:
+
+- Historical artifacts of the Type remain readable forever under their declared bundle, per [ADR/0003 §6](ADR/0003-schema-governance.md) archival mode.
+- The Type may be marked deprecated under one of four enforcement levels, each with a distinct bump class:
+  - **Documentation-only deprecation** ("discouraged; do not use for new designs") — PATCH or docs-only bump. No schema or validator change.
+  - **Schema-annotation deprecation, warning only** — MINOR bump. Schema carries a `deprecated: true` annotation; validator emits diagnostic on read or write; no hard rejection.
+  - **Hard-refusal of new authoring** — MAJOR bump. Validator rejects new instances at write time. Read path / archival mode preserves access to existing data. This is a validation-rule tightening per [ADR/0003 §11](ADR/0003-schema-governance.md)'s MAJOR criteria — even though no existing artifact fails, the *authoring path* tightens, and standard schema-SemVer treats that as a breaking change.
+  - **Historical migration of instances to records** — MAJOR bump with migrators per [ADR/0003 §5](ADR/0003-schema-governance.md). Allowed only when every instance has a unique containment owner AND every UUID reference to instances has a deterministic replacement address. Otherwise the deprecated Type remains archival and read-only, never forcibly demoted.
+- Events targeting deprecated-Type UUID-keyed addresses must continue to resolve under their declared bundle per [S0 commitment 5](#5-events-are-immutable-address-resolution-is-read-side).
+
+The four-tier ladder lets us deprecate without forcing migration, while pricing each enforcement level honestly.
+
+### 8. Seed catalogue is grandfathered
+
+Part, Requirement, Assembly are taken as passing the test by precedent (per [ADR/0003](ADR/0003-schema-governance.md) named examples). Each Type's ADR cites which criteria (C1–C4) justify the promotion so the rule lands in the corpus by example, not just by definition.
+
+### 9. Catalogue work is use-case driven
+
+Promotion requires near-term Wedge or current-catalogue need, not Glossary listing. Speculative promotion bloats the schema bundle and pre-commits relationship endpoint constraints without need. The candidate pool (commitment 10) holds plausible future Types in deferred status.
+
+### 10. The Glossary's list is candidates, not commitments
+
+The [Glossary](Glossary.md) *Object (Managed Object)* entry carries the catalogue's current verdicts: seed, Tier-2 promoted, candidate pool deferred, and spine-kind dispositions for non-Objects. The Glossary updates as the catalogue evolves.
+
+### 11. The rule is itself stale-when-overridden
+
+Same authority status as the rest of this document. Disagreement hierarchy: ADRs > Manifesto > ArchitectureOverview ≈ TruthModelSchema > ArchitectureGraph.
+
+### 12. Rule evolution is governance-tier, decoupled from schema bundle bumps
+
+Amendments to the rule are TruthModelSchema-tier governance: recorded as TruthModelSchema version bumps. A rule amendment triggers schema-bundle ceremony per [ADR/0003 §11](ADR/0003-schema-governance.md) **only when the amendment changes concrete schemas, endpoint constraints, or per-Type verdicts.** Adding a disqualifier that does not retro-disqualify any existing Type is a documentation change. Changing the four capability criteria, or retro-disqualifying an existing promoted Type, requires schema-side changes and therefore a bundle bump under the normal ceremony.
+
+This keeps governance ceremony (TruthModelSchema version, per-Type ADRs) and schema ceremony (bundle bumps) decoupled, consistent with how they are decoupled elsewhere in [ADR/0003 §11](ADR/0003-schema-governance.md).
+
+### Verdict summary
+
+The Promotion Rule applied to the [Glossary](Glossary.md)'s candidate pool gives the following catalogue.
+
+**Seed Object Types** (pinned by [ADR/0003 §1 / §2](ADR/0003-schema-governance.md) named examples):
+
+- **Part**, **Requirement**, **Assembly** — per-Type ADRs follow.
+
+**Tier-2 Object Types** (cleared the rule; per-Type ADRs follow as the Wedge surfaces need):
+
+- **Drawing** — Attachment-bearing Object pattern (Vault holds rendered PDF; authored annotations / dimensions / design-intent are canonical and tip Drawing out of D7's partially-derived disqualifier).
+- **TestProcedure** (a.k.a. DV Procedure) — reusable across Objects, independently approved, traceable to Requirements.
+- **EvidenceArtifact** — Attachment-bearing Object pattern (Vault holds simulation outputs, reports); citeable by multiple Tests, Requirements, Releases.
+
+**Candidate pool, deferred** (pass capability test plausibly; deferred until concrete use case or [OQ-0016](OpenQuestions.md) reopening):
+
+- **Supplier** — likely External pointer Object (Wrapper lifecycle).
+- **Component** (purchased item) — likely External pointer Object (Wrapper or Binding lifecycle depending on sourcing). Sourcing discriminator on Part is enough for the Wedge era; split fires when endpoint constraints, lifecycle, Revision semantics, or required fields diverge, or when OQ-0016 chooses a cross-project identity model that forces the split.
+- **Software module** — likely External pointer Object (Binding lifecycle pinning project to upstream Git source's version).
+- **Electrical component** — may collapse into Part as specialization per [OQ-0006](OpenQuestions.md) sequencing.
+
+**Recognized non-Objects** (handled by other spine artifact kinds):
+
+- **Release** — Release Manifest + release transaction + events. Optional derived Release index for query ergonomics. Reopenable only if Release must participate in relationships as a revisioned engineering Object, with the recursion rule defined first.
+- **ECR / ECO** — externally governed workflow artifact in the Git host; referenced via PR URL / commit hash in events (D5).
+- **AI Decision** — event payload (proposal carries AI provenance; Transaction record carries approval). Recognized candidate explicitly rejected under current rule; reopenable through [OQ-0003](OpenQuestions.md) failed-transaction audit-log work (D2).
+- **Feature** (CAD construction-history: sketch, extrusion, fillet) — `feature:` namespace records under parent Part (D1).
+- **Test execution / result / Evidence citation / measurement** — records under parent Test or Evidence (D1).
+- **BOM, where-used reports, dashboards, trace matrices, validation summaries, impact-analysis reports, generated exports** — derived views over Truth Model state (D7).
+
 ## References
 
-- [Manifesto.md](Manifesto.md) — P3 (UUID identity), P4 (Design Intent first-class), P7 (provenance + uncertainty universal), P10 (event-based history, flat current state).
-- [Glossary.md](Glossary.md) — *Object*, *UUID*, *Number*, *Sidecar*, *Event*, *Sidecar/event invariant*, *Transaction*, *Provenance*, *Uncertainty Label*, *Lifecycle State*, *Revision*, *Iteration*, *AIADRA YAML Profile*.
-- [ArchitectureOverview.md](ArchitectureOverview.md) — Layer 1 (Truth Model) and Layer 2 (Validation) framing; this document specifies Layer 1's abstract shape.
+- [Manifesto.md](Manifesto.md) — P3 (UUID identity), P4 (Design Intent first-class), P7 (provenance + uncertainty universal), P10 (event-based history, flat current state), P11 (AIADRA Core hosts nothing — bounds the External pointer Object pattern).
+- [Glossary.md](Glossary.md) — *Object (Managed Object)* carries the Promotion Rule's current catalogue verdicts; plus *UUID*, *Number*, *Sidecar*, *Event*, *Sidecar/event invariant*, *Transaction*, *Provenance*, *Uncertainty Label*, *Lifecycle State*, *Revision*, *Iteration*, *AIADRA YAML Profile*.
+- [ArchitectureOverview.md](ArchitectureOverview.md) — Layer 1 (Truth Model) and Layer 2 (Validation) framing; this document specifies Layer 1's abstract shape and catalogue criterion.
 - [ADR/0001](ADR/0001-storage-substrate.md) — Storage substrate. Provides the sidecar/event/manifest substrate this document's address model runs on top of.
 - [ADR/0002](ADR/0002-canonical-format.md) — Canonical format. AIADRA YAML Profile; mandatory `schema_version`; deterministic JSON for manifests.
-- [ADR/0003](ADR/0003-schema-governance.md) — Schema governance. Bundle structure, `(bundle_version, artifact_kind, discriminator) → schema` lookup, three-way migration asymmetry, active/archival modes. Several S0 commitments thread directly through ADR/0003 — §2 (discriminator), §5 (event immutability), §11 (governance ceremony).
-- [OpenQuestions.md](OpenQuestions.md) — OQ-0015 (Reservation file shape, downstream of S2.5), OQ-0016 (cross-project Object identity, downstream of S3 and the cross-Object reference form in commitment 6).
-- Discussion trail (git-ignored, local only): `Docs/Discussions/20260518/Claude1.md` through current working file, paired with `Codex1.md`, `Codex3.md`, ... — the full Ring 1 working-out.
+- [ADR/0003](ADR/0003-schema-governance.md) — Schema governance. Bundle structure, `(bundle_version, artifact_kind, discriminator) → schema` lookup, three-way migration asymmetry, active/archival modes. Several spine commitments and the Promotion Rule's ceremony rules thread directly through ADR/0003 — §2 (discriminator), §5 (event immutability and sidecar migration), §6 (archival mode), §7 (validator behavior taxonomy), §11 (governance ceremony, PATCH/MINOR/MAJOR bump rules).
+- [OpenQuestions.md](OpenQuestions.md) — OQ-0003 (failed-transaction audit-log scope; AI Decision reopen channel under the Promotion Rule), OQ-0006 (multi-tool sequencing; affects Electrical component candidate verdict), OQ-0015 (Reservation file shape, downstream of S2.5), OQ-0016 (cross-project Object identity, downstream of S3 and the Promotion Rule's External pointer Object pattern).
+- Discussion trail (git-ignored, local only): `Docs/Discussions/20260518-1/` (Ring 1 spine S0–S3 close, paired Claude / Codex files), `Docs/Discussions/20260518-2/` (Promotion Rule close: Claude1 / Codex1 / Claude2 / Codex2 / Claude3) — full working-out for Ring 1 spine + catalogue rule.
