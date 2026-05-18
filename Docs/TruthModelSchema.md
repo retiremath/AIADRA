@@ -1,7 +1,7 @@
 ---
 name: aiadra-truth-model-schema
 status: draft
-version: 0.6
+version: 0.7
 last_updated: 2026-05-18
 ---
 
@@ -863,9 +863,14 @@ Adding an Object Type to the catalogue requires:
 - Number prefix mapping declared at promotion per [S2.5 commitment 10](#10-number-format-and-type--prefix-mapping-are-per-project-policy).
 - Optional Revision schema if the Type participates in formal release per [S2 commitment 1](#1-revisions-are-separate-immutable-schema-governed-artifacts).
 - Relationship endpoint constraint table updates in every relationship type schema where the new Type is a valid endpoint per [S3 commitment 7](#7-relationship-types-are-schema-governed-under-adr0003).
-- Bundle bump per [ADR/0003 §11](ADR/0003-schema-governance.md): MAJOR if the promotion breaks existing endpoint constraints; MINOR if purely additive.
-- ADR for the new Type if MAJOR; Schema Change Note if MINOR.
+- Bundle bump per [ADR/0003 §11](ADR/0003-schema-governance.md): MAJOR if the promotion breaks existing endpoint constraints or tightens validation; MINOR if purely additive.
 - For Types using commitment 5 patterns: an explicit "what AIADRA owns vs what it points at" section in the per-Type ADR, naming the pattern (Attachment-bearing vs External pointer) and, for External pointer, the lifecycle kind (wrapper vs binding).
+
+**Governance ceremony is decoupled from bundle bump class** per [commitment 12](#12-rule-evolution-is-governance-tier-decoupled-from-schema-bundle-bumps). Bundle bump class is determined by [ADR/0003](ADR/0003-schema-governance.md); governance ceremony is determined by whether the promotion carries load-bearing architectural decisions.
+
+- **ADR required.** Promotions that introduce or change a reusable modeling pattern, namespace shape, lifecycle semantics, reference form, adapter contract, relationship ownership rule, release / revision behavior, or any other convention expected to constrain later Type ADRs. The first concrete Object Type and any Type that sets a new catalogue pattern require an ADR.
+- **Schema Change Note sufficient.** Promotions that add a Type following established patterns already documented in this document or accepted per-Type ADRs, with no novel architectural commitments.
+- **Tie-breaker.** When in doubt, prefer ADR. Schema Change Note is the lighter path for clearly additive, follow-the-template Type additions.
 
 ### 7. Demotion is deprecation-first, four-tier ceremony
 
