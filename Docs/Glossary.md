@@ -1,7 +1,7 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.5
+version: 0.6
 last_updated: 2026-05-18
 ---
 
@@ -84,6 +84,8 @@ AI queries and AIADRA Core APIs declare what locality they require; the system r
 ---
 
 ## Engineering data
+
+**Part** — A managed Object Type representing a physical, internally-designed engineering component (mechanical, electrical, or other domain). First concrete Object Type in the seed catalogue per [ADR/0005](ADR/0005-object-type-part.md). Number prefix `P-NNNNNN` by default. Carries seven TypeSpecific namespaces: `parameter:`, `design_intent:`, `feature:`, `relationship:`, `published_ref:`, `geometry_ref:` (role-discriminated: `authoring_geometry` for canonical kernel geometry, `derived_export` for D7-derived release artifacts retained on the sidecar), and `material:`. Distinguished from Component (purchased / sourced item, deferred per the [Promotion Rule's verdict table](TruthModelSchema.md#verdict-summary)) by being internally designed — a sourcing discriminator on Part may carry both for the Wedge era.
 
 **Requirement** — A statement of what the product must do, constrain, or guarantee, recorded as a first-class Object. Verified by one or more DV tests. Linked to the parts, components, or software that implement it.
 

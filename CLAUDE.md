@@ -54,7 +54,7 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.5 (*Object (Managed Object)* entry updated with Promotion Rule catalogue verdicts)
+- [Glossary.md](Docs/Glossary.md) — v0.6 (Promotion Rule catalogue verdicts in *Object*; *Part* entry per ADR/0005)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.6 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; **Promotion Rule for first-class Object Types pinned 2026-05-18** with 12 commitments; catalogue work opens with seed Object Type ADRs next; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
