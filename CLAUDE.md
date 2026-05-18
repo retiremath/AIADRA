@@ -54,7 +54,7 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.9 (Promotion Rule catalogue verdicts in *Object*; *Part* / *Requirement* / *Assembly* entries per ADR/0005-0007; *Reservation file* entry rewritten and *AIADRA YAML Profile* entry generalized per ADR/0004)
+- [Glossary.md](Docs/Glossary.md) — v0.10 (new *`satisfies`* entry per ADR/0009 — first relationship-type entry; first occupant of the bundle's `relationship/` directory)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
