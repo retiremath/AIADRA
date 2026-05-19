@@ -66,12 +66,12 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.16 (new *`parameter_expression`* entry per ADR/0015 — seventh relationship-type entry; first asymmetric multi-endpoint serialization + first fact-level endpoint addressing; closes the named relationship-type catalogue except for specialized future `derived_geometry_from` / `depicts`)
+- [Glossary.md](Docs/Glossary.md) — v0.17 (new *`SoftwareModule`* entry per ADR/0016 — fifth Object Type; second Binding Object Type with Git-flavored discriminator + first-party `workspace_git` discriminator; first dual-Promotion-path Type; small `parameter_expression` entry update — "local Component" generalized to "local Binding Object")
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.6 (OQ-0016 resolved by ADR/0008 — cross-project Object identity; OQ-0015 resolved by ADR/0004 — Reservation file shape)
-- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5 updates — curated navigation / cache layer; ten active patterns (no new row in ADR/0015; three existing rows edited); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0011 through ADR/0015; seed Object Type catalogue at four; named relationship-type catalogue substantially complete)
+- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5/6 updates — curated navigation / cache layer; ten active patterns (External pointer Object row Applies-to extended to include SoftwareModule); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0012 through ADR/0016; seed Object Type catalogue at five; named relationship-type catalogue substantially complete)
 
 ## Planning framework (rings)
 
