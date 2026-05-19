@@ -67,12 +67,12 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.20 (new *`EvidenceArtifact`* entry per ADR/0019 — seventh Object Type; second Attachment-bearing Object Type; first reuse of ADR/0017 template with EvidenceArtifact-specific specializations on `source_authoring` semantic and parameter lineage; no relationship-type schema extensions — Requirement-to-Evidence citation deliberately deferred to V&V ADR)
+- [Glossary.md](Docs/Glossary.md) — v0.21 (new *`TestProcedure`* entry per ADR/0020 — eighth Object Type; third Attachment-bearing Object Type; second reuse of ADR/0017 template with TestProcedure-specific `source_authoring` specialization — canonical procedure document, not metadata-only stub; `allocates_to` target Type union additively extended with wrong-verb authoring guardrail; partial supersession of ADR/0006 line 397 "test procedure body" forward reference; small update to `allocates_to` entry's target Type union wording)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.6 (OQ-0016 resolved by ADR/0008 — cross-project Object identity; OQ-0015 resolved by ADR/0004 — Reservation file shape)
-- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5/6/7/8/9 updates — curated navigation / cache layer; eleven active patterns (Attachment-bearing Object row Applies-to extended to include EvidenceArtifact); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0015 through ADR/0019; seed Object Type catalogue at seven)
+- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5/6/7/8/9/10 updates — curated navigation / cache layer; twelve active patterns (Attachment-bearing row Applies-to extended to include TestProcedure with per-Type `source_authoring` specialization summary; new Deliverable-vs-emergent governing principle row for `allocates_to` target inclusion); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0015 through ADR/0020; seed Object Type catalogue at eight; all three Tier-2 candidates promoted)
 
 ## Planning framework (rings)
 
