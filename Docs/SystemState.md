@@ -4,17 +4,18 @@
 > **Not an authority layer.** Decisions live in ADRs; this document points to them and asks the right questions at arc time.
 > Authority hierarchy: ADRs > Manifesto > TruthModelSchema / ArchitectureOverview > SystemState.
 > Anti-goals: second TruthModelSchema; decisions not backed by ADRs; >140 lines; narrative recap; ceremonial-but-unread.
-> Last updated: arc 12 (methodology adoption) at 2026-05-18.
+> Last updated: arc 20260519-2 ([ADR/0012](ADR/0012-relationship-types-derived-from-and-refines.md)) at 2026-05-19.
 
 ## 1. Current Front
 
-**Ring 1 catalogue work — framework complete + three relationship-type ADRs landed.**
+**Ring 1 catalogue work — framework complete + five relationship-type ADRs landed (across four decisions).**
 
 - Spine + Promotion Rule + amended commitment 6 + seed catalogue (Part / Requirement / Assembly) + cross-project framework (ADR/0008) + Number allocation (ADR/0004) all pinned.
-- Relationship-type ADRs landed: [`satisfies`](ADR/0009-relationship-type-satisfies.md) (trace), [`composed_of`](ADR/0010-relationship-type-composed-of.md) (structural), [`mated_to`](ADR/0011-relationship-type-mated-to.md) (geometric / topological).
-- All three S3 cycle classes operationally active: `trace_graph`, `acyclic_dependency`, `undirected_constraint_graph`.
+- Relationship-type ADRs landed: [`satisfies`](ADR/0009-relationship-type-satisfies.md) (trace), [`composed_of`](ADR/0010-relationship-type-composed-of.md) (structural), [`mated_to`](ADR/0011-relationship-type-mated-to.md) (geometric / topological), [`derived_from` and `refines`](ADR/0012-relationship-types-derived-from-and-refines.md) (intra-Requirement trace, combined ADR; partial supersession of [ADR/0006 §"Decision 12"](ADR/0006-object-type-requirement.md) cycle-class rows).
+- All three S3 cycle classes operationally active: `trace_graph` (exercised by `satisfies`, `derived_from`, `refines`), `acyclic_dependency` (exercised by `composed_of`), `undirected_constraint_graph` (exercised by `mated_to`).
+- First arc end-to-end on the Claude↔Codex coordination protocol from arc 20260519-1; protocol caught a real Claude miss on round 1.
 
-**Next likely arc:** combined `derived_from` / `refines` ADR (Track A.3 item 1) — trace relationships inheriting [ADR/0009](ADR/0009-relationship-type-satisfies.md) patterns cleanly; expected steady-state cadence (single substantive Codex round).
+**Next likely arc:** `allocates_to` ADR — last remaining trace relationship named in [ADR/0009 §3](ADR/0009-relationship-type-satisfies.md#3-direct-cross-project-endpoint-policy--permit-with-float-semantics-owned-here). Cross-Type (Requirement → Part / Assembly), unlike ADR/0012's intra-Type shape; needs its own endpoint Type constraints. Alternative: Component per-Type ADR (Track B from snapshot 2026-05-18-12) — first concrete exercise of External pointer Object pattern from [ADR/0008 §3](ADR/0008-cross-project-object-identity.md); the [Coherence Checklist](#3-coherence-checklist) "AIADRA Core hosts nothing" item will be load-bearing.
 
 ## 2. Active Pattern Catalogue
 
@@ -27,7 +28,8 @@
 | Indirect-binding (no relationship-level binding; delegated to address mechanism; endpoint `revision_id` as cross-check) | [ADR/0011 §5](ADR/0011-relationship-type-mated-to.md) | `mated_to`; future indirect-binding (`parameter_expression` cross-Assembly likely) | Endpoint `revision_id` is never authority; hard-fail on mismatch with occurrence-path resolution |
 | Multi-endpoint stable ids (endpoints with n≥2 carry stable local id per S0 commitment 7) | [ADR/0011 §3](ADR/0011-relationship-type-mated-to.md) | `mated_to`; future multi-endpoint | Single-endpoint relationships don't need ids (positional addressing OK) |
 | Engineering-structure direct-external-endpoint NO default | [ADR/0008 §4](ADR/0008-cross-project-object-identity.md) | `composed_of`, `mated_to`; future structural | Catalog reuse routes through local Binding Objects |
-| Trace-relationship direct-external-endpoint opt-in (with Float external semantics) | [ADR/0009 §3](ADR/0009-relationship-type-satisfies.md) | `satisfies`; future trace relationships likely | Float external resolves to current released Revision; never working sidecar |
+| Trace-relationship direct-external-endpoint opt-in (with Float external semantics) | [ADR/0009 §3](ADR/0009-relationship-type-satisfies.md) | `satisfies`, `derived_from`, `refines`; future trace relationships likely | Float external resolves to current released Revision; never working sidecar |
+| Requirement-to-Requirement trace relationships (`trace_graph` cycle class; partial supersession of [ADR/0006 §"Decision 12"](ADR/0006-object-type-requirement.md) `acyclic_dependency`) | [ADR/0012](ADR/0012-relationship-types-derived-from-and-refines.md) | `derived_from`, `refines` | Cycles are graph-class-valid but semantically suspicious; tooling may warn, schema does not hard-fail |
 
 ## 3. Coherence Checklist
 
@@ -69,6 +71,7 @@ Operational yes/no questions for arc-time review (Codex walks these against each
 
 Rolling log; last 3-5 arcs; newest first.
 
+- **Arc 20260519-2 ([ADR/0012](ADR/0012-relationship-types-derived-from-and-refines.md)):** Declared `derived_from` and `refines` as intra-Requirement trace relationships in a combined ADR; inherited [ADR/0009](ADR/0009-relationship-type-satisfies.md)'s thirteen base trace-relationship pattern fields; no new pattern fields. Partial supersession of [ADR/0006 §"Decision 12"](ADR/0006-object-type-requirement.md) cycle-class rows (`acyclic_dependency` → `trace_graph` for these two relationships only). Pattern Catalogue gained one row (Requirement-to-Requirement trace relationships). First arc to run end-to-end on the Claude↔Codex coordination protocol from arc 20260519-1.
 - **Arc 11 ([ADR/0011](ADR/0011-relationship-type-mated-to.md)):** Declared undirected multi-endpoint serialization, indirect-binding, multi-endpoint stable-ids patterns. Activated `undirected_constraint_graph` cycle policy. Superseded [ADR/0010 §3](ADR/0010-relationship-type-composed-of.md) worked-example placeholder `mated_to` shape.
 - **Arc 10 ([ADR/0010](ADR/0010-relationship-type-composed-of.md)):** Declared transform shape (position + unit quaternion); canonical units at fact level (`position_mm`); binding-aware nested occurrence path resolution. Activated `acyclic_dependency` cycle policy. Superseded [ADR/0007 §2](ADR/0007-object-type-assembly.md) `relationship:<id>` prefix form.
 - **Arc 9 ([ADR/0009](ADR/0009-relationship-type-satisfies.md)):** Declared first relationship-type schema with thirteen base pattern fields; trace-relationship direct-external-endpoint opt-in with Float external semantics.
