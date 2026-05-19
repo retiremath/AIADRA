@@ -5,8 +5,19 @@
 ## At session start
 
 1. **Read the most recent file in [Docs/Snapshots/](Docs/Snapshots/)** — it contains current state, in-flight work, and the immediate next step. Snapshots are git-ignored; if the folder doesn't exist on a fresh clone, the project is at v0 with no session-passed state.
-2. **Skim [Docs/Manifesto.md](Docs/Manifesto.md) and [Docs/Glossary.md](Docs/Glossary.md)** if any term in the snapshot is unfamiliar.
-3. **The auto-memory index** at `~/.claude/projects/d--VSCode-Work/memory/MEMORY.md` is loaded automatically and contains cross-session preferences, ownership rules, and working style — see those memories for the durable rules below in long form.
+2. **Read [Docs/SystemState.md](Docs/SystemState.md)** — curated whole-system navigation / cache layer; ~one page; surfaces the current front, active patterns, Coherence Checklist, load-bearing-now, deferred items, and recent pattern changes. NOT an authority layer (decisions live in ADRs); the cache that prevents zooming-into-one-arc-and-losing-the-big-picture.
+3. **Skim [Docs/Manifesto.md](Docs/Manifesto.md) and [Docs/Glossary.md](Docs/Glossary.md)** if any term in the snapshot or SystemState is unfamiliar.
+4. **The auto-memory index** at `~/.claude/projects/d--VSCode-Work/memory/MEMORY.md` is loaded automatically and contains cross-session preferences, ownership rules, and working style — see those memories for the durable rules below in long form.
+
+## Per-arc ritual
+
+Adopted in arc 12. Three checkpoints to maintain whole-system coherence as the front widens:
+
+- **Arc open** (before drafting Claude1): read [SystemState.md](Docs/SystemState.md). ~2 min.
+- **Codex review**: Codex explicitly walks the local proposal against SystemState's [Coherence Checklist](Docs/SystemState.md#3-coherence-checklist). ~2 min Codex-side.
+- **Arc close** (before commit): ask "Does SystemState need an update?" Update if a pattern, invariant, current front, or deferred item changed. ~5 min if yes; 30 sec if no.
+
+Pattern-setting ADRs usually need an update; small refinements often don't.
 
 ## What this project is
 
@@ -36,6 +47,7 @@ AIADRA/
     ├── TruthModelSchema.md        # Ring 1 abstract Truth Model Schema spine (S0–S3) + Promotion Rule for first-class Object Types (in git)
     ├── ArchitectureGraph.json     # On-demand visualization snapshot of the Overview (in git)
     ├── OpenQuestions.md           # Register of unresolved questions (in git)
+    ├── SystemState.md             # Curated navigation / cache layer; read at arc open (in git)
     ├── ADR/                       # Architecture Decision Records (in git)
     ├── Discussions/               # Inter-AI dialogue, dated subfolders (GIT-IGNORED)
     └── Snapshots/                 # Session-end state for handoff (GIT-IGNORED)
@@ -59,6 +71,7 @@ Update this list when versions change.
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.6 (OQ-0016 resolved by ADR/0008 — cross-project Object identity; OQ-0015 resolved by ADR/0004 — Reservation file shape)
+- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption — curated navigation / cache layer; eight active patterns; nine Coherence Checklist items; ~74 lines)
 
 ## Planning framework (rings)
 
