@@ -66,12 +66,12 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.13 (new *`derived_from`* and *`refines`* entries per ADR/0012 — fourth and fifth relationship-type entries; combined intra-Requirement trace pair; bumps total relationship-type Glossary count to five)
+- [Glossary.md](Docs/Glossary.md) — v0.14 (new *`allocates_to`* entry per ADR/0013 — sixth relationship-type entry; closes the four-relationship trace family from ADR/0006 §12; first trace-relationship to opt OUT of direct cross-project endpoints, establishing target-Type-governs-cross-project precedent)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.6 (OQ-0016 resolved by ADR/0008 — cross-project Object identity; OQ-0015 resolved by ADR/0004 — Reservation file shape)
-- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2 update — curated navigation / cache layer; nine active patterns after ADR/0012's Requirement-to-Requirement row; nine Coherence Checklist items)
+- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2 update + arc 20260519-3 update — curated navigation / cache layer; nine active patterns; nine Coherence Checklist items; Recent Pattern Changes now carries ADR/0009 through ADR/0013)
 
 ## Planning framework (rings)
 
