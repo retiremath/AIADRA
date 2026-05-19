@@ -66,12 +66,12 @@ AIADRA/
 Update this list when versions change.
 
 - [Manifesto.md](Docs/Manifesto.md) — v0.3
-- [Glossary.md](Docs/Glossary.md) — v0.18 (new *`Drawing`* entry per ADR/0017 — sixth Object Type; first Attachment-bearing Object operationalization; introduces new `attachment:` namespace; D7-escape made structural via required `source_authoring` role; small `allocates_to` entry update — target Type union now includes Drawing in addition to Component / SoftwareModule)
+- [Glossary.md](Docs/Glossary.md) — v0.19 (new *`depicts`* entry per ADR/0018 — eighth relationship-type entry; closes ADR/0005 §11 / ADR/0007 §11 pre-declarations; first explicit `occurrence_context` sub-field for source-anchored asymmetric binary trace relationships whose source lacks implicit Assembly visibility; Component target included with authority guardrail)
 - [ArchitectureOverview.md](Docs/ArchitectureOverview.md) — v0.1
 - [TruthModelSchema.md](Docs/TruthModelSchema.md) — v0.8 (Ring 1 abstract spine **complete** with S0+S1+S2+S2.5+S3 pinned; Promotion Rule for first-class Object Types pinned with 12 commitments including amended commitment 6; **S0 commitment 6 amended per ADR/0008 with cross-project identity tuple, identity-locator split, revision content hash for fixed cross-project bindings, and direct-endpoint policy**; same stale-when-overridden authority as ArchitectureOverview)
 - [ArchitectureGraph.json](Docs/ArchitectureGraph.json) — v0.1 (on-demand visualization snapshot; prose Overview is master, graph drifts between refreshes)
 - [OpenQuestions.md](Docs/OpenQuestions.md) — v0.6 (OQ-0016 resolved by ADR/0008 — cross-project Object identity; OQ-0015 resolved by ADR/0004 — Reservation file shape)
-- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5/6/7 updates — curated navigation / cache layer; eleven active patterns (new Attachment-bearing Object row per ADR/0017); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0013 through ADR/0017; seed Object Type catalogue at six; both Promotion Rule named non-disqualifier patterns now operationalized)
+- [SystemState.md](Docs/SystemState.md) — v1 (arc 12 adoption + arc 20260519-2/3/4/5/6/7/8 updates — curated navigation / cache layer; eleven active patterns (Source-anchored and Direct-binding rows Applies-to updated to include the now-landed trace family); nine Coherence Checklist items; Recent Pattern Changes carries ADR/0014 through ADR/0018; seed Object Type catalogue at six; named relationship-type catalogue operationally complete except `derived_geometry_from` and `verifies`)
 
 ## Planning framework (rings)
 
