@@ -1,7 +1,7 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.23
+version: 0.24
 last_updated: 2026-05-20
 ---
 
@@ -181,7 +181,7 @@ AI queries and AIADRA Core APIs declare what locality they require; the system r
 
 **Ring** — A unit of planning work, organized concentrically around the Product Truth Model. Ring 0 = foundation docs (Manifesto, Glossary, Architecture, ADR log, Open Questions). Ring 1 = core design specs. Ring 2 = interface contracts. Ring 3 = control layer. Ring 4 = the Wedge. Ring 5 = implementation roadmap. See [Discussions/20260517/Claude1.md](Discussions/20260517/Claude1.md).
 
-**Wedge** — The smallest end-to-end vertical slice that exercises all architectural layers. Used to stress-test the architecture by building the minimum viable end-to-end loop. Current scope: *one part + one named parameter + one requirement + one sidecar + one event-log entry + one AI transaction modifying the parameter + one deterministic validation against the requirement + one release manifest*.
+**Wedge** — The smallest end-to-end vertical slice that exercises all architectural layers. Used to stress-test the architecture by building the minimum viable end-to-end loop. **Current scope (clarified by [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md))**: *one Part + one Requirement + one named parameter on the Part + one `satisfies` relationship (Part → Requirement) + the minimum coherent sidecar / event-log / Revision artifact set per ADRs [0005](ADR/0005-object-type-part.md) / [0006](ADR/0006-object-type-requirement.md) / [0009](ADR/0009-relationship-type-satisfies.md) (two sidecars at working state; events `part_created` / `requirement_created` / `relationship_created` / `parameter_changed` / `part_released` / `requirement_released`; immutable Revision copies at release; one Release Manifest pinning Part + Requirement Revisions + materialized satisfies + validation outcomes + event-log boundary) + one AI Transaction modifying the parameter (lifecycle: begin → modify → recompute → validate → human approval → commit-or-rollback per [Manifesto P5](Manifesto.md)) + one deterministic validation against the Requirement.* The old singular-count phrasing (*"one sidecar / one event-log entry"*) was a shorthand from before [ADR/0005](ADR/0005-object-type-part.md) / [ADR/0006](ADR/0006-object-type-requirement.md) / [ADR/0009](ADR/0009-relationship-type-satisfies.md) pinned the concrete artifact mechanics; ADR/0023 clarifies it without expanding the Wedge's scope ambition (still Tier-S; still single Part-Requirement pair; still one parameter; still one Transaction).
 
 **ADR (Architecture Decision Record)** — A short document recording a single load-bearing architectural decision: context, alternatives considered, decision, rationale, consequences. ADRs are the canonical record when they conflict with the Manifesto or design docs.
 

@@ -1,8 +1,8 @@
 ---
 name: aiadra-open-questions
 status: draft
-version: 0.6
-last_updated: 2026-05-18
+version: 0.7
+last_updated: 2026-05-20
 ---
 
 # AIADRA Open Questions Register
@@ -147,13 +147,13 @@ Entry schema:
 
 ### OQ-0007: Wedge scope adequacy
 
-- **Status:** `accepted-as-unresolved` — to be reviewed at end of Ring 4
-- **Surfaced in:** [Claude1.md §2 tension #6](Discussions/20260517/Claude1.md); scope refined in [Claude2.md](Discussions/20260517/Claude2.md) with [GPT2.md](Discussions/20260517/GPT2.md) acceptance
+- **Status:** `under-investigation` — reopened at Ring 4 entry per the original resurfacing rule; partially advanced by [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) which pins Wedge-001 scope (basic shape per ADRs 0005 / 0006 / 0009, clarifying the singular-count shorthand into the minimum coherent artifact set without expanding scope) + runtime (Python 3.11+ spike-only, not a production commitment) + throwaway posture (`spikes/wedge-001/`); resolution to `resolved` waits for the running spike + friction-log review per ADR/0023 §4 / §8.
+- **Surfaced in:** [Claude1.md §2 tension #6](Discussions/20260517/Claude1.md); scope refined in [Claude2.md](Discussions/20260517/Claude2.md) with [GPT2.md](Discussions/20260517/GPT2.md) acceptance; reopened in [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) per the `accepted-as-unresolved` resurfacing rule
 - **Affects:** Ring 4 deliverable
 
-**Context.** The Wedge — *one part + one named parameter + one requirement + one sidecar + one event-log entry + one AI transaction + one validation + one release manifest* — is intentionally minimal. Whether it is *enough* to validate the architecture, or whether it leaves critical gaps (e.g., assembly relationships, multi-object transactions), will only be knowable after attempting it.
+**Context.** The Wedge — *one Part + one Requirement + one parameter on the Part + one `satisfies` relationship + the minimum coherent sidecar / event-log / Revision artifact set per ADRs [0005](ADR/0005-object-type-part.md) / [0006](ADR/0006-object-type-requirement.md) / [0009](ADR/0009-relationship-type-satisfies.md) + one AI Transaction + one validation + one Release Manifest* (per [Glossary "Wedge"](Glossary.md) clarified by ADR/0023) — is intentionally minimal. Whether it is *enough* to validate the architecture, or whether it leaves critical gaps (e.g., assembly relationships, multi-object transactions, V&V instrumentation), will only be knowable after attempting it.
 
-**Current instinct.** Build it, evaluate, expand if necessary. No early decision required. Re-open this entry at end of Ring 4.
+**Current instinct (carried forward from original entry).** Build it, evaluate, expand if necessary. [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) pins the build-it shape (basic Wedge as Wedge-001) and the evaluation venue (friction log); V&V-instrumented Wedge-002 is the natural follow-up if basic Wedge-001 surfaces interesting friction patterns. Final resolution to `resolved` happens when Wedge-001 has run end-to-end and the friction log has been reviewed.
 
 ---
 
