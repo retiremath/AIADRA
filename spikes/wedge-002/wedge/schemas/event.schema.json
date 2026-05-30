@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "Event base + per-type payload (Wedge-002 — extended with V&V Object events + B3 widened relationship_created)",
+  "type": "object",
+  "required": ["schema_version", "event_id", "event_type", "timestamp", "transaction_id", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "event_id":       { "type": "string", "pattern": "^evt_[0-9]{4}$" },
+    "event_type":     { "enum": ["part_created", "requirement_created", "test_procedure_created", "test_execution_created", "evidence_artifact_created", "relationship_created", "parameter_changed", "part_released", "requirement_released", "test_procedure_released", "test_execution_released", "evidence_artifact_released"] },
+    "timestamp":      { "type": "string", "format": "date-time" },
+    "transaction_id": { "type": "string", "pattern": "^tx_[0-9]{4}$" },
+    "actor":          { "type": "string", "minLength": 1 },
+    "provenance":     { "enum": ["human_input", "ai_proposal", "computed_result", "measured"] },
+    "payload":        { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": { "const": "part_created" },
+        "payload": {
+          "type": "object",
+          "required": ["uuid", "number", "initial_sidecar"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid":            { "type": "string" },
+            "number":          { "type": "string", "pattern": "^P-[0-9]{6}$" },
+            "initial_sidecar": { "$ref": "object_part.schema.json" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "requirement_created" },
+        "payload": {
+          "type": "object",
+          "required": ["uuid", "number", "initial_sidecar"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid":            { "type": "string" },
+            "number":          { "type": "string", "pattern": "^REQ-[0-9]{6}$" },
+            "initial_sidecar": { "$ref": "object_requirement.schema.json" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "test_procedure_created" },
+        "payload": {
+          "type": "object",
+          "required": ["uuid", "number", "initial_sidecar"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid":            { "type": "string" },
+            "number":          { "type": "string", "pattern": "^TST-[0-9]{6}$" },
+            "initial_sidecar": { "$ref": "object_test_procedure.schema.json" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "test_execution_created" },
+        "payload": {
+          "type": "object",
+          "required": ["uuid", "number", "initial_sidecar"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid":            { "type": "string" },
+            "number":          { "type": "string", "pattern": "^TEX-[0-9]{6}$" },
+            "initial_sidecar": { "$ref": "object_test_execution.schema.json" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "evidence_artifact_created" },
+        "payload": {
+          "type": "object",
+          "required": ["uuid", "number", "initial_sidecar"],
+          "additionalProperties": false,
+          "properties": {
+            "uuid":            { "type": "string" },
+            "number":          { "type": "string", "pattern": "^EVD-[0-9]{6}$" },
+            "initial_sidecar": { "$ref": "object_evidence_artifact.schema.json" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "relationship_created" },
+        "payload": {
+          "type": "object",
+          "required": ["source_uuid", "relationship_record"],
+          "additionalProperties": false,
+          "properties": {
+            "source_uuid":         { "type": "string" },
+            "relationship_record": {
+              "oneOf": [
+                { "$ref": "relationship_satisfies.schema.json" },
+                { "$ref": "relationship_tested_against.schema.json" },
+                { "$ref": "relationship_verifies.schema.json" },
+                { "$ref": "relationship_cites.schema.json" },
+                { "$ref": "relationship_executes.schema.json" },
+                { "$ref": "relationship_executed_on.schema.json" },
+                { "$ref": "relationship_produces.schema.json" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "const": "parameter_changed" },
+        "payload": {
+          "type": "object",
+          "required": ["object_uuid", "parameter_id", "old_value", "new_value", "rationale"],
+          "additionalProperties": false,
+          "properties": {
+            "object_uuid":  { "type": "string" },
+            "parameter_id": { "type": "string" },
+            "old_value":    { "type": "number" },
+            "new_value":    { "type": "number" },
+            "rationale":    { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "event_type": { "enum": ["part_released", "requirement_released", "test_procedure_released", "test_execution_released", "evidence_artifact_released"] },
+        "payload": {
+          "type": "object",
+          "required": ["object_uuid", "revision_id", "revision_hash"],
+          "additionalProperties": false,
+          "properties": {
+            "object_uuid":   { "type": "string" },
+            "revision_id":   { "type": "string" },
+            "revision_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        }
+      }
+    }
+  ]
+}

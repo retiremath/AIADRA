@@ -1,0 +1,5 @@
+measurement_point,thickness_mm,operator,timestamp_iso
+A,6.97,emp_5839,2026-04-15T14:32:11Z
+B,6.99,emp_5839,2026-04-15T14:32:24Z
+C,6.98,emp_5839,2026-04-15T14:32:37Z
+mean,6.98,,

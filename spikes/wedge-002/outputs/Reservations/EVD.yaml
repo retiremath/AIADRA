@@ -1,0 +1,11 @@
+"artifact_kind": "reservation"
+"discriminator": "EVD"
+"name": "aiadra-reservation-EVD"
+"reservations":
+  "EVD-000043":
+    "allocated_at": "2026-05-30T20:47:18Z"
+    "allocated_by_transaction": "tx_0006"
+    "object_uuid": "0193abcd-1234-7890-abcd-777777777777"
+    "status": "current"
+"schema_version": "0.19.0"
+"status": "active"

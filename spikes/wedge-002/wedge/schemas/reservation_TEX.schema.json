@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reservation_TEX.schema.json",
+  "title": "Number Reservation artifact for prefix TEX- (per ADR/0004)",
+  "type": "object",
+  "required": ["schema_version", "name", "status", "artifact_kind", "discriminator", "reservations"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "name":           { "const": "aiadra-reservation-TEX" },
+    "status":         { "const": "active" },
+    "artifact_kind":  { "const": "reservation" },
+    "discriminator":  { "const": "TEX" },
+    "reservations": {
+      "type": "object",
+      "patternProperties": {
+        "^TEX-[0-9]{6}$": { "$ref": "#/$defs/reservation_value" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "reservation_value": {
+      "type": "object",
+      "required": ["object_uuid", "status", "allocated_at", "allocated_by_transaction"],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid":              { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        "status":                   { "enum": ["current", "retired"] },
+        "allocated_at":             { "type": "string", "format": "date-time" },
+        "allocated_by_transaction": { "type": "string", "pattern": "^tx_[0-9]{4}$" },
+        "retired_at":               { "type": "string", "format": "date-time" },
+        "retired_by_transaction":   { "type": "string", "pattern": "^tx_[0-9]{4}$" },
+        "retirement_reason":        { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if":   { "properties": { "status": { "const": "retired" } }, "required": ["status"] },
+          "then": { "required": ["retired_at", "retired_by_transaction", "retirement_reason"] }
+        },
+        {
+          "if":   { "properties": { "status": { "const": "current" } }, "required": ["status"] },
+          "then": { "not": { "anyOf": [
+            { "required": ["retired_at"] },
+            { "required": ["retired_by_transaction"] },
+            { "required": ["retirement_reason"] }
+          ] } }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+"artifact_kind": "spike_local_attachments_staging"
+"attachments":
+  "att_instron_log":
+    "content_hash": "sha256:e5aa4501a91e3f8c96b1734d7f9f2f44235ca9f19e21b07341c41b62f95dbc33"
+    "media_type": "text/plain"
+    "role": "source_authoring"
+    "vault_path": "vault/e5aa4501a91e3f8c96b1734d7f9f2f44235ca9f19e21b07341c41b62f95dbc33"
+  "att_measurement_data":
+    "content_hash": "sha256:e01707236f6c237ed1bbe246b3268f9cb6d204c9e59d6b7e2b4d5f69b2b0e28c"
+    "media_type": "text/csv"
+    "role": "source_authoring"
+    "vault_path": "vault/e01707236f6c237ed1bbe246b3268f9cb6d204c9e59d6b7e2b4d5f69b2b0e28c"
+  "att_procedure":
+    "content_hash": "sha256:83860f5354ac1a85bc24a096e2018b783b44e97a7c269e39c46c91ca9289cba6"
+    "media_type": "text/plain"
+    "role": "source_authoring"
+    "vault_path": "vault/83860f5354ac1a85bc24a096e2018b783b44e97a7c269e39c46c91ca9289cba6"
+"name": "wedge-002-attachments-staging"
+"status": "active"

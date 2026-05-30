@@ -1,0 +1,94 @@
+# FRICTION_LOG — Wedge-002
+
+Primary deliverable per [ADR/0024 §9](../../Docs/ADR/0024-wedge-002-spike-scope.md).
+Spike ran end-to-end on Python 3.12.4 / Windows 11 / ruamel.yaml 0.18.17 /
+jsonschema 4.26.0 on 2026-05-30 against the [ADR/0024 worked invocation](../../Docs/ADR/0024-wedge-002-spike-scope.md).
+Manifest hash: `sha256:31d12ebd9ecf063f345e831c917ead86e35ac381266c1af26845b360dd916794`.
+
+## 1. Assumptions validated
+
+- **Full V&V chain end-to-end runs clean.** 5 Object instances + 6 V&V relationships exercised; release transaction materializes Float bindings (`tested_against`, `verifies`, `cites`), verifies pre-pinned Fixed bindings (`executes`, `executed_on`, `produces`), writes 5 Revisions, emits 5 release events, builds the content-hashable Manifest. **First time the V&V framework has been exercised in code.**
+- **Attachment-bearing pattern survives contact with reality.** Three Attachment-bearing Objects (TestProcedure + EvidenceArtifact + TestExecution) each carry a `source_authoring` attachment per [ADR/0017 §2](../../Docs/ADR/0017-object-type-drawing.md) template. Per-Type specialization holds: TestProcedure's attachment is a procedure document, EvidenceArtifact's is a measurement CSV, TestExecution's is an instrument log — all semantically inspectable per [Codex1 N2 (arc 20260530-2)](../../Docs/Discussions/20260530/20260530-2/Codex1.md) absorbed in ADR/0024.
+- **Spike-grade Vault Adapter works** — content-addressed local-FS layout (`outputs/vault/<sha256-hex>/bytes`); `attach-file` is idempotent; `vault.verify()` re-reads bytes + re-hashes + matches the embedded `content_hash` on every release. Manifest authority model unchanged from Wedge-001 — attachment hashes transitively pinned via Revision content.
+- **Execution-instance Fixed-at-authoring discipline works** per [ADR/0024 §2.5 + ADR/0022 §6](../../Docs/ADR/0024-wedge-002-spike-scope.md). `init --rev-id` predeclares; `link-executes`/`link-executed-on`/`link-produces` consult `.rev-id-map` and write `binding: fixed` + `endpoints[0].revision_id` pinned at authoring; `materialize_revision` VERIFIES the pre-pin matches the predeclared map (does NOT overwrite); release allocates predeclared rev_ids to Revisions consistently.
+- **B5 `executed_on` same-Part check works** — `validate_v_and_v_chain_integrity` traverses Part → tested_against → TestProcedure ← executes ← TestExecution → executed_on → SAME Part → produces → EvidenceArtifact ← cites ← Requirement ← verifies ← TestProcedure, and the chain closes per [Codex1 B5 (arc 20260530-3)](../../Docs/Discussions/20260530/20260530-3/Codex1.md). Manifest's `vv_chain_integrity` validation_outcome reports the full traversal path.
+- **Status-sensitive `produces` cardinality** per [ADR/0022 §5](../../Docs/ADR/0022-test-execution-model.md) enforced: `executes==1` hard-fail; `executed_on>=1` hard-fail; `produces>=1` for `completed` status as DIAGNOSTIC (not hard-fail). The execution-cardinality validation outcome reports all three rules per TestExecution.
+- **Criterion-level addressing works** — `verifies` records carry target-side `endpoints[0].fact_ref: "acceptance_criterion:ac_min_thickness"`; `cites` records carry source-side `source_fact_ref: "acceptance_criterion:ac_min_thickness"`. Layer-2 dangling-reference check at release would reject malformed `acceptance_criterion:<id>` (not exercised in demo because the demo references are well-formed).
+- **`fact_provenance.derived_from` lineage discipline** per [ADR/0019 §"Parameter lineage discipline"](../../Docs/ADR/0019-object-type-evidence-artifact.md) + [ADR/0022 §"Pre-declared constraints honored"](../../Docs/ADR/0022-test-execution-model.md) holds — EvidenceArtifact's `reported_thickness_mm` parameter and TestExecution's `measured_thickness_mm` parameter both carry `derived_from: ["attachment:att_*"]` referencing their `source_authoring` attachment.
+- **All 12 negative Profile fixtures still rejected** (carried from Wedge-001). New TST/TEX/EVD outputs are AIADRA YAML Profile conformant.
+- **Manifest authority model unchanged from Wedge-001** per Codex1 N3 absorption from arc 20260530-2. Revision hashes pin Revisions; attachment hashes are transitively pinned via Revision content; `attachment_integrity` lands as validation_outcomes entries.
+
+## 2. Friction encountered
+
+- **[MODERATE — first surfaced in Wedge-002] `relationship` namespace `oneOf` errors are noisy.** Both Wedge-001 carried (Part schema with `oneOf [satisfies, tested_against]`) and Wedge-002 new (TestProcedure with `oneOf [verifies]`, TestExecution with `oneOf [executes, executed_on, produces]`) hit "does not match any of the subschemas" when a relationship record mismatches expected shape. The error doesn't surface which specific oneOf branch was the closest match. Per [Codex2 N5 (arc 20260530-1)](../../Docs/Discussions/20260530/20260530-1/Codex2.md), spike-acceptable; production-grade should split per-relationship-type schemas OR use jsonschema's `oneOf` error formatting.
+- **[MODERATE — first surfaced in Wedge-002] `.rev-id-map` workflow is unrealistic for production.** Per [ADR/0024 §2.5](../../Docs/ADR/0024-wedge-002-spike-scope.md), upfront `--rev-id` predeclaration preserves single-release demo rhythm but requires users to know future Revision UUIDs at workspace init. Production-grade likely uses staged releases (release Part+REQ+TST first, then author execution-instance relationships against existing rev_ids, then release TEX+EVD) OR a transaction-preview mechanism. Friction-log-driven; resolution path captured in ADR/0024 §2.5 (production-grade `aiadra-core` runtime ADR territory).
+- **[MODERATE — first surfaced in Wedge-002] `.attachments-staging.yaml` is a second spike-local non-canonical helper file.** Beyond `.rev-id-map`. The `attach-file` → `create-*` workflow needs to persist `(att_id → content_hash + vault_path + role + media_type)` mapping somewhere because the worked invocation references attachments by id in subsequent commands. Spike persists this in `outputs/.attachments-staging.yaml`. Production-grade alternatives: (a) `attach-file` outputs the attachment record JSON to stdout; caller passes it via flag; (b) `create-*` accepts compound flag `--attachment att_id:role:media_type:file=path` and does attach-file inline; (c) attachment records live in working sidecars from the start and `attach-file` is folded into the appropriate create command. Spike chose persistent staging for fidelity to ADR/0024 worked invocation; production decision deferred.
+- **[MINOR — Wedge-002 specific] Parameter shape hybrid retained across all Object Types.** Per [Codex1 N4 (arc 20260530-3)](../../Docs/Discussions/20260530/20260530-3/Codex1.md) requested-feedback response §9: "the parameter-shape hybrid is acceptable at spike grade because parameter names carry units." Spike uses `{id, name, value, datatype, unit, fact_provenance}` shape for ALL parameters; ADR/0019 worked example uses field-name-encoded `value_mpa: 187` shape. Both satisfy the `derived_from` load-bearing rule. Friction acknowledged; spike-grade workaround retained for cross-spike consistency with Wedge-001.
+- **[MINOR — Wedge-002 specific] No top-level `attachments` section in manifest, only validation_outcomes entries.** Per Codex1 N3 (arc 20260530-2) + ADR/0024 §"Pre-declared constraints honored": attachment hashes are transitively pinned via Revision content. The `attachment_integrity(att_*)` checks appear as validation_outcomes entries. Spike-acceptable; if a future production grade wants attachment hashes pinned at the top of the manifest for queryability, that's a manifest schema extension (separate future ADR).
+- **[MINOR — Wedge-002 specific] Spike's `validate_v_and_v_chain_integrity` works on the single-Part/single-procedure/single-TEX/single-EVD/single-Requirement basic Wedge-002 demo.** Multi-instance scenarios (multiple Parts tested by same procedure; multiple TestExecutions of same procedure; multi-procedure verification of one Requirement) are not exercised; algorithm generalizes naturally (it's nested-loop traversal), but the demo doesn't prove it. Friction-log captures the gap; Wedge-003+ scope decision can revisit.
+
+## 3. Proposed clarifications / corrections / Schema Change Notes
+
+- **No new ADR required from this friction log.** The V&V framework + Attachment-bearing pattern + execution-instance posture all survived contact with reality cleanly. Friction is field-level (workflow ergonomics, staging mechanism, schema error verbosity), not architectural.
+- **Production-grade `aiadra-core` runtime ADR** absorbs three Wedge-002 friction items: (a) `.rev-id-map` upfront predeclaration workflow → staged-release OR transaction-preview mechanism; (b) `.attachments-staging.yaml` persistence → compound CLI flag OR working-sidecar-from-start alternative; (c) `oneOf` jsonschema error verbosity → per-relationship-type schema split OR better error formatting. **Combined Wedge-001 + Wedge-002 friction logs are now the load-bearing input** for production-grade `aiadra-core` runtime ADR per [ADR/0023 §4 + ADR/0024 §3 (Posture)](../../Docs/ADR/0024-wedge-002-spike-scope.md).
+- **Schema Change Note candidates** (independent of production-grade runtime ADR):
+  - Parameter shape canonical form — field-name-encoded `value_<unit>` vs hybrid `{value, unit}`. Both shapes survive contact with reality at spike grade; canonical form choice deserves its own focused arc.
+  - Manifest top-level `attachments` section (vs transitive Revision-content pinning) — would make attachment hashes directly queryable from manifest without parsing all Revision bodies. Optional; depends on whether production query patterns need it.
+  - V&V chain integrity check generalization — algorithmic generalization to multi-Part / multi-procedure / multi-execution scenarios. The basic Wedge-002 demo confirms architecture but doesn't exercise generalization.
+
+## 4. Cross-spike friction comparison (vs [Wedge-001 FRICTION_LOG.md](../wedge-001/FRICTION_LOG.md))
+
+### Items carried forward from Wedge-001 §2
+
+| Wedge-001 item | Recurred in Wedge-002? | Notes |
+|---|---|---|
+| **F1: `parameter_changed` event payload can't derive `fact_provenance` mutation** | NO (not exercised) | Wedge-002 does not exercise `propose-parameter-change` (TestExecution parameters are authored once at create-test-execution with category=measured + derived_from lineage; no subsequent parameter_changed). Spike-grade workaround from Wedge-001 (`change_parameter` does NOT mutate `fact_provenance`) is preserved in carried code. The friction would recur IF Wedge-002 exercised parameter changes, but doesn't. |
+| **F2: acceptance-criterion threshold-expression has no canonical primitive** | NO (not exercised at verifies time) | Wedge-002's `validate_satisfies` (carried from Wedge-001) still uses the spike-local regex `"<param> shall be at least <value>"` for the satisfies check. The `verifies` relationship at release does NOT separately re-parse the threshold (V&V chain integrity check verifies chain closure; satisfies-check is the cross-product). Production-grade canonical threshold-expression primitive remains a future Schema Change Note. |
+| **F3: cross-artifact atomicity gap** | YES — same gap, larger scale | Wedge-002 release transaction writes 5 Revisions + 5 release events + 1 manifest + 3 attachment integrity re-reads. Per-artifact temp-file-then-rename atomicity (carried from Wedge-001) holds; cross-artifact atomicity (sidecar+event+Reservation across multiple Objects) still NOT guaranteed. Friction surfaces at slightly larger scale (5 Objects vs 2); fold check still detects post-hoc. No new resolution path; production-grade write-ahead log / git-commit-as-boundary / transaction-manager still the answer. |
+
+### NEW items first surfaced in Wedge-002 (see §2 above for full detail)
+
+- `relationship` namespace `oneOf` schema errors verbose
+- `.rev-id-map` upfront predeclaration unrealistic for production
+- `.attachments-staging.yaml` is a second spike-local non-canonical helper
+- Parameter shape hybrid retained across all Object Types (acknowledged-not-recurred; spike-grade workaround)
+- No top-level manifest `attachments` section (acknowledged; transitive Revision-content pinning works)
+- V&V chain integrity check single-instance only in basic Wedge-002 demo
+
+### Items that became NON-recurrent (Wedge-002 design avoided them)
+
+- **Windows newline conversion** (Wedge-001 round-2 B2) — does NOT recur. Carried `atomic_write_bytes()` + `materialize_revision` hash-from-disk-bytes from Wedge-001 round 3; manifest pins all 5 Revision hashes match on-disk bytes; `verify_revision_hashes` passes.
+- **Schema validation at every read** (Wedge-001 round-2 B3 + round-3 B1) — does NOT recur. Carried schema-validated load helpers + validated event iterator from Wedge-001; extended to cover the 3 new Object Types. Every read path in Wedge-002 uses a validated helper.
+- **AIADRA YAML Profile force-quote dumper + raw-text lint** (Wedge-001 round-2 B1) — does NOT recur. All 12 Wedge-001 negative fixtures still rejected; new TST/TEX/EVD outputs are visibly quoted.
+- **`fact_provenance.category` enum drift** — does NOT recur. Schemas uniformly accept `human_input | ai_proposal | computed_result | measured` per [Codex1 N9 absorption (arc 20260530-3)](../../Docs/Discussions/20260530/20260530-3/Codex1.md) (extension of Wedge-001 enum).
+
+## 5. Codex absorption notes
+
+### Round 1 (Codex1 → Claude2)
+
+[Codex1](../../Docs/Discussions/20260530/20260530-3/Codex1.md) caught 5 blockers + 1 non-blocker before implementation:
+
+- **B1** event_log.fold_state() must handle all `*_created` events generically — **absorbed**: `et.endswith("_created") and et != "relationship_created"` pattern.
+- **B2** carried Part/Requirement schemas must accept Wedge-002 source relationships — **absorbed**: Part `relationship` items widened to `oneOf [satisfies, tested_against]`; Requirement adds `relationship` namespace allowing `cites`.
+- **B3** `relationship_created` event schema must accept all 7 V&V relationship schemas — **absorbed**: `payload.relationship_record` widened to `oneOf` all 7.
+- **B4** manifest schema `object_number` pattern must accept TST/TEX/EVD — **absorbed**: widened to `^(P|REQ|TST|TEX|EVD)-[0-9]{6}$`. Manifest authority model unchanged.
+- **B5** V&V chain integrity must check `executed_on` same-Part + require at least one complete chain for demo release — **absorbed**: `validate_v_and_v_chain_integrity` performs same-Part check; raises `VVChainIntegrityError` if no complete chain found.
+- **N1** attachment_record_shared schema must require `media_type` + `vault_path` (full ADR/0017 committed fields) — **absorbed**: all 5 fields REQUIRED; verified in TST/TEX/EVD Revision outputs.
+
+All five Codex1 strategic acknowledgements (scope; Vault layout; `.rev-id-map`; module decomposition; methodology flag) carried forward unchanged.
+
+### Round 2 (Codex2 → Claude3)
+
+[Codex2](../../Docs/Discussions/20260530/20260530-3/Codex2.md) retracted all Codex1 B1-B5 after Claude2 absorption; caught **one new blocker + one non-blocker**:
+
+- **Codex2 B1** — release validated attachment bytes (`verify_attachment_integrity`) but did NOT validate the `parameter → derived_from → attachment` head of the full lineage chain claim from [ADR/0024 §"Pre-declared constraints honored"](../../Docs/ADR/0024-wedge-002-spike-scope.md). The schema's `contains` constraint guaranteed each parameter HAD an `attachment:<id>` entry but didn't verify the id resolved to a same-Revision attachment record. Spike-grade absorbed: new `validate_attachment_lineage(released_objects_by_uuid)` Layer-2 validator added in [`validate.py`](../wedge/validate.py); called from `cmd_release` between `verify_attachment_integrity` and `validate_execution_cardinality`; emits `attachment_lineage(<object_number>)` validation_outcomes entries; raises `AttachmentIntegrityError` (exit code 8) on (a) parameter lineage ref doesn't resolve to same-Revision attachment, (b) derived-role attachment chain doesn't terminate at `source_authoring`, (c) cycle in `derived_from_attachment_id` chain. Verified by negative test: synthesized `attachment:att_missing` reference correctly raised `AttachmentIntegrityError`. **Manifest hash changed** after the absorption (round-2 hash `sha256:31d12ebd9ecf063f...` → round-3 hash `sha256:63a9cbc96a17c807...`) because new validation_outcomes entries widen the manifest body.
+- **Codex2 N1** — `Docs/Docs/` typo in FRICTION_LOG.md ADR/0022 link absorbed (this file edited).
+
+The new validation closes the central Wedge-002 lineage-claim integrity gap surfaced by Codex2 B1; round-3 demo confirms full chain `parameter → derived_from → attachment → content_hash → vault bytes` is end-to-end enforced at release time.
+
+### Round 3 (Codex3 → Claude4)
+
+[Codex3](../../Docs/Discussions/20260530/20260530-3/Codex3.md) retracted Codex2 B1 for EVD/TEX parameter lineage; caught **one new narrow blocker + zero non-blockers**:
+
+- **Codex3 B1** — `validate_attachment_lineage()` started with `if obj_type not in ("EvidenceArtifact", "TestExecution"): continue`, so TestProcedure (the third Attachment-bearing type per ADR/0024 + inherited [ADR/0017 §2 D7-escape](../../Docs/ADR/0017-object-type-drawing.md)) got bytes-hashed by `verify_attachment_integrity` but its ADR/0017-inherited release invariants — `source_authoring` required + derived-chain termination — were NOT release-validated. JSON Schemas require `attachment minItems: 1` but do NOT require ≥1 `source_authoring` and cannot resolve refs. Spike-grade absorbed: refactored `validate_attachment_lineage` to two-tier scope. **Universal scope** (all 3 Attachment-bearing types — TestProcedure / EvidenceArtifact / TestExecution): `source_authoring` presence at release + derived-role chain termination + no cycles. **Lineage-specific scope** (EVD + TEX only): parameter→attachment lineage refs resolve to same-Revision attachment ids (TestProcedure parameters have NO `derived_from` discipline per ADR/0020 §4 — skipped from this check). Emits `attachment_lineage(<object_number>)` validation_outcomes entry per Attachment-bearing Object — **now 3 entries per release** (TST-000017 + EVD-000043 + TEX-000007). Three negative tests verified: TestProcedure without `source_authoring`, TestProcedure with derived-chain cycle, TestProcedure with empty `attachment[]` — all raise `AttachmentIntegrityError`. **Manifest hash changed** (round-3 → round-4: `sha256:63a9cbc96a17c807...` → `sha256:df75dff66edd8a0f...`) because validation_outcomes now includes 3 lineage entries (was 2).
+- Per Codex3 §"Convergence": *"This looks like a small extension of Claude3's existing validator, so I request one more round rather than dispute."* — one-more-round absorption per [PROTOCOL §Convergence exception](../../Docs/Discussions/Transfer/PROTOCOL.md).

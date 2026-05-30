@@ -1,0 +1,29 @@
+"attachment":
+  - "content_hash": "sha256:83860f5354ac1a85bc24a096e2018b783b44e97a7c269e39c46c91ca9289cba6"
+    "id": "att_procedure"
+    "media_type": "text/plain"
+    "role": "source_authoring"
+    "vault_path": "vault/83860f5354ac1a85bc24a096e2018b783b44e97a7c269e39c46c91ca9289cba6"
+"object":
+  "lifecycle": "released"
+  "name": "Drive bracket plate thickness test"
+  "number": "TST-000017"
+  "released_at": "2026-05-30T20:47:22Z"
+  "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa5"
+  "revision_label": "rev-A"
+  "schema_version": "0.19.0"
+  "type": "TestProcedure"
+  "uuid": "0193abcd-1234-7890-abcd-555555555555"
+"relationship":
+  - "binding": "fixed"
+    "endpoints":
+      - "fact_ref": "acceptance_criterion:ac_min_thickness"
+        "object_uuid": "0193abcd-1234-7890-abcd-222222222222"
+        "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa2"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "rel_verifies_req_000058"
+    "type": "verifies"
+"test_procedure":
+  "title": "Drive bracket plate thickness test"
+  "verification_method": "analysis"

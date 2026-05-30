@@ -1,0 +1,55 @@
+"attachment":
+  - "content_hash": "sha256:e5aa4501a91e3f8c96b1734d7f9f2f44235ca9f19e21b07341c41b62f95dbc33"
+    "id": "att_instron_log"
+    "media_type": "text/plain"
+    "role": "source_authoring"
+    "vault_path": "vault/e5aa4501a91e3f8c96b1734d7f9f2f44235ca9f19e21b07341c41b62f95dbc33"
+"object":
+  "lifecycle": "released"
+  "name": "TestExecution TEX-000007"
+  "number": "TEX-000007"
+  "released_at": "2026-05-30T20:47:22Z"
+  "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa6"
+  "revision_label": "rev-A"
+  "schema_version": "0.19.0"
+  "type": "TestExecution"
+  "uuid": "0193abcd-1234-7890-abcd-666666666666"
+"parameter":
+  - "datatype": "number"
+    "fact_provenance":
+      "category": "measured"
+      "derived_from":
+        - "attachment:att_instron_log"
+    "id": "param_measured_thickness_mm"
+    "name": "measured_thickness_mm"
+    "unit": "mm"
+    "value": 6.98
+"relationship":
+  - "binding": "fixed"
+    "endpoints":
+      - "object_uuid": "0193abcd-1234-7890-abcd-555555555555"
+        "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa5"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "rel_executes_tst_000017"
+    "type": "executes"
+  - "binding": "fixed"
+    "endpoints":
+      - "object_uuid": "0193abcd-1234-7890-abcd-111111111111"
+        "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa1"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "rel_executed_on_p_000058"
+    "type": "executed_on"
+  - "binding": "fixed"
+    "endpoints":
+      - "object_uuid": "0193abcd-1234-7890-abcd-777777777777"
+        "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa7"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "rel_produces_evd_000043"
+    "type": "produces"
+"test_execution":
+  "executed_on_date": "2026-04-15"
+  "execution_status": "completed"
+  "operator_identifier": "test_engineer:emp_5839"

@@ -1,0 +1,9 @@
+"artifact_kind": "spike_local_rev_id_map"
+"name": "wedge-002-rev-id-map"
+"rev_id_map":
+  "0193abcd-1234-7890-abcd-111111111111": "0193abcd-1234-7890-abcd-aaaaaaaaaaa1"
+  "0193abcd-1234-7890-abcd-222222222222": "0193abcd-1234-7890-abcd-aaaaaaaaaaa2"
+  "0193abcd-1234-7890-abcd-555555555555": "0193abcd-1234-7890-abcd-aaaaaaaaaaa5"
+  "0193abcd-1234-7890-abcd-666666666666": "0193abcd-1234-7890-abcd-aaaaaaaaaaa6"
+  "0193abcd-1234-7890-abcd-777777777777": "0193abcd-1234-7890-abcd-aaaaaaaaaaa7"
+"status": "active"

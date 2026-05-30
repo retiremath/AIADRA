@@ -1,0 +1,23 @@
+Drive Bracket Plate Thickness Test Procedure (rev B)
+=====================================================
+Document: TST-000017
+Verification method: analysis
+Specimen: P-000058 drive bracket (single Part instance)
+Approved by: test engineer (sign-off) + methodology reviewer (sign-off)
+
+Procedure:
+  1. Visually inspect specimen for surface defects per the inspection checklist.
+  2. Place specimen in Instron 5944 calibrated fixture (calibration certificate
+     CAL-2026-Q1-031).
+  3. Measure plate thickness at three points along the central beam axis using
+     a Mitutoyo digital micrometer (accuracy +/- 0.005 mm); record each
+     per-point reading.
+  4. Compute mean thickness; report as `measured_thickness_mm` field on the
+     resulting EvidenceArtifact sidecar.
+  5. Verify that `measured_thickness_mm` >= 5.0 mm per the `ac_min_thickness`
+     acceptance criterion of REQ-000058.
+
+Environmental conditions: ambient lab 20-24 degC, 30-50% relative humidity.
+Expected output: one EvidenceArtifact (evidence_kind: measurement) carrying
+                 `reported_thickness_mm` and one TestExecution recording the
+                 run (execution_status: completed when no anomalies).
