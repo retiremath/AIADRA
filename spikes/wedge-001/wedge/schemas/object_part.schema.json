@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "object_part.schema.json",
+  "title": "Part sidecar / Revision (Wedge-001 spike-grade subset)",
+  "type": "object",
+  "required": ["object", "parameter"],
+  "additionalProperties": false,
+  "properties": {
+    "object": {
+      "type": "object",
+      "required": ["uuid", "number", "type", "name", "lifecycle", "schema_version"],
+      "additionalProperties": false,
+      "properties": {
+        "uuid":            { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        "number":          { "type": "string", "pattern": "^P-[0-9]{6}$" },
+        "type":            { "const": "Part" },
+        "name":            { "type": "string", "minLength": 1 },
+        "lifecycle":       { "enum": ["in_work", "released"] },
+        "schema_version":  { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "fact_provenance": { "$ref": "#/$defs/fact_provenance" },
+        "fact_uncertainty": { "$ref": "#/$defs/fact_uncertainty" },
+        "revision_id":     { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+        "revision_label":  { "type": "string", "minLength": 1 },
+        "released_at":     { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        {
+          "if":   { "properties": { "lifecycle": { "const": "released" } }, "required": ["lifecycle"] },
+          "then": { "required": ["revision_id", "revision_label", "released_at"] }
+        }
+      ]
+    },
+    "parameter": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "value", "datatype"],
+        "additionalProperties": false,
+        "properties": {
+          "id":               { "type": "string", "pattern": "^param_[a-z0-9_]+$" },
+          "name":             { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "value":            { "type": "number" },
+          "datatype":         { "enum": ["number"] },
+          "unit":             { "type": "string", "minLength": 1 },
+          "fact_provenance":  { "$ref": "#/$defs/fact_provenance" },
+          "fact_uncertainty": { "$ref": "#/$defs/fact_uncertainty" }
+        }
+      }
+    },
+    "relationship": {
+      "type": "array",
+      "items": { "$ref": "relationship_satisfies.schema.json" }
+    }
+  },
+  "$defs": {
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"],
+      "additionalProperties": false,
+      "properties": {
+        "category":      { "enum": ["human_input", "ai_proposal", "computed_result"] },
+        "ai_agent_ref":  { "type": "string" },
+        "derived_from":  { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "fact_uncertainty": {
+      "enum": ["verified", "requires_validation", "computed", "estimated"]
+    }
+  }
+}

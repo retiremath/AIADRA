@@ -1,0 +1,23 @@
+"object":
+  "lifecycle": "in_work"
+  "name": "Drive bracket"
+  "number": "P-000058"
+  "schema_version": "0.19.0"
+  "type": "Part"
+  "uuid": "0193abcd-1234-7890-abcd-111111111111"
+"parameter":
+  - "datatype": "number"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "param_plate_thickness_mm"
+    "name": "plate_thickness_mm"
+    "unit": "mm"
+    "value": 7.0
+"relationship":
+  - "binding": "float"
+    "endpoints":
+      - "object_uuid": "0193abcd-1234-7890-abcd-222222222222"
+    "fact_provenance":
+      "category": "human_input"
+    "id": "rel_satisfies_req_000058"
+    "type": "satisfies"

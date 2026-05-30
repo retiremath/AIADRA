@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "bundle_version": "0.19.0",
+  "lookups": {
+    "sidecar": {
+      "Part": "object_part.schema.json",
+      "Requirement": "object_requirement.schema.json"
+    },
+    "revision": {
+      "Part": "object_part.schema.json",
+      "Requirement": "object_requirement.schema.json"
+    },
+    "event": {
+      "part_created": "event.schema.json",
+      "requirement_created": "event.schema.json",
+      "relationship_created": "event.schema.json",
+      "parameter_changed": "event.schema.json",
+      "part_released": "event.schema.json",
+      "requirement_released": "event.schema.json"
+    },
+    "manifest": {
+      "release": "manifest.schema.json"
+    },
+    "reservation": {
+      "P": "reservation_P.schema.json",
+      "REQ": "reservation_REQ.schema.json"
+    }
+  }
+}

@@ -1,8 +1,8 @@
 ---
 name: aiadra-open-questions
 status: draft
-version: 0.7
-last_updated: 2026-05-20
+version: 0.8
+last_updated: 2026-05-30
 ---
 
 # AIADRA Open Questions Register
@@ -147,13 +147,13 @@ Entry schema:
 
 ### OQ-0007: Wedge scope adequacy
 
-- **Status:** `under-investigation` — reopened at Ring 4 entry per the original resurfacing rule; partially advanced by [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) which pins Wedge-001 scope (basic shape per ADRs 0005 / 0006 / 0009, clarifying the singular-count shorthand into the minimum coherent artifact set without expanding scope) + runtime (Python 3.11+ spike-only, not a production commitment) + throwaway posture (`spikes/wedge-001/`); resolution to `resolved` waits for the running spike + friction-log review per ADR/0023 §4 / §8.
-- **Surfaced in:** [Claude1.md §2 tension #6](Discussions/20260517/Claude1.md); scope refined in [Claude2.md](Discussions/20260517/Claude2.md) with [GPT2.md](Discussions/20260517/GPT2.md) acceptance; reopened in [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) per the `accepted-as-unresolved` resurfacing rule
-- **Affects:** Ring 4 deliverable
+- **Status:** `resolved` — see [arc 20260530-1](Discussions/20260530/20260530-1/) ([Claude4](Discussions/20260530/20260530-1/Claude4.md) + [Codex4](Discussions/20260530/20260530-1/Codex4.md) signoff) and [`spikes/wedge-001/FRICTION_LOG.md`](../spikes/wedge-001/FRICTION_LOG.md). Wedge-001 ran end-to-end clean per [ADR/0023 §"Worked invocation"](ADR/0023-wedge-spike-scope-and-runtime.md); the friction log confirms basic Wedge scope is adequate as a validating slice — *"the basic Wedge architecture — sidecars + events + Revisions + Manifest + cross-artifact invariant — survived contact with reality cleanly. The friction is in field-level details, not architectural shape."* V&V-instrumented Wedge-002 is the natural follow-up but is NOT a scope-adequacy gap; it's an additive expansion per the build-it-evaluate-expand pattern.
+- **Surfaced in:** [Claude1.md §2 tension #6](Discussions/20260517/Claude1.md); scope refined in [Claude2.md](Discussions/20260517/Claude2.md) with [GPT2.md](Discussions/20260517/GPT2.md) acceptance; reopened in [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) per the `accepted-as-unresolved` resurfacing rule; resolved by [arc 20260530-1](Discussions/20260530/20260530-1/) after a four-round Claude↔Codex spike-writing arc that ran the spike end-to-end and reviewed the friction log.
+- **Affects:** Ring 4 deliverable (now satisfied)
 
-**Context.** The Wedge — *one Part + one Requirement + one parameter on the Part + one `satisfies` relationship + the minimum coherent sidecar / event-log / Revision artifact set per ADRs [0005](ADR/0005-object-type-part.md) / [0006](ADR/0006-object-type-requirement.md) / [0009](ADR/0009-relationship-type-satisfies.md) + one AI Transaction + one validation + one Release Manifest* (per [Glossary "Wedge"](Glossary.md) clarified by ADR/0023) — is intentionally minimal. Whether it is *enough* to validate the architecture, or whether it leaves critical gaps (e.g., assembly relationships, multi-object transactions, V&V instrumentation), will only be knowable after attempting it.
+**Resolution.** Wedge-001 implemented as a Python 3.11+ spike at [`spikes/wedge-001/`](../spikes/wedge-001/) per ADR/0023. Four-round Claude↔Codex arc: Codex1 caught four schema-shape blockers (B1 satisfies record shape; B2 Requirement canonical shape; B3 mandatory `schema_version` on events; B4 bundle `revision` lookup + manifest `manifest_type`); Codex2 caught three implementation-faithfulness blockers (Profile quoting on dump; Windows-newline-driven hash mismatch; schema validation not at every read); Codex3 caught one narrow remaining blocker (event sequencing read events unvalidated); Codex4 signoff. Final spike: 6 CLI commands matching ADR/0023 worked invocation; 8 JSON Schemas; 12 negative Profile fixtures all rejected; manifest content-hashable + pins verifiable against on-disk bytes. Friction log surfaces three load-bearing production-grade signals (`parameter_changed` event payload cannot derive `fact_provenance` mutation; acceptance-criterion threshold-expression has no canonical primitive; cross-artifact atomicity gap awaits write-ahead-log / git-commit-as-atomic-boundary) plus several minor items — all are field-level Schema Change Notes, not architectural reopens.
 
-**Current instinct (carried forward from original entry).** Build it, evaluate, expand if necessary. [ADR/0023](ADR/0023-wedge-spike-scope-and-runtime.md) pins the build-it shape (basic Wedge as Wedge-001) and the evaluation venue (friction log); V&V-instrumented Wedge-002 is the natural follow-up if basic Wedge-001 surfaces interesting friction patterns. Final resolution to `resolved` happens when Wedge-001 has run end-to-end and the friction log has been reviewed.
+**Current instinct (carried forward, now confirmed).** Build it, evaluate, expand if necessary. Build-it: done. Evaluation: passed at architectural level; friction at field level becomes future Schema Change Notes. Expand: Wedge-002 (V&V-instrumented) is the obvious next spike per ADR/0023 §10 deferral list; production-grade `aiadra-core` runtime ADR is the obvious next spec arc, informed by FRICTION_LOG.md.
 
 ---
 
