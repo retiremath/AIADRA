@@ -1,8 +1,8 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.24
-last_updated: 2026-05-20
+version: 0.25
+last_updated: 2026-05-31
 ---
 
 # AIADRA Glossary
@@ -15,7 +15,9 @@ This is a **working document**. Entries are expected to gain precision over time
 
 ## Core concepts
 
-**AIADRA** — The project itself. Treat as a brand name; pronounced /ai-AH-dra/. The original acronym AIAD (AI-Augmented Design) is the project's intellectual lineage but no longer fits the scope (which is product engineering, not only design). AIADRA stands on its own.
+**AIADRA** — The project itself. Treat as a brand name; pronounced /ai-AH-dra/. Per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md), AIADRA is positioned as an **AIAD platform** (see AIAD below) — distinct from CAD as a system category. The full product-engineering scope (mechanical, electrical, software, procurement, V&V, documentation, requirements) is what "Design" in AIAD names; the name AIADRA stands on its own as the project's brand.
+
+**AIAD** — *AI-Augmented Design.* A system category distinct from CAD (Computer-Aided Design). In CAD the computer is a tool that aids the human; in AIAD, AI is a structural engineering participant — AI proposes; the deterministic core validates; humans approve (Manifesto P2 + P5). "Design" here is category-language for the whole product-engineering authoring loop, not CAD/drawing-only scope. Pinned by [ADR/0027 §0](ADR/0027-aiad-positioning-and-native-engine-posture.md).
 
 **AIADRA Core** — The library, CLI, and tooling that we maintain under the AIADRA project. Distinguished from any future ecosystem projects (registries, hosted validators, shared part libraries) that may consume AIADRA but are not part of the core. Per Manifesto Principle 11, AIADRA Core hosts nothing.
 
@@ -28,9 +30,9 @@ This is a **working document**. Entries are expected to gain precision over time
 - **Candidate pool, deferred** (pass the capability test plausibly; deferred until concrete use case or [OQ-0016](OpenQuestions.md) reopening): Supplier, Component (purchased item), Software module, Electrical component.
 - **Recognized non-Objects** (handled by other spine artifact kinds): Feature (CAD construction-history) as records under parent Part; Test execution / Evidence citation / measurement as records under their parent; Release as Release Manifest + release transaction + events (optional derived Release index for query ergonomics); ECR / ECO as externally governed workflow artifact in the Git host, referenced via PR URL / commit hash; AI Decision as event payload (reopenable through [OQ-0003](OpenQuestions.md)); BOM and similar derived reports (where-used, dashboards, trace matrices, validation summaries, impact-analysis reports, generated exports) as D7-disqualified derived views.
 
-**Domain Engine** — An external tool that authors data in a specific domain: FreeCAD/OpenCascade for mechanical geometry, KiCad (planned) for electrical, Git for software source, etc. AIADRA modifies these tools where necessary so they expose kernel-level access and synchronize natively with the Product Truth Model.
+**Native Engine** — An AIADRA-implemented, AIAD-native authoring runtime for a specific domain (mechanical, electrical, etc.). Native Engines use third-party kernels and libraries (OCCT for mechanical geometry; KiCad's reusable libraries for electrical; etc.) as dependencies, but **never wrap third-party applications** — FreeCAD-the-application, KiCad-the-application, Solvespace-the-application are research material, not implementation dependencies. Native Engines emit canonical Objects, events, and Vault blobs directly against the Product Truth Model. Ship as ecosystem packages outside `aiadra-core` (`aiadra-mechanical`, `aiadra-electrical`, etc.) per [ADR/0027 D11](ADR/0027-aiad-positioning-and-native-engine-posture.md). Replaces the prior "Domain Engine" entry per [ADR/0027 D5](ADR/0027-aiad-positioning-and-native-engine-posture.md).
 
-**Domain Adapter** — The bridge between a Domain Engine and the Product Truth Model. Translates between the tool's native representation and AIADRA's canonical objects/events. Implements a common contract so adding a new domain is a known shape of work.
+**Data Adapter** — Lighter-weight Layer 5 category for domains that are pure data flow (no parametric authoring): format converters, external-tool data ingestion (DOORS / Polarion / ReqIF bridges for requirements; CSV/instrument-data importers for DV results), BOM exports, procurement-API consumers. Distinguished from Native Engine (which has its own parametric authoring surface) per [ADR/0027 D12](ADR/0027-aiad-positioning-and-native-engine-posture.md). May be ecosystem packages or optional core extras. Replaces the prior "Domain Adapter" entry per [ADR/0027 Q10](ADR/0027-aiad-positioning-and-native-engine-posture.md).
 
 **AI Action Protocol** — The set of stable structured contracts through which AI agents (and other automation) interact with AIADRA: `inspect`, `query`, `propose`, `modify`, `simulate/check`, `validate`, `explain`, `commit/rollback`, `release`. AI never reaches around these contracts to touch raw files or kernels directly.
 
@@ -46,9 +48,9 @@ AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized
 
 **Vault Adapter** — The contract any blob backend must implement to serve as a Vault: content-addressable read/write by hash, presence-check, fetch, garbage collection cooperation. AIADRA Core ships at least one default adapter (GitHub LFS) and project maintainers may configure others. The adapter is the only place Vault choice leaks into the rest of the system.
 
-**Workspace** — A developer's local environment: the Git clone + working tree + live Domain Engine sessions (FreeCAD, KiCad, etc.) currently open. Per-developer, high-bandwidth, where work-in-progress and AI activity live. The Workspace is the natural operating context for AI agents (Manifesto Principle 13).
+**Workspace** — A developer's local environment: the Git clone + working tree + live Native Engine sessions / Data Adapter processes currently active. Per-developer, high-bandwidth, where work-in-progress and AI activity live. The Workspace is the natural operating context for AI agents (Manifesto Principle 13).
 
-**Workspace Browser** — The UI through which a human (and AI) inspects and manipulates the Workspace. Primary Workspace Browser is VSCode + the AIADRA extension; Domain Engines (FreeCAD, KiCad) act as tool-specific sub-browsers that present authoring surfaces over the same Workspace state.
+**Workspace Browser** — The UI through which a human (and AI) inspects and manipulates the Workspace. Primary Workspace Browser is VSCode + the AIADRA extension; AIADRA Native Engines (`aiadra-mechanical`, `aiadra-electrical`, ...) act as domain-specific sub-browsers that present authoring surfaces over the same Workspace state.
 
 ---
 

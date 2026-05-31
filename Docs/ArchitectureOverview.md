@@ -1,8 +1,8 @@
 ---
 name: aiadra-architecture-overview
 status: draft
-version: 0.1
-last_updated: 2026-05-17
+version: 0.2
+last_updated: 2026-05-31
 ---
 
 # AIADRA Architecture Overview
@@ -15,7 +15,7 @@ The [Manifesto](Manifesto.md) says *what* AIADRA is and *why* it must look the w
 
 ADRs own architectural decisions; the Manifesto owns principles. When this Overview disagrees with either, the Overview is stale until updated.
 
-The five-layer framing refines the original sketch in [Discussions/20260517/Claude1.md §3](Discussions/20260517/Claude1.md): Validation is now a distinct layer (promoted by the weight Ring 0 placed on it); the original "AI Agent Infrastructure" became "AI Action Protocol & Transactions"; Domain Engines moved to the outer ring; Human UX dropped because it emerges from the other layers rather than constituting its own architectural concern.
+The five-layer framing refines the original sketch in [Discussions/20260517/Claude1.md §3](Discussions/20260517/Claude1.md): Validation is now a distinct layer (promoted by the weight Ring 0 placed on it); the original "AI Agent Infrastructure" became "AI Action Protocol & Transactions"; Native Engines + Data Adapters (called "Domain Engines" in the original sketch, per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md) terminology pivot) moved to the outer ring; Human UX dropped because it emerges from the other layers rather than constituting its own architectural concern.
 
 ## The five layers
 
@@ -27,7 +27,7 @@ AIADRA is structured as five concentric layers around the Product Truth Model. L
 | **2. Validation & Constraints** | Rule-based deterministic checks: schema, YAML Profile, sidecar/event invariant, bundle digest | [ADR/0001 §4](ADR/0001-storage-substrate.md), [ADR/0002 §1](ADR/0002-canonical-format.md), [ADR/0003 §§2,7,9](ADR/0003-schema-governance.md) |
 | **3. AI Action Protocol & Transactions** | Stable structured contracts for `inspect` / `query` / `propose` / `modify` / `validate` / `commit` / `release` | Ring 2 (deferred) |
 | **4. Project Control & Change-Order Pipeline** | The path Workspace → Commonspace: PRs as ECR/ECO, branch protection, signed releases, bundle governance | [ADR/0001 §5](ADR/0001-storage-substrate.md), [ADR/0003 §11](ADR/0003-schema-governance.md) |
-| **5. Domain Engines** | FreeCAD/OCCT, KiCad (planned), Git, procurement, DV — modified to expose kernels natively via the Domain Adapter contract | Ring 3 (Domain Adapter contract, deferred) |
+| **5. Native Engines + Data Adapters** | AIAD-native authoring runtimes per domain (mechanical / electrical) using third-party kernels and libraries (OCCT for mechanical, KiCad libs for electrical) as dependencies; **never wrapping third-party applications**. Plus Data Adapters (procurement, DV ingestion, BOM export, requirements-management bridges) for pure-data-flow domains. Software source = Git itself (no separate engine). Per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md). | Ring 3 (Native Engine Implementation contract, deferred — working ADR/0028) |
 
 Three cross-cutting structures bind the layers together: the **three-tier Commonspace / Vault / Workspace separation** (Principle 12), the **locality-tier hierarchy for AI reads** ([ADR/0001 §6](ADR/0001-storage-substrate.md)), and **schema bundle governance** ([ADR/0003](ADR/0003-schema-governance.md)).
 
@@ -110,22 +110,33 @@ The path from Workspace to Commonspace. The mechanism that promotes work into th
 
 **Boundary.** Layer 4 governs *promotion*. It does not author content (Layer 5, with Layer 3 as the AI-mediated path), define what counts as a valid artifact (Layer 2), or store the result (Layer 1).
 
-## Layer 5 — Domain Engines
+## Layer 5 — Native Engines + Data Adapters
 
-The authoring surfaces: FreeCAD/OCCT for mechanical, KiCad (planned) for electrical, Git for software source, procurement adapters, DV tools.
+Per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md): Layer 5 has two categories, not one. AIADRA implements its own AIAD-native authoring engines per domain (Native Engines), using third-party kernels and libraries as dependencies, but never wrapping third-party applications. Domains without parametric authoring surfaces use Data Adapters (lighter-weight format converters / data ingesters) instead.
+
+**Native Engines** (parametric authoring surfaces; ecosystem packages outside `aiadra-core` per ADR/0027 D11):
+- `aiadra-mechanical` — mechanical engine, depends on OCCT (OpenCascade) as a library. Inspiration from FreeCAD / Solvespace / OpenSCAD / Onshape parametric-graph + sketch-solver + feature-recomputation work — adopted into the AIADRA-native implementation rather than wrapped.
+- `aiadra-electrical` (future) — electrical engine, depends on KiCad's reusable libraries. Same posture as mechanical.
+- Additional Native Engines per domain as future ADRs land.
+
+**Data Adapters** (pure data flow; no parametric authoring):
+- Procurement (BOM export, supplier API consumers), DV ingestion (instrument data, test reports), requirements-management bridges (DOORS / Polarion / ReqIF), etc.
+- May be ecosystem packages OR optional core extras.
+
+**Software source = Git itself.** No separate Native Engine or Data Adapter; Git IS the substrate per Manifesto P12.
 
 **Responsibilities.**
 - Author domain-specific content (geometry, schematics, source, BOMs, evidence).
-- Synchronize natively with the Product Truth Model — not as wrapped external silos, but as AIADRA-aware engines that expose their kernels and emit canonical Objects and Events through the Domain Adapter contract.
+- Native Engines emit canonical Objects and Events directly against the Product Truth Model — not via translation through an external application's document model. Data Adapters convert / ingest data into canonical sidecars + events.
 
-**Realization status.** **Deferred to Ring 3 (Domain Adapter contract) and Ring 4 (the Wedge — first mechanical adapter).** Ring 0 has bounded the work:
-- The Wedge round-trips a single mechanical part through the full stack (see [Glossary: Wedge](Glossary.md)).
-- [OQ-0004](OpenQuestions.md) (FreeCAD fork-trigger criteria) and [OQ-0005](OpenQuestions.md) (upstream cooperation strategy) are deferred to Ring 3 — neither can settle until the Wedge surfaces actual friction.
-- [OQ-0006](OpenQuestions.md) (multi-tool sequencing) is deferred to Ring 5: mechanical first, then electrical, then data-only adapters.
+**Realization status.** **Deferred to Ring 3 (Native Engine Implementation contract, working ADR/0028).** Per ADR/0027:
+- [OQ-0004](OpenQuestions.md) (FreeCAD fork trigger) + [OQ-0005](OpenQuestions.md) (FreeCAD upstream cooperation) are SUPERSEDED by [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md) — no FreeCAD to fork; AIADRA does not run on FreeCAD.
+- [OQ-0006](OpenQuestions.md) (multi-tool sequencing) is REFRAMED — still mechanical-first, but means "build AIADRA-native mechanical engine first" rather than "wrap FreeCAD first."
+- Wedge-003 (working title) is the first Native Engine slice; takes a structurally different shape from prior Wedge-001 + Wedge-002 spikes (per ADR/0027 D17). Gated on a Part authoring SCN (working ADR/0029) that lands a `part_changed` event with feature / geometry / vault deltas.
 
-**Inherited principles.** P1 (tools sync to truth), P6 (parameters first, raw geometry last), P9 (layered geometry access).
+**Inherited principles.** P1 (tools sync to truth), P6 (parameters first, raw geometry last), P9 (layered geometry access). Plus ADR/0027 §1 anti-wrap posture.
 
-**Boundary.** Layer 5 produces content for Layer 1. It does not own truth, never bypasses Layers 2–4, and is replaceable in principle — a project that uses no domain engine still has a Product Truth Model.
+**Boundary.** Layer 5 produces content for Layer 1. It does not own truth, never bypasses Layers 2–4, and is replaceable in principle — a project that uses no Native Engine or Data Adapter still has a Product Truth Model.
 
 ## Cross-cutting structures
 
@@ -137,7 +148,7 @@ Manifesto Principle 12, realized concretely by [ADR/0001](ADR/0001-storage-subst
 
 - **Commonspace** — the Git remote. Holds text artifacts (sidecars, events, manifests) and references-by-hash to Vault blobs. Layer 1 truth lives here; Layer 4 governs writes to here.
 - **Vault** — pluggable blob storage (GitHub LFS default; S3 / MinIO / IPFS / NAS via Vault Adapter). Holds bytes only — no decisions, no events.
-- **Workspace** — the developer's local clone + working tree + live Domain Engine sessions. AI's natural operating context (Principle 13).
+- **Workspace** — the developer's local clone + working tree + live Native Engine sessions / Data Adapter processes. AI's natural operating context (Principle 13).
 
 ### Locality tiers and staleness tolerance
 
@@ -174,7 +185,7 @@ Ring 1 (Truth Model Schema) inherits four explicit obligations from Ring 0:
 
 Plus one captured-for-Ring-2 question: **[OQ-0016](OpenQuestions.md)** — cross-project Object identity and reuse semantics — must be reopened before Ring 2's relationship taxonomy is enumerated, because the answer materially shapes it.
 
-Ring 2 will specify Layer 3's contracts; Ring 3 will specify Layer 5's Domain Adapter bridge; Ring 4 (the Wedge) will round-trip one mechanical part through all five layers; Ring 5 (roadmap) sequences the multi-domain expansion.
+Ring 2 specified Layer 3's contracts (ADR/0026 + Phases A-D, complete in arc 20260531-10). Ring 3 will specify Layer 5's **Native Engine Implementation contract + Data Adapter integration pattern** (per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md); working ADR/0028). Ring 4 (the Wedge series) round-trips a single mechanical part through all five layers — Wedge-001 and Wedge-002 ran clean in spike form; Wedge-003 takes the AIADRA-native authoring shape per ADR/0027 D17, gated on a Part authoring SCN (working ADR/0029). Ring 5 (roadmap) sequences the multi-domain expansion.
 
 ## References
 

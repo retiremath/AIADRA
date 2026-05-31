@@ -1,8 +1,8 @@
 ---
 name: aiadra-manifesto
 status: draft
-version: 0.3
-last_updated: 2026-05-17
+version: 0.4
+last_updated: 2026-05-31
 ---
 
 # AIADRA Manifesto
@@ -14,7 +14,9 @@ last_updated: 2026-05-17
 
 AIADRA is an open-source platform for engineering real products — mechanical, electrical, software, procurement, verification, documentation — around a single source of truth designed from the ground up for AI-agent access.
 
-Existing open-source tools provide the authoring substrate: FreeCAD/OpenCascade for mechanical, KiCad (planned) for electrical, Git for software, standard formats for the rest. AIADRA does not wrap these tools loosely. It modifies them so they expose their kernels natively and synchronize with AIADRA's Product Truth Model. Truth lives in the project's own Git repo and a pluggable blob vault; AIADRA Core runs locally and operates no shared services of its own.
+AIADRA is an **AIAD platform** — AI-Augmented Design — a distinct system category from CAD. In CAD the computer is a tool; in AIAD, AI is a structural engineering participant (AI proposes; deterministic core validates; humans approve per P2 + P5). "Design" here is category-language for the whole product-engineering authoring loop, not CAD/drawing-only scope. See [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md) for the full positioning.
+
+AIADRA implements its own AIAD-native authoring engines per domain. These **Native Engines** use third-party kernels and libraries (OCCT for mechanical geometry; KiCad's reusable libraries for electrical; etc.) as dependencies, but never wrap third-party applications. The Product Truth Model owns truth; Native Engines produce content against it. Truth lives in the project's own Git repo and a pluggable blob vault; AIADRA Core runs locally and operates no shared services of its own. Existing tools like FreeCAD-the-application, KiCad-the-application, and Solvespace are studied as research material — for years of friction they have already resolved — but are not implementation dependencies.
 
 The AI is treated as an engineering participant, not a chat panel. It inspects, queries, proposes, and explains through stable structured contracts. It never mutates released truth silently. A human always approves.
 
@@ -35,7 +37,7 @@ Mechanical, electrical, and systems engineers; makers and small manufacturers; s
 9. **Geometry access is layered.** Engineering features → parametric features → sketch constraints → topological references → raw BRep, in that order of preference.
 10. **History is event-based; current state is flat.** Sidecars hold current authoritative object state. Events record approved transitions and provenance. If they disagree, validation fails — neither silently wins.
 11. **AIADRA Core hosts nothing.** Projects own their truth, infrastructure, identity, and access control. Future hosted services (registries, validators, shared libraries) belong to separate ecosystem projects, not to the core.
-12. **Three-tier separation, on Git.** AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized on Git (Commonspace) and pluggable blob storage (Vault). The developer's local clone plus live Domain Engine sessions form the Workspace.
+12. **Three-tier separation, on Git.** AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized on Git (Commonspace) and pluggable blob storage (Vault). The developer's local clone plus live Native Engine sessions and Data Adapter processes form the Workspace.
 13. **AI is Workspace-native.** It reads from the Workspace's local mirror of Commonspace, syncing first when staleness is unacceptable. It writes to Commonspace only through the change-order pipeline.
 
 ## Scale targets
@@ -61,13 +63,13 @@ Scale-sensitive decisions fall into three buckets:
 - **Not "better FreeCAD UI."** A reskin would not justify this project's existence.
 - **Not enterprise PLM.** Practical, open, understandable; not Windchill.
 - **Not a chatbot bolted onto CAD.** Native structured AI access, not natural-language scraping.
-- **Not an integration wrapper around unmodified tools.** Tools are modified to expose their kernels.
+- **Not a wrapper around any third-party application (modified or unmodified).** AIADRA implements its own AIAD-native authoring runtimes (Native Engines) per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md); third-party engineering applications are research material, not implementation dependencies. Third-party libraries and kernels (OCCT, KiCad libs) are dependencies via clean library APIs only.
 - **Not silent AI mutation of models.** Every change is observable, reversible, and approved.
 
 ## About this document
 
 This is a **working manifesto**, not a final text. It evolves as ADRs are written and prototypes meet reality. When this document and an ADR disagree, the ADR is canonical and the manifesto is stale until updated. Open architectural questions live in [OpenQuestions.md](OpenQuestions.md); resolved decisions live in `ADR/NNNN-*.md`.
 
-Terms in this document (UUID, Released Truth, Domain Engine, Commonspace, Vault, Workspace, etc.) are defined in [Glossary.md](Glossary.md).
+Terms in this document (UUID, Released Truth, AIAD, Native Engine, Data Adapter, Commonspace, Vault, Workspace, etc.) are defined in [Glossary.md](Glossary.md).
 
 Significant changes increment the version recorded in the frontmatter above; rationale lives in the relevant ADR.

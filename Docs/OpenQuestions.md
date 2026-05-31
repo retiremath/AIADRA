@@ -101,47 +101,56 @@ Entry schema:
 
 ### OQ-0004: Fork trigger — when does external work become a FreeCAD fork?
 
-- **Status:** `deferred-to-ring-3`
+- **Status:** `superseded-by-adr/0027` (2026-05-31; arc 20260531-11)
+- **Resolution:** Per [ADR/0027 D7](ADR/0027-aiad-positioning-and-native-engine-posture.md): AIADRA does not run on FreeCAD under the Native Engine posture — AIADRA implements its own AIAD-native mechanical engine using OCCT as a library. There is no FreeCAD to fork. The question's framing (workbench → patch → fork-when-blocked progression) presupposes wrap-or-modify; ADR/0027 rejects that progression. Historical question text preserved below for archaeology.
 - **Surfaced in:** [Claude1.md §2 tension #2](Discussions/20260517/Claude1.md)
-- **Affects:** Domain Engine strategy (Layer 3), governance, long-term maintenance burden
+- **Affects (historical):** Domain Engine strategy (Layer 5), governance, long-term maintenance burden
 
-**Context.** The plan sequence is: start as external workbench/plugin → patch FreeCAD where necessary → fork only when blocked. The criterion for "blocked" — *"when access paths aren't enough"* — is not operationalized. Without an explicit trigger we will drift toward fork-by-frustration, exactly what the brainstorm warned against (RealThunder/LinkStage as cautionary).
+**Context (historical).** The plan sequence is: start as external workbench/plugin → patch FreeCAD where necessary → fork only when blocked. The criterion for "blocked" — *"when access paths aren't enough"* — is not operationalized. Without an explicit trigger we will drift toward fork-by-frustration, exactly what the brainstorm warned against (RealThunder/LinkStage as cautionary).
 
-**Options to define:**
+**Options to define (historical):**
 1. **Functional criteria.** Fork only when specific access requirements cannot be satisfied as a plugin (e.g., needed event hooks not exposed; required transaction guarantees not available).
 2. **Project-readiness criteria.** Fork only when the project has the maintainer capacity, test models, and CI to carry the fork.
 3. **Both.**
 
-**Current instinct.** Defer until Ring 3 (when the Domain Adapter contract is being designed) and until the Wedge in Ring 4 surfaces actual friction. The trigger will be much easier to define once we know which FreeCAD APIs we've actually had to fight.
+**Current instinct (historical).** Defer until Ring 3 (when the Domain Adapter contract is being designed) and until the Wedge in Ring 4 surfaces actual friction. The trigger will be much easier to define once we know which FreeCAD APIs we've actually had to fight.
 
 ---
 
 ### OQ-0005: Upstream FreeCAD cooperation strategy
 
-- **Status:** `deferred-to-ring-3`
+- **Status:** `superseded-by-adr/0027` (2026-05-31; arc 20260531-11)
+- **Resolution:** Per [ADR/0027 D7](ADR/0027-aiad-positioning-and-native-engine-posture.md): AIADRA does not run on FreeCAD; there is no upstream-cooperation strategy to define beyond "study their solutions; cite their friction" (per ADR/0027 D4 — FreeCAD-the-application is research material, not implementation dependency). Historical question text preserved below for archaeology.
 - **Surfaced in:** [Claude1.md §2 tension #5](Discussions/20260517/Claude1.md)
-- **Affects:** Domain Engine strategy, public positioning, community formation
+- **Affects (historical):** Domain Engine strategy, public positioning, community formation
 
-**Context.** Modifying FreeCAD deeply enough to expose kernel-level access for AI agents is, in practice, a fork unless upstream cooperates. LGPL-2.1 permits it; the cooperation strategy with FreeCAD's existing community is undefined. The Manifesto's tone toward FreeCAD is respectful but the operational strategy is unstated.
+**Context (historical).** Modifying FreeCAD deeply enough to expose kernel-level access for AI agents is, in practice, a fork unless upstream cooperates. LGPL-2.1 permits it; the cooperation strategy with FreeCAD's existing community is undefined. The Manifesto's tone toward FreeCAD is respectful but the operational strategy is unstated.
 
-**Options:**
+**Options (historical):**
 1. **Cooperative.** Contribute changes upstream, work within FreeCAD governance, accept their pace.
 2. **Friendly fork.** Maintain a divergent branch; upstream where mutually beneficial; do not block on upstream pace.
 3. **Hard fork.** Independent project; ignore upstream direction; accept full maintenance burden.
 
-**Current instinct.** Progression: 1 → 2 if upstream pace blocks the mission. Closely related to OQ-0004; defer commitment until then.
+**Current instinct (historical).** Progression: 1 → 2 if upstream pace blocks the mission. Closely related to OQ-0004; defer commitment until then.
 
 ---
 
 ### OQ-0006: Multi-tool integration sequencing and asymmetry
 
-- **Status:** `deferred-to-ring-5`
+- **Status:** `deferred-to-ring-5` (REFRAMED 2026-05-31; arc 20260531-11; per [ADR/0027 D8](ADR/0027-aiad-positioning-and-native-engine-posture.md) — sequencing posture retained, per-domain shape pivots)
 - **Surfaced in:** [Claude1.md §2 tension #7](Discussions/20260517/Claude1.md)
 - **Affects:** Roadmap, scope of each phase
 
-**Context.** The brainstorm and the converged plan have rich detail on the mechanical path (FreeCAD/OCCT) but only sketches for electrical (KiCad), software (Git), procurement, and DV adapters. Each of these is a multi-year project on its own. The order of attack is undefined.
+**Reframing per ADR/0027 (2026-05-31).** The mechanical-first / electrical-second / data-only-later sequencing still applies; the per-domain *shape* of work changes:
+- "Mechanical first" = build the AIADRA-native mechanical engine first (`aiadra-mechanical` ecosystem package using OCCT as library per ADR/0027 D11), NOT "wrap FreeCAD first."
+- "Electrical second" = build the AIADRA-native electrical engine (`aiadra-electrical` using KiCad's reusable libraries), NOT "wrap KiCad."
+- "Data-only" (procurement, DV, requirements-ingestion) = Data Adapters per ADR/0027 D12, lighter-weight than Native Engines; software source = Git itself (no separate engine).
 
-**Current instinct.** Mechanical first (the Wedge is mechanical). Electrical second (procurement and DV both need component identity to anchor to). Software adapter and DV adapter later. Procurement may be earliest of the data-only adapters because it has the simplest data model and immediate engineering value. Capture in Ring 5 roadmap once the Wedge is proven.
+The historical context below predates ADR/0027 and uses "adapter" framing that has been superseded.
+
+**Context (historical).** The brainstorm and the converged plan have rich detail on the mechanical path (FreeCAD/OCCT) but only sketches for electrical (KiCad), software (Git), procurement, and DV adapters. Each of these is a multi-year project on its own. The order of attack is undefined.
+
+**Current instinct (historical, reframed above).** Mechanical first (the Wedge is mechanical). Electrical second (procurement and DV both need component identity to anchor to). Software adapter and DV adapter later. Procurement may be earliest of the data-only adapters because it has the simplest data model and immediate engineering value. Capture in Ring 5 roadmap once the Wedge is proven.
 
 ---
 
