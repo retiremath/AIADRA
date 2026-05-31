@@ -38,6 +38,7 @@ class TransactionKind(str, Enum):
     LINK_RELATIONSHIP = "link_relationship"
     ATTACH_FILE = "attach_file"
     RELEASE = "release"
+    ADD_ACCEPTANCE_CRITERION = "add_acceptance_criterion"
 
 
 class TransactionError(ValueError):
@@ -282,6 +283,23 @@ class TransactionDraft:
             elif et in ("drawing_changed", "test_procedure_changed",
                         "test_execution_changed", "evidence_artifact_changed"):
                 _apply_attachment_delta(state, et, event["payload"])
+            elif et == "requirement_changed":
+                # B1 absorption Phase 4 (arc 20260531-5): proposed-state fold
+                # MUST honor `acceptance_criterion_delta.added` identically to
+                # the read-side fold in validation/fold.py. Added-only per
+                # Codex1 B1; duplicate criterion id is FoldInconsistencyError.
+                uuid = event["payload"]["object_uuid"]
+                added = event["payload"]["acceptance_criterion_delta"]["added"]
+                existing = state.setdefault(uuid, {}).setdefault("acceptance_criterion", [])
+                existing_ids = {c["id"] for c in existing if isinstance(c, dict)}
+                for crit in added:
+                    if crit["id"] in existing_ids:
+                        raise _FoldErr(
+                            f"requirement_changed.added: criterion id {crit['id']!r} "
+                            f"already exists on Requirement {uuid}"
+                        )
+                    existing.append(json.loads(json.dumps(crit)))
+                    existing_ids.add(crit["id"])
             # release_staged + <type>_released are no-op on working state.
 
         # Compare each staged sidecar against the folded state.

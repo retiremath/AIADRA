@@ -732,6 +732,167 @@ def validate_final_stage_vv_chain_integrity(
     return outcomes
 
 
+def validate_final_stage_threshold_checks(
+    workspace: Path, bundle_dir: Path, draft: ReleaseDraft,
+    registry: BundleRegistry | None = None,
+) -> list[dict[str, str]]:
+    """Per ADR/0025 §5 F2 absorption (arc 20260531-5): structurally evaluate
+    every `acceptance_criterion[].threshold_expression` in the cumulative
+    release graph's Requirements at final stage.
+
+    For each (Requirement R, criterion ac) with a threshold_expression:
+      1. Resolve `parameter_ref` to a parameter in the cumulative release set;
+         emit FAIL outcome `parameter_ref out of release graph` if missing.
+         FAIL escalates to hard-fail in step 5 only if claimed.
+      2. Unit-equality cross-check: `threshold_expression.unit ==
+         referenced_parameter.unit`. **Hard-fail at release on mismatch**
+         (ReleaseConsistencyError) regardless of claim — unit-mismatch is an
+         authoring error per ADR/0025 §5 + Codex2 N2 arc 20260530-4.
+      3. Numeric comparison `referenced.value <comparison_op>
+         threshold.value`; emit PASS / FAIL outcome `threshold_check(<ac_id>)`.
+      4. Walk cumulative `satisfies` / `verifies` relationships in the release
+         graph for any claim against Requirement R:
+            - `satisfies`: whole-Requirement claim (target object_uuid matches R).
+            - `verifies`: whole-Requirement claim (no fact_ref) OR
+              criterion-specific claim (`endpoints[0].fact_ref ==
+              f"acceptance_criterion:{ac.id}"`).
+      5. If FAIL outcome AND any claim from step 4 hits, hard-fail
+         (ReleaseConsistencyError).
+
+    Known limitation (N1 absorption per Codex1 arc 20260531-5): Fixed-binding
+    `satisfies` / `verifies` relationships pinning an older Requirement
+    Revision are still treated as claims regardless of pinned `revision_id`.
+    Conservative (safer to over-fail). A future SCN may refine by evaluating
+    the criterion as it existed in the pinned Revision (which may not contain
+    the criterion at all, suppressing the claim). For Phase 4 the simpler
+    object_uuid match is sufficient.
+    """
+    outcomes: list[dict[str, str]] = []
+    cumulative = _cumulative_released_revisions(
+        workspace, bundle_dir, draft, registry=registry,
+    )
+
+    # Index parameters by `<uuid>:parameter:<id>` for O(1) resolution.
+    param_index: dict[str, dict[str, Any]] = {}
+    for obj_uuid, content in cumulative.items():
+        for p in content.get("parameter", []) or []:
+            pid = p.get("id")
+            if pid:
+                param_index[f"{obj_uuid}:parameter:{pid}"] = p
+
+    # Pre-build the claim index: for each Requirement uuid, list (rel_type,
+    # rel_record, source_obj_uuid) tuples for any satisfies/verifies targeting it.
+    claims_by_req: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
+    for src_uuid, content in cumulative.items():
+        for rel in content.get("relationship", []) or []:
+            rt = rel.get("type")
+            if rt not in ("satisfies", "verifies"):
+                continue
+            endpoints = rel.get("endpoints", [])
+            if not endpoints:
+                continue
+            tgt_uuid = endpoints[0].get("object_uuid")
+            if not tgt_uuid:
+                continue
+            claims_by_req.setdefault(tgt_uuid, []).append((rt, rel, src_uuid))
+
+    for req_uuid, content in cumulative.items():
+        if content.get("object", {}).get("type") != "Requirement":
+            continue
+        req_num = content["object"]["number"]
+        for ac in content.get("acceptance_criterion", []) or []:
+            te = ac.get("threshold_expression")
+            if te is None:
+                continue
+            ac_id = ac["id"]
+            check_name = f"threshold_check({req_num}/{ac_id})"
+
+            pref = param_index.get(te["parameter_ref"])
+            if pref is None:
+                outcome = {
+                    "check_name": check_name,
+                    "result": "FAIL",
+                    "details": (
+                        f"parameter_ref {te['parameter_ref']!r} not in cumulative "
+                        f"release graph; threshold cannot be evaluated"
+                    ),
+                }
+            else:
+                # Step 2: unit-equality hard-fail.
+                pref_unit = pref.get("unit")
+                if pref_unit != te["unit"]:
+                    raise ReleaseConsistencyError(
+                        f"threshold_expression unit mismatch on {req_num}/{ac_id}: "
+                        f"criterion declares unit {te['unit']!r}, referenced "
+                        f"parameter declares unit {pref_unit!r}"
+                    )
+                # Step 3: numeric comparison.
+                lhs = pref.get("value")
+                rhs = te["value"]
+                op = te["comparison_op"]
+                if not isinstance(lhs, (int, float)):
+                    outcome = {
+                        "check_name": check_name,
+                        "result": "FAIL",
+                        "details": (
+                            f"parameter {te['parameter_ref']!r} has non-numeric "
+                            f"value {lhs!r}; cannot compare"
+                        ),
+                    }
+                else:
+                    passed = _eval_threshold(lhs, op, rhs)
+                    outcome = {
+                        "check_name": check_name,
+                        "result": "PASS" if passed else "FAIL",
+                        "details": (
+                            f"{lhs} {op} {rhs} {te['unit']} -> "
+                            f"{'PASS' if passed else 'FAIL'}"
+                        ),
+                    }
+            outcomes.append(outcome)
+
+            # Step 4-5: FAIL + claim hits → hard-fail.
+            if outcome["result"] == "FAIL":
+                for rt, rel, src_uuid in claims_by_req.get(req_uuid, []):
+                    endpoints = rel.get("endpoints", [])
+                    if not endpoints:
+                        continue
+                    fact_ref = endpoints[0].get("fact_ref")
+                    claims_this_criterion = (
+                        rt == "satisfies"  # whole-Requirement always
+                        or (rt == "verifies"
+                            and (fact_ref is None
+                                 or fact_ref == f"acceptance_criterion:{ac_id}"))
+                    )
+                    if claims_this_criterion:
+                        src_num = cumulative[src_uuid]["object"]["number"]
+                        raise ReleaseConsistencyError(
+                            f"threshold_check FAIL on {req_num}/{ac_id} is claimed "
+                            f"by {src_num} {rt} {req_num}"
+                            + (f" (fact_ref={fact_ref!r})" if fact_ref else "")
+                            + f"; release hard-fails per ADR/0025 §5. "
+                            f"Outcome details: {outcome['details']}"
+                        )
+    return outcomes
+
+
+def _eval_threshold(lhs: float, op: str, rhs: float) -> bool:
+    """Per ADR/0025 §5: numeric-only comparison ops."""
+    if op == ">=":
+        return lhs >= rhs
+    if op == "<=":
+        return lhs <= rhs
+    if op == "==":
+        return lhs == rhs
+    if op == "!=":
+        return lhs != rhs
+    if op == ">":
+        return lhs > rhs
+    if op == "<":
+        return lhs < rhs
+    raise ReleaseConsistencyError(f"Unknown comparison_op: {op!r}")
+
+
 def validate_release_replay(
     workspace: Path, bundle_dir: Path,
     registry: BundleRegistry | None = None,

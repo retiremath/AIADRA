@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             return c.cmd_create_object(obj_type, rest)
     if cmd == "change-parameter":
         return c.cmd_change_parameter(rest)
+    if cmd == "add-acceptance-criterion":
+        return c.cmd_add_acceptance_criterion(rest)
     for rel_type in _LINK_TYPES:
         if cmd == f"link-{rel_type.replace('_', '-')}":
             return c.cmd_link_relationship(rel_type, rest)
@@ -110,6 +112,12 @@ State-changing (Phase 1):
   create-test-execution <workspace> <number> <name>
   create-evidence-artifact <workspace> <number> <name>
   change-parameter <workspace> <obj-num> <param-id> <new-value> <rationale>
+  add-acceptance-criterion <workspace> <req-num> <criterion-id> <text>
+                           [--language en] [--format freeform|ears]
+                           [--threshold-parameter-ref <uuid>:parameter:<id>]
+                           [--threshold-op {{>=,<=,==,!=,>,<}}]
+                           [--threshold-value <number>]
+                           [--threshold-unit <string>]
   link-satisfies <workspace> <part> <req>
   link-tested-against <workspace> <part> <test-proc>
   link-verifies <workspace> <test-proc> <req>
@@ -119,7 +127,7 @@ State-changing (Phase 1):
   link-produces <workspace> <test-exec> <evidence>
   attach-file <workspace> <obj-num> <file-path> --role <role>
   release <workspace> --objects <num1,num2,...> [--stage N] [--no-final]
-  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0}} [--dry-run]
+  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0}} [--dry-run]
 
 Misc:
   --version                                   Print version

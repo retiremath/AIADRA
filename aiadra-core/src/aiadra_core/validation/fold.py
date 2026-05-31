@@ -132,6 +132,23 @@ def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[st
                     break
         elif et in _ATTACHMENT_CHANGED_EVENTS:
             _apply_attachment_delta(state, et, event["payload"])
+        elif et == "requirement_changed":
+            # F2 absorption Phase 4 (arc 20260531-5; Codex1 B1): added-only delta.
+            # Reject duplicate criterion ids; append each new criterion to the
+            # Requirement's acceptance_criterion[] list. updated/removed deltas
+            # are schema-rejected and never reach this branch.
+            uuid = event["payload"]["object_uuid"]
+            added = event["payload"]["acceptance_criterion_delta"]["added"]
+            existing = state[uuid].setdefault("acceptance_criterion", [])
+            existing_ids = {c["id"] for c in existing if isinstance(c, dict)}
+            for crit in added:
+                if crit["id"] in existing_ids:
+                    raise FoldInconsistencyError(
+                        f"requirement_changed.added: criterion id {crit['id']!r} "
+                        f"already exists on Requirement {uuid}"
+                    )
+                existing.append(json.loads(json.dumps(crit)))
+                existing_ids.add(crit["id"])
         elif et == "release_staged":
             # Audit-oriented per B1 absorption; no working-state mutation.
             pass

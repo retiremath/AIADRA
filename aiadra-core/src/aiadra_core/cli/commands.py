@@ -27,6 +27,7 @@ from ..transaction.boundary import (
     git_repo_dirty_for_aiadra_paths,
 )
 from ..transaction.operations import (
+    add_acceptance_criterion,
     attach_file,
     change_parameter,
     create_object,
@@ -200,6 +201,97 @@ def cmd_change_parameter(argv: list[str]) -> int:
         )
     except TransactionError as e:
         print(f"change-parameter failed: {e}", file=sys.stderr)
+        return 2
+    return _run_draft(draft)
+
+
+def cmd_add_acceptance_criterion(argv: list[str]) -> int:
+    """aiadra add-acceptance-criterion <workspace> <req-number> <criterion-id> <text>
+                                       [--language en] [--format freeform|ears]
+                                       [--threshold-parameter-ref <uuid>:parameter:<id>]
+                                       [--threshold-op {>=,<=,==,!=,>,<}]
+                                       [--threshold-value <number>]
+                                       [--threshold-unit <string>]
+                                       [--verification-method {test,analysis,inspection,demonstration}]
+                                       [--reference <ref>]*  [--name <name>]
+
+    Per F2 absorption Phase 4 (arc 20260531-5): if ANY --threshold-* flag is
+    present, the FULL quartet (--threshold-parameter-ref + --threshold-op +
+    --threshold-value + --threshold-unit) is REQUIRED. Otherwise exit 2.
+    """
+    import argparse
+    p = argparse.ArgumentParser(prog="aiadra add-acceptance-criterion")
+    p.add_argument("workspace")
+    p.add_argument("req_number")
+    p.add_argument("criterion_id")
+    p.add_argument("text")
+    p.add_argument("--language", default="en")
+    p.add_argument("--format", default="freeform", choices=["freeform", "ears"])
+    p.add_argument(
+        "--threshold-parameter-ref", default=None,
+        help="Fact-level parameter reference per ADR/0015: <uuid>:parameter:<id>",
+    )
+    p.add_argument(
+        "--threshold-op", default=None,
+        choices=[">=", "<=", "==", "!=", ">", "<"],
+    )
+    p.add_argument("--threshold-value", default=None, type=float)
+    p.add_argument(
+        "--threshold-unit", default=None,
+        help="Required when any --threshold-* flag is present; byte-equality "
+             "to referenced parameter's unit (Layer-2 hard-fail at release).",
+    )
+    p.add_argument(
+        "--verification-method", default=None,
+        choices=["test", "analysis", "inspection", "demonstration"],
+    )
+    p.add_argument("--reference", action="append", default=None)
+    p.add_argument("--name", default=None)
+    args = p.parse_args(argv)
+
+    threshold_flags = [
+        args.threshold_parameter_ref, args.threshold_op,
+        args.threshold_value, args.threshold_unit,
+    ]
+    threshold_expression: dict | None = None
+    if any(f is not None for f in threshold_flags):
+        missing = []
+        if args.threshold_parameter_ref is None:
+            missing.append("--threshold-parameter-ref")
+        if args.threshold_op is None:
+            missing.append("--threshold-op")
+        if args.threshold_value is None:
+            missing.append("--threshold-value")
+        if args.threshold_unit is None:
+            missing.append("--threshold-unit")
+        if missing:
+            print(
+                f"add-acceptance-criterion: --threshold-* quartet incomplete; "
+                f"missing {', '.join(missing)}. Per F2 (arc 20260531-5): if ANY "
+                f"--threshold-* flag is present, the full quartet is REQUIRED.",
+                file=sys.stderr,
+            )
+            return 2
+        threshold_expression = {
+            "parameter_ref": args.threshold_parameter_ref,
+            "comparison_op": args.threshold_op,
+            "value": args.threshold_value,
+            "unit": args.threshold_unit,
+        }
+
+    workspace = Path(args.workspace).resolve()
+    bundle = _pin_bundle(workspace)
+    try:
+        draft = add_acceptance_criterion(
+            workspace, bundle, args.req_number, args.criterion_id, args.text,
+            language=args.language, format=args.format,
+            threshold_expression=threshold_expression,
+            verification_method=args.verification_method,
+            references=args.reference,
+            name=args.name,
+        )
+    except TransactionError as e:
+        print(f"add-acceptance-criterion failed: {e}", file=sys.stderr)
         return 2
     return _run_draft(draft)
 

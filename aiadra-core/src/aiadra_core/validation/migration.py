@@ -97,6 +97,18 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.22.0",
+        to_version="0.23.0",
+        notes=[
+            "v0.22.0 → v0.23.0 is a MINOR additive bump (F2 SCN: optional "
+            "`acceptance_criterion[].threshold_expression` primitive + new "
+            "`requirement_changed` event with added-only `acceptance_criterion_delta` "
+            "payload per Codex1 B1 + shared `_shared/acceptance_criterion_item.schema.json`). "
+            "All existing canonical artifacts validate unchanged; no data migration."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

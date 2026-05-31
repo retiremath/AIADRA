@@ -56,6 +56,7 @@ from ..validation.release import (
     validate_attachment_integrity,
     validate_attachment_lineage,
     validate_final_stage_cardinality,
+    validate_final_stage_threshold_checks,
     validate_final_stage_vv_chain_integrity,
     validate_release_draft,
     validate_stage_dependency_closure,
@@ -360,6 +361,115 @@ def change_parameter(
         f"",
         f"Transaction {transaction_id} parameter {parameter_id} on {obj_number} "
         f"{old_value} → {new_value}. Rationale: {rationale}",
+    ]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# ADD ACCEPTANCE CRITERION (Phase 4 F2 SCN arc 20260531-5)
+# -----------------------------------------------------------------------------
+
+
+def add_acceptance_criterion(
+    workspace: Path,
+    bundle: BundleHandle,
+    req_number: str,
+    criterion_id: str,
+    criterion_text: str,
+    *,
+    language: str = "en",
+    format: str = "freeform",
+    threshold_expression: dict[str, Any] | None = None,
+    verification_method: str | None = None,
+    references: list[str] | None = None,
+    name: str | None = None,
+) -> TransactionDraft:
+    """Append a new acceptance_criterion to a Requirement sidecar.
+
+    Per Codex1 B1 absorption arc 20260531-5: emits a `requirement_changed`
+    event with an `acceptance_criterion_delta.added` payload. Duplicate
+    criterion id rejected at fold time (both read-side fold.py and
+    proposed-state boundary._validate_proposed_fold).
+
+    `threshold_expression`, if supplied, is the F2 canonical primitive per
+    ADR/0025 §5: numeric-only, unit-REQUIRED, no free-text parsing. Layer-2
+    evaluation runs at final-stage release.
+    """
+    found = find_reservation_entry_by_number(workspace, req_number)
+    if found is None:
+        raise TransactionError(f"Object not found: {req_number}")
+    _, entry = found
+    obj_uuid = entry["object_uuid"]
+    sidecar = load_sidecar(workspace, obj_uuid)
+    if sidecar.get("object", {}).get("type") != "Requirement":
+        raise TransactionError(
+            f"add-acceptance-criterion target must be Requirement, "
+            f"got {sidecar.get('object', {}).get('type')!r}"
+        )
+
+    # Build the new criterion item per shared schema shape.
+    new_criterion: dict[str, Any] = {
+        "id": criterion_id,
+        "criterion": {
+            "text": criterion_text,
+            "language": language,
+            "format": format,
+        },
+    }
+    if name is not None:
+        new_criterion["name"] = name
+    if references is not None:
+        new_criterion["references"] = list(references)
+    if verification_method is not None:
+        new_criterion["verification_method"] = verification_method
+    if threshold_expression is not None:
+        new_criterion["threshold_expression"] = deepcopy(threshold_expression)
+
+    # Duplicate id check (cheap; full check happens at fold time too).
+    existing_ids = {
+        c.get("id") for c in sidecar.get("acceptance_criterion", []) if isinstance(c, dict)
+    }
+    if criterion_id in existing_ids:
+        raise TransactionError(
+            f"Criterion id {criterion_id!r} already exists on {req_number}"
+        )
+
+    new_sidecar = deepcopy(sidecar)
+    new_sidecar.setdefault("acceptance_criterion", []).append(deepcopy(new_criterion))
+
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    event_id = next_event_id(workspace, bundle.bundle_dir)
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": "requirement_changed",
+        "timestamp": _now_iso(),
+        "transaction_id": transaction_id,
+        "payload": {
+            "object_uuid": obj_uuid,
+            "acceptance_criterion_delta": {
+                "added": [deepcopy(new_criterion)],
+            },
+        },
+    }
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle,
+        kind=TransactionKind.ADD_ACCEPTANCE_CRITERION,
+        transaction_id=transaction_id,
+    )
+    draft.stage_sidecar(obj_uuid, new_sidecar)
+    draft.stage_event(event)
+    draft.pre_validate_hooks.append(
+        _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
+    )
+    draft.commit_message_lines = [
+        f"aiadra: add-acceptance-criterion {req_number} {criterion_id}",
+        "",
+        f"Transaction {transaction_id} appends criterion {criterion_id!r} "
+        f"to Requirement {req_number}"
+        + (f" with threshold_expression" if threshold_expression else "")
+        + ".",
     ]
     return draft
 
@@ -772,6 +882,15 @@ def release(
             workspace, bundle.bundle_dir, proto_release_draft,
         )
         validation_outcomes.extend(vv_outcomes)
+        # F2 absorption Phase 4 arc 20260531-5: per ADR/0025 §5 threshold
+        # checks run final-stage only (parallel to vv_chain + cardinality).
+        # Unit mismatch → ReleaseConsistencyError (hard-fail). FAIL outcome
+        # with a `satisfies`/`verifies` claim → ReleaseConsistencyError.
+        # FAIL outcome without a claim → manifest carries FAIL diagnostic.
+        threshold_outcomes = validate_final_stage_threshold_checks(
+            workspace, bundle.bundle_dir, proto_release_draft,
+        )
+        validation_outcomes.extend(threshold_outcomes)
 
     # Build FINAL manifest with all outcomes baked in
     manifest = {

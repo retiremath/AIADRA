@@ -387,5 +387,9 @@ def test_phase3_w3_registered_steps_cover_all_bundle_transitions():
     """
     versions = [s.from_version for s in REGISTERED_STEPS]
     to_versions = [s.to_version for s in REGISTERED_STEPS]
-    assert versions == ["0.19.0", "0.20.0", "0.21.0"]
-    assert to_versions == ["0.20.0", "0.21.0", "0.22.0"]
+    # Phase 3 invariants: chain starts at 0.19.0 and is contiguous.
+    assert versions[0] == "0.19.0"
+    assert "0.20.0" in to_versions and "0.21.0" in to_versions and "0.22.0" in to_versions
+    # Future-proof: chain links from_version[i+1] == to_version[i].
+    for i in range(len(REGISTERED_STEPS) - 1):
+        assert REGISTERED_STEPS[i + 1].from_version == REGISTERED_STEPS[i].to_version
