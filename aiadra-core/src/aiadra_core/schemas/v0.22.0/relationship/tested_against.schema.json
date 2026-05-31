@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tested_against relationship record (Part | Assembly → TestProcedure; per ADR/0021; W3 base-factored arc 20260531-4)",
+  "allOf": [
+    {"$ref": "_base.schema.json"},
+    {
+      "if": {
+        "properties": {"binding": {"const": "fixed"}},
+        "required": ["binding"]
+      },
+      "then": {
+        "properties": {
+          "endpoints": {
+            "items": {"required": ["object_uuid", "revision_id"]}
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "type": {"const": "tested_against"},
+    "endpoints": {
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["object_uuid"],
+        "additionalProperties": false,
+        "properties": {
+          "object_uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "revision_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      }
+    },
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": ["human_input", "ai_proposal", "computed_result", "measured"]
+        },
+        "ai_agent_ref": {"type": "string"},
+        "derived_from": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

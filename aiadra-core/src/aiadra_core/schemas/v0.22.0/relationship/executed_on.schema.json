@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "executed_on relationship record (TestExecution → Part | Assembly; Fixed-only per ADR/0022 §6; W3 base-factored arc 20260531-4)",
+  "allOf": [
+    {"$ref": "_base.schema.json"}
+  ],
+  "properties": {
+    "type": {"const": "executed_on"},
+    "binding": {"const": "fixed"},
+    "endpoints": {
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["object_uuid", "revision_id"],
+        "additionalProperties": false,
+        "properties": {
+          "object_uuid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "revision_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        }
+      }
+    },
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": ["human_input", "ai_proposal", "computed_result", "measured"]
+        },
+        "ai_agent_ref": {"type": "string"},
+        "derived_from": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

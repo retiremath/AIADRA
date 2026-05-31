@@ -68,6 +68,15 @@ class BundleHandle:
 
         Carries Phase 0 schema.py pattern: inject $id matching the schema's file URI
         so relative $refs resolve through the bundle Registry.
+
+        For artifact_kind in {sidecar, revision} with a `relationship[]` array, a
+        second pass dispatches per-relationship validation per W3 (arc 20260531-4):
+        each item is looked up in `lookups.relationship` by its `type` field, and
+        the per-type schema validates the item with named errors. Per-source-object
+        allow-list (lookups.relationship_types_by_source_object_type) is checked
+        AFTER schema existence per Codex1 B1 ordering — so unknown types yield
+        "bundle has no schema for relationship type X" and known-but-disallowed
+        types yield "type X not allowed on Object Type Y".
         """
         rel = self.resolve_schema_path(artifact_kind, discriminator)
         schema = json.loads((self.bundle_dir / rel).read_text(encoding="utf-8"))
@@ -85,6 +94,60 @@ class BundleHandle:
                 f"artifact_kind={artifact_kind!r}, discriminator={discriminator!r}):\n  - "
                 + "\n  - ".join(msgs)
             )
+
+        if artifact_kind in ("sidecar", "revision"):
+            self._validate_relationships(artifact, discriminator)
+
+    def _validate_relationships(
+        self, artifact: dict[str, Any], object_type: str
+    ) -> None:
+        """Second-pass per-relationship-type dispatch per ADR/0025 §9 (W3 SCN arc 20260531-4)."""
+        relationships = artifact.get("relationship") or []
+        if not relationships:
+            return
+        lookups = self.index.get("lookups", {})
+        rel_lookup = lookups.get("relationship")
+        if rel_lookup is None:
+            return
+        allowed_by_object = lookups.get("relationship_types_by_source_object_type", {})
+        allowed = allowed_by_object.get(object_type, [])
+
+        for idx, rec in enumerate(relationships):
+            rt = rec.get("type") if isinstance(rec, dict) else None
+            if rt is None:
+                raise SchemaValidationError(
+                    f"relationship[{idx}]: missing 'type' field; cannot dispatch"
+                )
+            rel_schema_path = rel_lookup.get(rt)
+            if rel_schema_path is None:
+                raise SchemaValidationError(
+                    f"relationship[{idx}]: bundle {self.bundle_version} has no schema "
+                    f"for relationship type {rt!r}"
+                )
+            if rt not in allowed:
+                raise SchemaValidationError(
+                    f"relationship[{idx}]: type {rt!r} not allowed on Object Type "
+                    f"{object_type!r}; allowed: {list(allowed)}"
+                )
+            rel_schema = json.loads(
+                (self.bundle_dir / rel_schema_path).read_text(encoding="utf-8")
+            )
+            rel_uri = (self.bundle_dir / rel_schema_path).resolve().as_uri()
+            rel_schema_with_id = {"$id": rel_uri, **rel_schema}
+            validator = Draft202012Validator(rel_schema_with_id, registry=self.registry)
+            rec_errors = sorted(
+                validator.iter_errors(rec), key=lambda e: str(e.path)
+            )
+            if rec_errors:
+                msgs = [
+                    f"relationship[{idx}]/{rt}/"
+                    f"{'/'.join(str(p) for p in e.absolute_path)}: {e.message}"
+                    for e in rec_errors
+                ]
+                raise SchemaValidationError(
+                    f"Relationship validation failed (bundle {self.bundle_version}):\n  - "
+                    + "\n  - ".join(msgs)
+                )
 
 
 def _compute_bundle_digest(bundle_dir: Path) -> str:

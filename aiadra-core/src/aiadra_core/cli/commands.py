@@ -304,42 +304,35 @@ def cmd_release(argv: list[str]) -> int:
 
 
 def cmd_migrate(argv: list[str]) -> int:
-    """aiadra migrate <workspace> --to-bundle {0.20.0,0.21.0} [--dry-run]
+    """aiadra migrate <workspace> --to-bundle <version> [--dry-run]
 
-    Phase 2 (arc 20260531-3): added 0.21.0 target dispatching to
-    apply_migration_v0_20_0_to_v0_21_0.
+    Phase 3 W3 (arc 20260531-4): chain-aware refactor. `--to-bundle` accepts
+    any registered target version; chain walks from current pin through
+    REGISTERED_STEPS, writing the final pin once atomically at chain end.
     """
     import argparse
     from ..validation.migration import (
-        apply_migration_v0_19_0_to_v0_20_0,
-        apply_migration_v0_20_0_to_v0_21_0,
-        plan_migration_v0_19_0_to_v0_20_0,
-        plan_migration_v0_20_0_to_v0_21_0,
+        apply_migration,
+        plan_migration,
         MigrationError,
+        REGISTERED_STEPS,
     )
+    target_choices = sorted({s.to_version for s in REGISTERED_STEPS})
     p = argparse.ArgumentParser(prog="aiadra migrate")
     p.add_argument("workspace")
-    p.add_argument("--to-bundle", required=True, choices=["0.20.0", "0.21.0"])
+    p.add_argument("--to-bundle", required=True, choices=target_choices)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    plan_fn = {
-        "0.20.0": plan_migration_v0_19_0_to_v0_20_0,
-        "0.21.0": plan_migration_v0_20_0_to_v0_21_0,
-    }[args.to_bundle]
-    apply_fn = {
-        "0.20.0": apply_migration_v0_19_0_to_v0_20_0,
-        "0.21.0": apply_migration_v0_20_0_to_v0_21_0,
-    }[args.to_bundle]
     try:
         if args.dry_run:
-            plan = plan_fn(workspace)
+            plan = plan_migration(workspace, args.to_bundle)
             print(f"Migration plan: {plan.from_bundle_version} → {plan.to_bundle_version}")
             for note in plan.notes:
                 print(f"  - {note}")
             print(f"(dry-run; no files changed)")
         else:
-            plan = apply_fn(workspace)
+            plan = apply_migration(workspace, args.to_bundle)
             print(f"Migrated: {plan.from_bundle_version} → {plan.to_bundle_version}")
             for note in plan.notes:
                 print(f"  - {note}")

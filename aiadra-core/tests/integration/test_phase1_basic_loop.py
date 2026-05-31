@@ -35,8 +35,11 @@ def test_phase1_init_create_link_release(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     registry = BundleRegistry()
     bundle = registry.latest()
-    # Phase 2 (arc 20260531-3) bumped latest to v0.21.0; pre-Phase-2 latest was v0.20.0.
-    assert bundle.bundle_version in ("0.20.0", "0.21.0")
+    # Future-proof: latest is whatever max-version is packaged.
+    versions = registry.versions()
+    assert bundle.bundle_version == max(
+        versions, key=lambda v: tuple(int(x) for x in v.split("."))
+    )
 
     # 1. init
     draft = init_workspace(workspace, bundle)
