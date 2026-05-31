@@ -83,10 +83,16 @@ def test_phase_a_protocol_module_exports():
 
 
 def test_phase_a_protocol_does_not_export_future_phase_operations():
-    """Per Codex1 Q7: don't stub `query`/`propose`/`modify`/`simulate`/`explain`."""
-    for name in ("query", "propose", "modify", "simulate", "explain"):
+    """Per Codex1 Q7 (arc 20260531-7): don't stub future-phase operations.
+
+    Updated for Phase B (arc 20260531-8): `query` is now exported. The
+    remaining unimplemented operations (`propose`/`modify`/`simulate` Phase C;
+    `explain` Phase D) MUST still be absent — their existence as
+    `NotImplementedError` stubs would confuse agents.
+    """
+    for name in ("propose", "modify", "simulate", "explain"):
         assert not hasattr(protocol, name), (
-            f"protocol.{name} should NOT exist in Phase A (no future-op stubs per Codex Q7)"
+            f"protocol.{name} should NOT exist (no future-op stubs per Codex Q7)"
         )
 
 
@@ -174,21 +180,39 @@ def test_phase_a_inspect_default_locality_staleness_pass(tmp_path: Path):
     assert view.object_number == "P-000001"
 
 
-def test_phase_a_inspect_recognized_non_default_locality_raises_not_implemented(tmp_path: Path):
-    """B2: recognized Phase-B locality → NotImplementedError."""
+def test_phase_a_inspect_locality_remote_only_attempts_fetch(tmp_path: Path):
+    """Phase B (arc 20260531-8) replaces Phase A's NotImplementedError gate
+    with actual `git fetch origin` behavior. In a remoteless test workspace
+    the fetch fails and raises NetworkUnreachableError — proves the fetch
+    path is wired through to network-failure handling."""
+    from aiadra_core.protocol import NetworkUnreachableError
     workspace, _ = _make_simple_workspace(tmp_path)
-    with pytest.raises(NotImplementedError, match="Phase B"):
+    with pytest.raises(NetworkUnreachableError):
         inspect(workspace, "P-000001", locality="remote_only")
-    with pytest.raises(NotImplementedError, match="Phase B"):
+
+
+def test_phase_a_inspect_locality_local_if_fetched_attempts_fetch(tmp_path: Path):
+    """Phase B: locality=local_if_fetched + no FETCH_HEAD → one fetch attempt
+    per ADR/0001 §6 ("one fetch otherwise"). Fails in remoteless workspace."""
+    from aiadra_core.protocol import NetworkUnreachableError
+    workspace, _ = _make_simple_workspace(tmp_path / "ws_lif")
+    with pytest.raises(NetworkUnreachableError):
         inspect(workspace, "P-000001", locality="local_if_fetched")
 
 
-def test_phase_a_inspect_recognized_non_default_staleness_raises_not_implemented(tmp_path: Path):
-    """B2: recognized Phase-B staleness → NotImplementedError."""
+def test_phase_a_inspect_staleness_must_sync_attempts_fetch(tmp_path: Path):
+    """Phase B: staleness=must_sync triggers fetch; fails in remoteless workspace."""
+    from aiadra_core.protocol import NetworkUnreachableError
     workspace, _ = _make_simple_workspace(tmp_path)
-    with pytest.raises(NotImplementedError, match="Phase B"):
+    with pytest.raises(NetworkUnreachableError):
         inspect(workspace, "P-000001", staleness="must_sync")
-    with pytest.raises(NotImplementedError, match="Phase B"):
+
+
+def test_phase_a_inspect_staleness_fresh_within_attempts_fetch(tmp_path: Path):
+    """Phase B: staleness=fresh_within_5m fetches if FETCH_HEAD missing/stale."""
+    from aiadra_core.protocol import NetworkUnreachableError
+    workspace, _ = _make_simple_workspace(tmp_path / "ws_fw")
+    with pytest.raises(NetworkUnreachableError):
         inspect(workspace, "P-000001", staleness="fresh_within_5m")
 
 

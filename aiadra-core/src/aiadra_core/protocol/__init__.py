@@ -1,24 +1,29 @@
 """AIADRA Ring 2 AI Action Protocol — canonical Python entry points.
 
 Per [ADR/0026](../../../Docs/ADR/0026-ai-action-protocol-scope.md) §"Sequencing"
-**Phase A**. Formalizes the existing aiadra-core surface as the agent-facing
-Ring 2 contract layer. Tier-1 in-process Python entry points; CLI is the
-Tier-2 thin wrapper (`aiadra_core.cli`); Tier-3 RPC adapters (MCP, OpenAI
-tools, LSP-style, custom JSON-RPC) live in SEPARATE ecosystem packages per
-Manifesto P11 and ADR/0026 Decision §6.
+**Phase A** + **Phase B**. Formalizes the existing aiadra-core surface as the
+agent-facing Ring 2 contract layer + adds the first NEW Ring 2 operation
+(`query` over cumulative release graph + working set) + makes
+locality/staleness kwargs operational.
 
-**Phase A surface (5 of 9 ADR/0026 §2 contracts):**
+Tier-1 in-process Python entry points; CLI is the Tier-2 thin wrapper
+(`aiadra_core.cli`); Tier-3 RPC adapters (MCP, OpenAI tools, LSP-style,
+custom JSON-RPC) live in SEPARATE ecosystem packages per Manifesto P11 and
+ADR/0026 Decision §6.
+
+**Phase A + B surface (6 of 9 ADR/0026 §2 contracts):**
 
 - `inspect(workspace, object_ref, *, locality, staleness) -> ObjectView`
+- `query(workspace, *, kind, filter, locality, staleness) -> list[ObjectView]`   ← NEW Phase B
 - `validate(workspace) -> ValidationReport`
 - `commit(draft) -> CommitResult`
 - `rollback(draft, *, reason=None) -> RollbackResult`
-- `release(workspace, bundle, object_numbers, ...) -> TransactionDraft`
+- `release(workspace, bundle, object_numbers, ..., release_label=None) -> TransactionDraft`
 
-Future-phase contracts (`query` Phase B; `propose` / `modify` / `simulate`
-Phase C; `explain` Phase D) are intentionally NOT exported — their absence is
-clearer documentation than `NotImplementedError` stubs would be (Codex1 Q7
-absorption, arc 20260531-7).
+Future-phase contracts (`propose` / `modify` / `simulate` Phase C; `explain`
+Phase D) are intentionally NOT exported — their absence is clearer
+documentation than `NotImplementedError` stubs would be (Codex1 Q7
+absorption arc 20260531-7).
 
 **BYO-AI posture per ADR/0026 §0**: AIADRA Core ships zero AI model code;
 this module is a deterministic Python API that any agent (cloud LLM, local
@@ -28,9 +33,11 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass, field
+import re
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..transaction.boundary import (
     CommitResult,
@@ -39,6 +46,7 @@ from ..transaction.boundary import (
     ValidationOutcome,
 )
 from ..transaction.operations import release as _release_op
+from ..truth_model.manifest import list_release_labels
 from ..truth_model.reservation import list_reservation_prefixes
 from ..truth_model.sidecar import list_working_sidecar_uuids
 from ..validation.bundle_registry import (
@@ -50,45 +58,149 @@ from ..validation.bundle_registry import (
 from ..validation.profile import ProfileViolationError
 from ..validation.schema import (
     SchemaValidationError,
+    load_manifest_validated,
     load_reservation_validated,
+    load_revision_validated,
     load_sidecar_validated,
 )
 
 
-# ---------- Locality / staleness API value sets (Phase A surface) ----------
+# ---------- Locality / staleness API value sets ----------
 #
 # Per ADR/0026 §4 + Codex1 B2 absorption (arc 20260531-7): API values are
-# pinned in Phase A; non-default behavior lands in Phase B. The distinction
-# between "invalid value" (caller bug) and "recognized but unimplemented"
-# (Phase B future) is enforced here.
+# pinned in Phase A; behavior lands in Phase B. The distinction between
+# "invalid value" (caller bug) and "recognized non-default" (was Phase B
+# future / NOW IMPLEMENTED in this arc 20260531-8) is enforced via two
+# helpers — _validate_locality_staleness rejects invalid values (Phase A
+# behavior; unchanged); _enforce_locality_staleness applies non-default
+# semantics by triggering `git fetch` when needed (NEW Phase B).
 
 _VALID_LOCALITY: frozenset[str] = frozenset({"always_local", "local_if_fetched", "remote_only"})
 _VALID_STALENESS_EXACT: frozenset[str] = frozenset({"any", "must_sync"})
 _DEFAULT_LOCALITY = "always_local"
 _DEFAULT_STALENESS = "any"
 
+# Phase B (arc 20260531-8 Codex1 B3): bounded timeout for git fetch subprocesses.
+_FETCH_TIMEOUT_SECONDS = 30
 
-def _check_locality_staleness(locality: str, staleness: str) -> None:
-    """Codex1 B2 absorption: invalid → ValueError; recognized non-default → NotImplementedError."""
+# `fresh_within_<duration>` parser per Codex1 Q5 absorption: simple suffix
+# `<integer>s|m|h|d`; reject zero / negative; reject unknown suffixes with
+# ValueError.
+_FRESH_WITHIN_PATTERN = re.compile(r"^fresh_within_(?P<n>\d+)(?P<unit>[smhd])$")
+_FRESH_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _validate_locality_staleness(locality: str, staleness: str) -> None:
+    """Reject invalid API values. ValueError = caller bug (e.g. typo or
+    wrong dimension). Does NOT enforce non-default semantics; that's
+    `_enforce_locality_staleness`'s job."""
     if locality not in _VALID_LOCALITY:
         raise ValueError(
             f"Invalid locality {locality!r}; expected one of {sorted(_VALID_LOCALITY)} "
             f"per ADR/0001 §6 + ADR/0026 §4."
         )
-    if staleness not in _VALID_STALENESS_EXACT and not staleness.startswith("fresh_within_"):
+    if staleness in _VALID_STALENESS_EXACT:
+        return
+    m = _FRESH_WITHIN_PATTERN.match(staleness)
+    if m is None:
         raise ValueError(
             f"Invalid staleness {staleness!r}; expected one of {sorted(_VALID_STALENESS_EXACT)} "
-            f"or `fresh_within_<duration>` per ADR/0026 §4."
+            f"or `fresh_within_<N><unit>` where unit ∈ {{s,m,h,d}} and N > 0 per ADR/0026 §4."
         )
-    if locality != _DEFAULT_LOCALITY or staleness != _DEFAULT_STALENESS:
-        raise NotImplementedError(
-            f"Non-default locality/staleness (locality={locality!r}, "
-            f"staleness={staleness!r}) lands in Phase B per ADR/0026 §4. "
-            f"Phase A supports default values only."
+    n = int(m.group("n"))
+    if n <= 0:
+        raise ValueError(
+            f"Invalid staleness {staleness!r}: duration must be positive (got {n})."
         )
 
 
-# ---------- Phase A exception taxonomy ----------
+def _parse_fresh_within_seconds(staleness: str) -> int:
+    """Return the duration of a `fresh_within_<N><unit>` staleness in seconds.
+    Caller MUST have already passed `_validate_locality_staleness`."""
+    m = _FRESH_WITHIN_PATTERN.match(staleness)
+    assert m is not None, "must have been validated already"
+    return int(m.group("n")) * _FRESH_UNIT_SECONDS[m.group("unit")]
+
+
+def _should_fetch(workspace: Path, locality: str, staleness: str) -> bool:
+    """Decide whether `git fetch` is required for this (locality, staleness)
+    combination per Codex1 B2 absorption matrix (arc 20260531-8):
+
+    - `remote_only` always fetches.
+    - `staleness="must_sync"` always fetches.
+    - `staleness="fresh_within_<N><unit>"` fetches iff FETCH_HEAD missing or
+      its mtime is older than the requested duration.
+    - `locality="local_if_fetched"` with no FETCH_HEAD fetches once (per
+      ADR/0001 §6 "Free if pulled; one fetch otherwise").
+    """
+    if locality == "remote_only":
+        return True
+    if staleness == "must_sync":
+        return True
+    fetch_head = workspace / ".git" / "FETCH_HEAD"
+    if staleness != _DEFAULT_STALENESS and _FRESH_WITHIN_PATTERN.match(staleness):
+        if not fetch_head.exists():
+            return True
+        max_age = _parse_fresh_within_seconds(staleness)
+        import time
+        age = time.time() - fetch_head.stat().st_mtime
+        return age > max_age
+    if locality == "local_if_fetched" and not fetch_head.exists():
+        return True
+    return False
+
+
+def _run_git_fetch(workspace: Path, *, timeout: int = _FETCH_TIMEOUT_SECONDS) -> None:
+    """Run `git fetch origin` with a bounded timeout. Per Codex1 B3 absorption
+    arc 20260531-8: any failure (subprocess error / timeout / missing git /
+    no remote configured) raises `NetworkUnreachableError`.
+
+    Protocol-local subprocess wrapper rather than reusing transaction.boundary._git
+    so the Transaction subprocess shape remains timeout-free (per Codex1 Q7
+    absorption — `_git` reuse okay but not required; protocol-local helper
+    acceptable).
+    """
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise NetworkUnreachableError(
+            f"git fetch origin timed out after {timeout}s in {workspace}"
+        ) from e
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise NetworkUnreachableError(
+            f"git fetch origin failed in {workspace}: {stderr}"
+        ) from e
+    except FileNotFoundError as e:
+        raise NetworkUnreachableError(
+            f"git binary not found; cannot fetch in {workspace}"
+        ) from e
+
+
+def _enforce_locality_staleness(
+    workspace: Path,
+    locality: str,
+    staleness: str,
+    *,
+    timeout: int = _FETCH_TIMEOUT_SECONDS,
+) -> None:
+    """Phase B (arc 20260531-8): trigger `git fetch origin` when the locality
+    + staleness matrix requires it. Failure raises `NetworkUnreachableError`.
+
+    Callers MUST have first run `_validate_locality_staleness` (Phase A gate).
+    For the default `(always_local, any)` combination this is a no-op.
+    """
+    if _should_fetch(workspace, locality, staleness):
+        _run_git_fetch(workspace, timeout=timeout)
+
+
+# ---------- Phase A exception taxonomy + Phase B additions ----------
 
 
 class ObjectNotFoundError(KeyError):
@@ -97,36 +209,54 @@ class ObjectNotFoundError(KeyError):
 
 
 class ProjectPinError(ValueError):
-    """Raised by `inspect()` / `validate()` when the project pin
+    """Raised by `inspect()` / `query()` / `validate()` when the project pin
     (`.aiadra/schemas.yaml`) is missing, unknown, or digest-mismatched.
 
     Per Codex1 B3 absorption (arc 20260531-7): the single Ring 2 contract
     that wraps Phase 1's three pin-related exceptions (`FileNotFoundError`,
     `BundleNotFoundError`, `BundleDigestMismatchError`). The original
-    exception is preserved as `__cause__` for callers that need to discriminate.
-
-    CLI binding layers translate this to exit code 3 (project pin failure).
+    exception is preserved as `__cause__`.
     """
 
 
-# ---------- Phase A type shapes ----------
+class NetworkUnreachableError(ConnectionError):
+    """Raised by `inspect()` / `query()` when a locality/staleness operation
+    needs network access but the `git fetch origin` subprocess fails (timeout,
+    non-zero exit, no remote configured, missing git binary, auth failure).
+
+    Per Codex1 B3 absorption (arc 20260531-8): wraps subprocess errors with
+    a bounded timeout (default 30s). Original exception preserved as
+    `__cause__`.
+    """
+
+
+# ---------- Phase A type shapes (Phase B extends ObjectView) ----------
 
 
 @dataclass(frozen=True)
 class ObjectView:
-    """Returned by `inspect()`. Frozen dataclass; `sidecar` is a deep copy
-    of the loaded dict so caller mutations do not affect re-reads (Codex1 Q1
-    absorption arc 20260531-7).
+    """Returned by `inspect()` and `query()`. Frozen dataclass; `sidecar` is
+    a deep copy of the loaded dict so caller mutations do not affect re-reads
+    (Codex1 Q1 absorption arc 20260531-7).
 
     Per ADR/0026 §5: every fact returned carries provenance intact. Agents
     that need provenance read it from `sidecar["parameter"][...]["fact_provenance"]`
     or equivalent nested paths.
+
+    Phase B (arc 20260531-8 Codex1 B1) extends with `source` / `revision_id`
+    / `release_label`. `source="working"` (default) is the Phase A behavior;
+    Phase B `query` also returns `source="released_revision"` views from the
+    cumulative release graph, in which case `revision_id` + `release_label`
+    identify the specific released Revision.
     """
     object_uuid: str
     object_number: str
     object_type: str
     sidecar: dict[str, Any]
     bundle_version: str
+    source: str = "working"  # "working" | "released_revision"
+    revision_id: str | None = None  # set iff source == "released_revision"
+    release_label: str | None = None  # set iff source == "released_revision"
 
 
 @dataclass(frozen=True)
@@ -138,9 +268,59 @@ class ValidationReport:
     bundle_version: str
 
 
-# `RollbackResult` is defined in `aiadra_core.transaction.boundary` (next to
-# `TransactionDraft.rollback()`) and re-exported here. Single source of truth
-# avoids duplication; protocol module just surfaces it for agent type hints.
+# ---------- Internal helpers ----------
+
+
+_UUID_PATTERN = (
+    "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _looks_like_uuid(s: str) -> bool:
+    return bool(re.match(_UUID_PATTERN, s))
+
+
+def _resolve_ref_to_uuid(workspace: Path, bundle_dir: Path, object_ref: str) -> str | None:
+    """Resolve EITHER Object Number OR UUID to a UUID present on disk."""
+    if _looks_like_uuid(object_ref):
+        on_disk = set(list_working_sidecar_uuids(workspace))
+        return object_ref if object_ref in on_disk else None
+    if "-" not in object_ref:
+        return None
+    prefix = object_ref.split("-", 1)[0]
+    if prefix not in list_reservation_prefixes(workspace):
+        return None
+    reservation = load_reservation_validated(workspace, prefix, bundle_dir)
+    entry = reservation.get("reservations", {}).get(object_ref)
+    if entry is None:
+        return None
+    return entry.get("object_uuid")
+
+
+def _object_view_from_sidecar(
+    sidecar: dict[str, Any],
+    bundle_version: str,
+    *,
+    fallback_uuid: str = "",
+    source: str = "working",
+    revision_id: str | None = None,
+    release_label: str | None = None,
+) -> ObjectView:
+    """Codex1 N2 absorption arc 20260531-8: factor the ObjectView construction
+    so working-sidecar reads (inspect) and released-Revision reads (query)
+    share identical provenance / deep-copy / bundle-version behavior.
+    """
+    obj_block = sidecar.get("object", {})
+    return ObjectView(
+        object_uuid=obj_block.get("uuid", fallback_uuid),
+        object_number=obj_block.get("number", ""),
+        object_type=obj_block.get("type", ""),
+        sidecar=copy.deepcopy(sidecar),
+        bundle_version=bundle_version,
+        source=source,
+        revision_id=revision_id,
+        release_label=release_label,
+    )
 
 
 # ---------- Phase A: inspect ----------
@@ -156,22 +336,22 @@ def inspect(
     """Read a single Object's current working sidecar.
 
     `object_ref` accepts EITHER an Object Number (e.g. `P-000001`) OR a UUID.
-    Resolution prefers Number-via-Reservation; falls back to UUID-via-direct-load
-    when the input matches the canonical UUID pattern (Codex1 N3 absorption
-    arc 20260531-7).
 
-    Per ADR/0026 §4: `locality` and `staleness` are pinned in Phase A as
-    explicit kwargs with workspace-local defaults; non-default values raise
-    `NotImplementedError` per the Phase B sequencing.
+    Per ADR/0026 §4 + Phase B (arc 20260531-8): `locality` and `staleness`
+    are operational kwargs. Non-default values may trigger `git fetch origin`
+    against the project's remote; subprocess failure raises
+    `NetworkUnreachableError`.
 
     Raises:
         ValueError: invalid locality / staleness API value.
-        NotImplementedError: recognized non-default locality / staleness; Phase B.
+        NetworkUnreachableError: required `git fetch` failed (timeout / no
+            remote / subprocess error / missing git).
         ProjectPinError: pin lookup failed (missing / unknown / digest mismatch).
         ObjectNotFoundError: object_ref does not resolve to any on-disk Object.
         ProfileViolationError / SchemaValidationError: artifact loaded but invalid.
     """
-    _check_locality_staleness(locality, staleness)
+    _validate_locality_staleness(locality, staleness)
+    _enforce_locality_staleness(workspace, locality, staleness)
 
     registry = BundleRegistry()
     try:
@@ -186,43 +366,122 @@ def inspect(
     uuid = uuid_or_none
 
     sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
-    obj_block = sidecar.get("object", {})
-    return ObjectView(
-        object_uuid=obj_block.get("uuid", uuid),
-        object_number=obj_block.get("number", ""),
-        object_type=obj_block.get("type", ""),
-        sidecar=copy.deepcopy(sidecar),
-        bundle_version=bundle.bundle_version,
+    return _object_view_from_sidecar(
+        sidecar,
+        bundle.bundle_version,
+        fallback_uuid=uuid,
+        source="working",
     )
 
 
-_UUID_PATTERN = (
-    "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+# ---------- Phase B: query ----------
 
 
-def _looks_like_uuid(s: str) -> bool:
-    import re
-    return bool(re.match(_UUID_PATTERN, s))
+def query(
+    workspace: Path,
+    *,
+    kind: str | None = None,
+    filter: Callable[[ObjectView], bool] | None = None,
+    locality: str = _DEFAULT_LOCALITY,
+    staleness: str = _DEFAULT_STALENESS,
+) -> list[ObjectView]:
+    """Cross-Object query over cumulative release graph + working set
+    (Codex1 B1 absorption arc 20260531-8 per ADR/0026 §"Sequencing" Phase B).
 
+    Returns a deterministically-ordered list of `ObjectView`:
+      1. working views (sidecars on disk), sorted by object_number.
+      2. released-Revision views (from on-disk release manifests), sorted by
+         (release_label, object_number).
 
-def _resolve_ref_to_uuid(workspace: Path, bundle_dir: Path, object_ref: str) -> str | None:
-    """Resolve EITHER Object Number OR UUID to a UUID present on disk."""
-    if _looks_like_uuid(object_ref):
-        # UUID path: check that a working sidecar exists for it.
-        on_disk = set(list_working_sidecar_uuids(workspace))
-        return object_ref if object_ref in on_disk else None
-    # Number path (existing _resolve_number_to_uuid logic, inlined here):
-    if "-" not in object_ref:
-        return None
-    prefix = object_ref.split("-", 1)[0]
-    if prefix not in list_reservation_prefixes(workspace):
-        return None
-    reservation = load_reservation_validated(workspace, prefix, bundle_dir)
-    entry = reservation.get("reservations", {}).get(object_ref)
-    if entry is None:
-        return None
-    return entry.get("object_uuid")
+    A working view and a released view for the same Object are BOTH returned;
+    agents distinguish them via `ObjectView.source` + `revision_id` +
+    `release_label` (per Codex1 B1).
+
+    `kind`: optional Object Type filter (e.g. "Part"); `None` = all kinds.
+    `filter`: optional Python predicate `(view) -> bool`. Internally bound
+              to `predicate` to avoid shadowing the builtin (Codex1 N1).
+    `locality` / `staleness`: per ADR/0026 §4; may trigger `git fetch origin`
+              per the Phase B matrix.
+
+    Raises (same taxonomy as `inspect`; fail-loud per Codex2 B1 arc 20260531-8 R3):
+        ValueError, NetworkUnreachableError, ProjectPinError,
+        ProfileViolationError, SchemaValidationError.
+
+    `query` is an AI read primitive over the Product Truth, NOT a best-effort
+    search index. Invalid working sidecars / Release Manifests / Revisions
+    propagate their schema/profile errors rather than being silently skipped
+    — agents need to know when the substrate is corrupt because downstream
+    actions may be based on the returned view. Agents that want to filter
+    out failures should call `validate()` first to surface them explicitly.
+    """
+    predicate = filter  # Codex1 N1: rebind to avoid shadowing builtin
+    _validate_locality_staleness(locality, staleness)
+    _enforce_locality_staleness(workspace, locality, staleness)
+
+    registry = BundleRegistry()
+    try:
+        bundle = registry.bundle_for_pin(workspace)
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+        raise ProjectPinError(str(e)) from e
+
+    bundle_dir = bundle.bundle_dir
+    bundle_version = bundle.bundle_version
+
+    # Pass 1: working sidecars. Per Codex2 B1 absorption (arc 20260531-8 R3):
+    # invalid working sidecars MUST fail loudly. Agents that want lenient
+    # iteration can call `validate()` first to surface failures explicitly.
+    # Silent skipping hides corrupted Product Truth from AI read consumers
+    # and contradicts the function's advertised raise taxonomy.
+    working_views: list[ObjectView] = []
+    for uuid in list_working_sidecar_uuids(workspace):
+        sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+        view = _object_view_from_sidecar(
+            sidecar, bundle_version,
+            fallback_uuid=uuid,
+            source="working",
+        )
+        working_views.append(view)
+    working_views.sort(key=lambda v: (v.object_number, v.object_uuid))
+
+    # Pass 2: released Revisions from manifest list. Per Codex2 B1: invalid
+    # Release Manifests and Revisions fail loudly. Missing fields on a
+    # validated manifest's revisions[] entry would mean schema validation
+    # was bypassed; treat as explicit SchemaValidationError rather than
+    # silently skipping.
+    released_views: list[ObjectView] = []
+    for label in sorted(list_release_labels(workspace)):
+        manifest = load_manifest_validated(workspace, label, bundle_dir)
+        per_release: list[ObjectView] = []
+        for rev in manifest.get("revisions", []) or []:
+            obj_uuid = rev.get("object_uuid")
+            rev_id = rev.get("revision_id")
+            if not obj_uuid or not rev_id:
+                raise SchemaValidationError(
+                    f"manifest({label}) revisions[] entry missing required "
+                    f"object_uuid or revision_id: {rev!r}"
+                )
+            content = load_revision_validated(
+                workspace, obj_uuid, rev_id, bundle_dir,
+            )
+            view = _object_view_from_sidecar(
+                content, bundle_version,
+                fallback_uuid=obj_uuid,
+                source="released_revision",
+                revision_id=rev_id,
+                release_label=label,
+            )
+            per_release.append(view)
+        per_release.sort(key=lambda v: (v.object_number, v.object_uuid))
+        released_views.extend(per_release)
+
+    all_views = working_views + released_views
+
+    # Filter by kind + predicate
+    if kind is not None:
+        all_views = [v for v in all_views if v.object_type == kind]
+    if predicate is not None:
+        all_views = [v for v in all_views if predicate(v)]
+    return all_views
 
 
 # ---------- Phase A: validate ----------
@@ -248,14 +507,9 @@ def validate(workspace: Path) -> ValidationReport:
         ReservationIntegrityError,
         validate_reservation_rev_id_history,
     )
-    from ..truth_model.manifest import list_release_labels
     from ..truth_model.revision import (
         RevisionHashMismatchError,
         verify_revision_hashes,
-    )
-    from ..validation.schema import (
-        load_manifest_validated,
-        load_revision_validated,
     )
 
     registry = BundleRegistry()
@@ -471,20 +725,22 @@ def release(
 
 
 __all__ = [
-    # Operations
+    # Operations (Phase A + Phase B)
     "inspect",
+    "query",
     "validate",
     "commit",
     "rollback",
     "release",
-    # Type shapes (Phase A)
+    # Type shapes
     "ObjectView",
     "ValidationReport",
     "ValidationOutcome",
     "CommitResult",
     "RollbackResult",
     "TransactionDraft",
-    # Exceptions (Phase A)
+    # Exceptions
     "ObjectNotFoundError",
     "ProjectPinError",
+    "NetworkUnreachableError",
 ]

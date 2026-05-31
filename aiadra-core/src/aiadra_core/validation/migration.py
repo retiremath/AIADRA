@@ -123,6 +123,22 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.24.0",
+        to_version="0.25.0",
+        notes=[
+            "v0.24.0 → v0.25.0 is a MINOR pin-only bump (Phase B: aiadra_core.protocol "
+            "gains `query(workspace, *, kind, filter, locality, staleness) → list[ObjectView]` "
+            "operation over cumulative release graph + working set, and unlocks non-default "
+            "locality/staleness behavior on both `inspect` and `query` per ADR/0026 §4). "
+            "Bundle layout is byte-identical to v0.24.0 except _index.json + _digest.json. "
+            "No artifact data changes; existing canonical artifacts validate unchanged. "
+            "ObjectView gains optional `source` / `revision_id` / `release_label` fields "
+            "(defaulted; backward-compat for Phase A callers). New `NetworkUnreachableError` "
+            "exception for git-fetch failure surfaces (timeout / no remote / auth failure)."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

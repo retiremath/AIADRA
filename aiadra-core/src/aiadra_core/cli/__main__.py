@@ -127,7 +127,7 @@ State-changing (Phase 1):
   link-produces <workspace> <test-exec> <evidence>
   attach-file <workspace> <obj-num> <file-path> --role <role>
   release <workspace> --objects <num1,num2,...> [--stage N] [--no-final]
-  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0|0.24.0}} [--dry-run]
+  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0|0.24.0|0.25.0}} [--dry-run]
 
 Misc:
   --version                                   Print version
