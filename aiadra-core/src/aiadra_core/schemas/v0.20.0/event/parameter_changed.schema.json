@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - parameter_changed",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "parameter_changed"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "object_uuid",
+        "parameter_id",
+        "old_value",
+        "new_value",
+        "rationale"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string"
+        },
+        "parameter_id": {
+          "type": "string"
+        },
+        "old_value": {
+          "type": "number"
+        },
+        "new_value": {
+          "type": "number"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

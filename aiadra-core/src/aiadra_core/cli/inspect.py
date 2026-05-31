@@ -21,16 +21,16 @@ import sys
 from pathlib import Path
 
 from ..truth_model.reservation import list_reservation_prefixes
-from ..validation.digest import (
+from ..validation.bundle_registry import (
     BundleDigestMismatchError,
-    verify_project_pin,
+    BundleNotFoundError,
+    BundleRegistry,
 )
 from ..validation.profile import ProfileViolationError
 from ..validation.schema import (
     SchemaValidationError,
     load_reservation_validated,
     load_sidecar_validated,
-    packaged_bundle_dir,
 )
 
 
@@ -50,12 +50,13 @@ def _resolve_number_to_uuid(workspace: Path, bundle_dir: Path, obj_number: str) 
 
 
 def run_inspect(workspace: Path, obj_number: str) -> int:
-    bundle_dir = packaged_bundle_dir()
-
     # Per Codex2 B1 (arc 20260531-1): verify project pin BEFORE any artifact read.
+    # Phase 1 (arc 20260531-2): use BundleRegistry to honor project-pin bundle_version.
+    registry = BundleRegistry()
     try:
-        verify_project_pin(workspace, bundle_dir)
-    except (FileNotFoundError, BundleDigestMismatchError) as e:
+        bundle = registry.bundle_for_pin(workspace)
+        bundle_dir = bundle.bundle_dir
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
         print(f"project pin verification failed: {e}", file=sys.stderr)
         return 3
 

@@ -36,3 +36,35 @@ def list_reservation_prefixes(workspace: Path) -> list[str]:
     if not rdir.exists():
         return []
     return sorted(p.stem for p in rdir.glob("*.yaml"))
+
+
+def find_reservation_entry_by_uuid(
+    workspace: Path, obj_uuid: str
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Walk every Reservation file; return (prefix, number, entry) for the
+    Object with `obj_uuid`. None if not found.
+
+    Used by B6 binding checks + N3 reservation_integrity invariants.
+    """
+    for prefix in list_reservation_prefixes(workspace):
+        res = load_reservation(workspace, prefix)
+        for number, entry in res.get("reservations", {}).items():
+            if entry.get("object_uuid") == obj_uuid:
+                return prefix, number, entry
+    return None
+
+
+def find_reservation_entry_by_number(
+    workspace: Path, obj_number: str
+) -> tuple[str, dict[str, Any]] | None:
+    """Return (prefix, entry) for the Object with `obj_number`. None if not found."""
+    if "-" not in obj_number:
+        return None
+    prefix = obj_number.split("-", 1)[0]
+    if prefix not in list_reservation_prefixes(workspace):
+        return None
+    res = load_reservation(workspace, prefix)
+    entry = res.get("reservations", {}).get(obj_number)
+    if entry is None:
+        return None
+    return prefix, entry

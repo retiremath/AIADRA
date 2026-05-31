@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Number Reservation artifact for prefix P- (per ADR/0004 \u00a73 + \u00a75)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "name",
+    "status",
+    "artifact_kind",
+    "discriminator",
+    "reservations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "name": {
+      "const": "aiadra-reservation-P"
+    },
+    "status": {
+      "const": "active"
+    },
+    "artifact_kind": {
+      "const": "reservation"
+    },
+    "discriminator": {
+      "const": "P"
+    },
+    "reservations": {
+      "type": "object",
+      "patternProperties": {
+        "^P-[0-9]{6}$": {
+          "$ref": "#/$defs/reservation_value"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "reservation_value": {
+      "type": "object",
+      "required": [
+        "object_uuid",
+        "status",
+        "allocated_at",
+        "allocated_by_transaction"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "status": {
+          "enum": [
+            "current",
+            "retired"
+          ]
+        },
+        "allocated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "allocated_by_transaction": {
+          "type": "string",
+          "pattern": "^tx_[0-9]{4}$"
+        },
+        "retired_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retired_by_transaction": {
+          "type": "string",
+          "pattern": "^tx_[0-9]{4}$"
+        },
+        "retirement_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "current_revision_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "Per B3 absorption arc 20260531-2: next rev_id this Object will release with. Allocated at create-<type>. Fresh UUID allocated after each release."
+        },
+        "released_revision_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "uniqueItems": true,
+          "description": "Per B3 absorption: history of released rev_ids for this Object."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "retired"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "retired_at",
+              "retired_by_transaction",
+              "retirement_reason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "current"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "retired_at"
+                  ]
+                },
+                {
+                  "required": [
+                    "retired_by_transaction"
+                  ]
+                },
+                {
+                  "required": [
+                    "retirement_reason"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

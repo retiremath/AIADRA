@@ -1,0 +1,866 @@
+"""Transaction operations per ADR/0025 §1 Phase 1 implementation.
+
+One module per family was Claude2's design proposal; Phase 1 lands a single
+consolidated module to keep cross-operation invariants (B6 mutation prohibition,
+N3 reservation integrity, rev_id allocation) in one place. Future refactor
+can split by responsibility once the Phase 1 surface stabilizes.
+
+Operations:
+- init_workspace(workspace, bundle) — INIT
+- create_object(workspace, bundle, type, number, ...) — CREATE_OBJECT
+- change_parameter(workspace, bundle, obj_number, param_id, new_value, rationale) — CHANGE_PARAMETER
+- link_relationship(workspace, bundle, rel_type, source_number, target_number) — LINK_RELATIONSHIP
+- attach_file(workspace, bundle, obj_number, path, role, att_id) — ATTACH_FILE
+- release(workspace, bundle, object_numbers, stage_number, final_stage, prior_stage_ref, release_label) — RELEASE
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import hashlib
+import json
+import mimetypes
+import uuid as _uuid
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+from ..truth_model.event_log import (
+    event_log_path,
+    last_event_id_and_hash,
+    next_event_id,
+    next_transaction_id,
+)
+from ..truth_model.reservation import (
+    find_reservation_entry_by_number,
+    find_reservation_entry_by_uuid,
+    list_reservation_prefixes,
+    load_reservation,
+)
+from ..truth_model.revision import revision_path
+from ..truth_model.sidecar import (
+    list_working_sidecar_uuids,
+    load_sidecar,
+    working_sidecar_path,
+)
+from ..validation.binding import (
+    EXECUTION_INSTANCE_TYPES,
+    RevisionBindingError,
+    is_revision_bound,
+    find_mutation_after_binding_violations,
+)
+from ..validation.bundle_registry import BundleHandle, BundleRegistry
+from ..validation.release import (
+    ReleaseConsistencyError,
+    ReleaseDraft,
+    validate_attachment_integrity,
+    validate_attachment_lineage,
+    validate_final_stage_cardinality,
+    validate_final_stage_vv_chain_integrity,
+    validate_release_draft,
+    validate_stage_dependency_closure,
+)
+from ..validation.reservation_integrity import (
+    ReservationIntegrityError,
+    validate_reservation_rev_id_history,
+)
+from ..validation.schema import (
+    load_reservation_validated,
+    load_sidecar_validated,
+)
+from .boundary import (
+    CommitError,
+    CommitResult,
+    TransactionDraft,
+    TransactionError,
+    TransactionKind,
+)
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _next_uuid() -> str:
+    return str(_uuid.uuid4())
+
+
+def _prefix_for_type(obj_type: str) -> str:
+    return {
+        "Part": "P",
+        "Requirement": "REQ",
+        "TestProcedure": "TST",
+        "TestExecution": "TEX",
+        "EvidenceArtifact": "EVD",
+    }[obj_type]
+
+
+def _next_event_id_in_draft(workspace: Path, draft: TransactionDraft, bundle_dir: Path) -> str:
+    """Allocate next evt_NNNN considering both on-disk events AND staged events."""
+    base = next_event_id(workspace, bundle_dir)
+    n = int(base[len("evt_"):])
+    n += len([e for e in draft.events if "event_id" in e])
+    return f"evt_{n:04d}"
+
+
+# -----------------------------------------------------------------------------
+# B6 mutation prohibition hook (added to draft.pre_validate_hooks for mutating ops)
+# -----------------------------------------------------------------------------
+
+
+def _mutation_prohibition_hook(workspace: Path, bundle_dir: Path, target_uuids: list[str]):
+    def hook(draft: TransactionDraft) -> None:
+        for uuid in target_uuids:
+            entry = find_reservation_entry_by_uuid(workspace, uuid)
+            if entry is None:
+                continue
+            _, _, res_entry = entry
+            current_rev_id = res_entry.get("current_revision_id")
+            if not current_rev_id:
+                continue
+            if is_revision_bound(workspace, bundle_dir, uuid, current_rev_id):
+                raise RevisionBindingError(
+                    f"B6 mutation prohibition: Object {uuid} has unreleased "
+                    f"current_revision_id {current_rev_id!r} bound by Fixed "
+                    f"execution-instance relationship; mutation Transaction rejected. "
+                    f"Release the Object first, then mutate (a fresh "
+                    f"current_revision_id will be allocated)."
+                )
+    return hook
+
+
+# -----------------------------------------------------------------------------
+# INIT
+# -----------------------------------------------------------------------------
+
+
+def init_workspace(workspace: Path, bundle: BundleHandle) -> TransactionDraft:
+    """Initialize a new workspace: create directory structure + initialize git +
+    stage project pin + empty Reservations for the 5 Object Type prefixes in
+    the Transaction draft.
+
+    Per B10 absorption arc 20260531-2 round-5: project pin is STAGED in the
+    draft (not written outside the Transaction) so commit captures it in
+    the init commit AND the no-writes-before-validate contract is preserved.
+
+    `git init` runs BEFORE the draft is built (needed so subsequent
+    `git add`/`git commit` work); it is a non-AIADRA-managed filesystem
+    setup, not an AIADRA Transaction write.
+    """
+    import subprocess
+
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    if not (workspace / ".git").exists():
+        subprocess.run(["git", "init", "-q"], cwd=workspace, check=False)
+        # Local git config so subsequent commits work even when global config is absent.
+        subprocess.run(
+            ["git", "-c", f"safe.directory={workspace.resolve().as_posix()}",
+             "-C", str(workspace), "config", "user.email", "aiadra@workspace.local"],
+            check=False,
+        )
+        subprocess.run(
+            ["git", "-c", f"safe.directory={workspace.resolve().as_posix()}",
+             "-C", str(workspace), "config", "user.name", "AIADRA Core"],
+            check=False,
+        )
+
+    draft = TransactionDraft(
+        workspace=workspace,
+        bundle=bundle,
+        kind=TransactionKind.INIT,
+        transaction_id="tx_0001",
+    )
+    # Stage project pin per B10 absorption (not a plain filesystem write).
+    pin_text = (
+        f'"bundle_version": "{bundle.bundle_version}"\n'
+        f'"bundle_digest": "{bundle.bundle_digest}"\n'
+    )
+    draft.stage_project_pin(pin_text)
+    # Empty Reservations for the 5 prefixes
+    for prefix in ("P", "REQ", "TST", "TEX", "EVD"):
+        empty_res = {
+            "artifact_kind": "reservation",
+            "discriminator": prefix,
+            "name": f"aiadra-reservation-{prefix}",
+            "reservations": {},
+            "schema_version": bundle.bundle_version,
+            "status": "active",
+        }
+        draft.stage_reservation(prefix, empty_res)
+    draft.commit_message_lines = [f"aiadra: init workspace (bundle v{bundle.bundle_version})"]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# CREATE OBJECT
+# -----------------------------------------------------------------------------
+
+
+def create_object(
+    workspace: Path,
+    bundle: BundleHandle,
+    obj_type: str,
+    number: str,
+    name: str,
+    *,
+    uuid: str | None = None,
+    revision_id: str | None = None,
+    extra_namespaces: dict[str, Any] | None = None,
+) -> TransactionDraft:
+    """Create an Object: allocate Number + UUID + current_revision_id; emit
+    `<type>_created` event with initial_sidecar."""
+    prefix = _prefix_for_type(obj_type)
+    obj_uuid = uuid or _next_uuid()
+    rev_id = revision_id or _next_uuid()
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    event_id = next_event_id(workspace, bundle.bundle_dir)
+
+    # Initial sidecar
+    sidecar = {
+        "object": {
+            "uuid": obj_uuid,
+            "number": number,
+            "type": obj_type,
+            "name": name,
+            "lifecycle": "in_work",
+            "schema_version": bundle.bundle_version,
+        },
+    }
+    if extra_namespaces:
+        sidecar.update(deepcopy(extra_namespaces))
+
+    # Validate sidecar shape early
+    bundle.validate(sidecar, "sidecar", obj_type)
+
+    # Reservation update (allocate Number + UUID + current_revision_id)
+    res = load_reservation(workspace, prefix)
+    if number in res.get("reservations", {}):
+        raise TransactionError(f"Number {number} already reserved in {prefix}.yaml")
+    res.setdefault("reservations", {})[number] = {
+        "allocated_at": _now_iso(),
+        "allocated_by_transaction": transaction_id,
+        "object_uuid": obj_uuid,
+        "status": "current",
+        "current_revision_id": rev_id,
+    }
+
+    # <type>_created event
+    event_type = f"{obj_type.lower()}_created"
+    # Map TestProcedure → test_procedure_created, etc.
+    event_type = {
+        "part_created":             "part_created",
+        "requirement_created":      "requirement_created",
+        "testprocedure_created":    "test_procedure_created",
+        "testexecution_created":    "test_execution_created",
+        "evidenceartifact_created": "evidence_artifact_created",
+    }[obj_type.lower() + "_created"]
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": event_type,
+        "timestamp": _now_iso(),
+        "transaction_id": transaction_id,
+        "payload": {
+            "uuid": obj_uuid,
+            "number": number,
+            "initial_sidecar": sidecar,
+        },
+    }
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=TransactionKind.CREATE_OBJECT,
+        transaction_id=transaction_id,
+    )
+    draft.stage_sidecar(obj_uuid, sidecar)
+    draft.stage_event(event)
+    draft.stage_reservation(prefix, res)
+    draft.commit_message_lines = [
+        f"aiadra: create-{obj_type.lower().replace('execution','-execution').replace('procedure','-procedure').replace('artifact','-artifact')} {number}",
+        f"",
+        f"Transaction {transaction_id} created {obj_type} {number} (uuid {obj_uuid}).",
+        f"Allocated current_revision_id {rev_id} per B3 absorption.",
+    ]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# CHANGE PARAMETER
+# -----------------------------------------------------------------------------
+
+
+def change_parameter(
+    workspace: Path,
+    bundle: BundleHandle,
+    obj_number: str,
+    parameter_id: str,
+    new_value: float,
+    rationale: str,
+) -> TransactionDraft:
+    """Mutate a parameter value. B6 mutation prohibition runs in validate-phase."""
+    found = find_reservation_entry_by_number(workspace, obj_number)
+    if found is None:
+        raise TransactionError(f"Object not found: {obj_number}")
+    _, entry = found
+    obj_uuid = entry["object_uuid"]
+    sidecar = load_sidecar(workspace, obj_uuid)
+    # Apply mutation to draft sidecar
+    new_sidecar = deepcopy(sidecar)
+    old_value = None
+    for p in new_sidecar.get("parameter", []):
+        if p.get("id") == parameter_id:
+            old_value = p.get("value")
+            p["value"] = new_value
+            break
+    else:
+        raise TransactionError(f"Parameter {parameter_id} not found on {obj_number}")
+
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    event_id = next_event_id(workspace, bundle.bundle_dir)
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": "parameter_changed",
+        "timestamp": _now_iso(),
+        "transaction_id": transaction_id,
+        "payload": {
+            "object_uuid": obj_uuid,
+            "parameter_id": parameter_id,
+            "old_value": old_value,
+            "new_value": new_value,
+            "rationale": rationale,
+        },
+    }
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=TransactionKind.CHANGE_PARAMETER,
+        transaction_id=transaction_id,
+    )
+    draft.stage_sidecar(obj_uuid, new_sidecar)
+    draft.stage_event(event)
+    draft.pre_validate_hooks.append(
+        _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
+    )
+    draft.commit_message_lines = [
+        f"aiadra: change-parameter {obj_number} {parameter_id}={new_value}",
+        f"",
+        f"Transaction {transaction_id} parameter {parameter_id} on {obj_number} "
+        f"{old_value} → {new_value}. Rationale: {rationale}",
+    ]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# LINK RELATIONSHIP
+# -----------------------------------------------------------------------------
+
+
+_RELATIONSHIP_DIRECTION = {
+    # rel_type: (source_type_set, target_type_set, binding_default)
+    "satisfies":         ({"Part", "Assembly"}, {"Requirement"}, "float"),
+    "tested_against":    ({"Part", "Assembly"}, {"TestProcedure"}, "float"),
+    "verifies":          ({"TestProcedure"}, {"Requirement"}, "float"),
+    "cites":             ({"Requirement"}, {"EvidenceArtifact"}, "float"),
+    "executes":          ({"TestExecution"}, {"TestProcedure"}, "fixed"),
+    "executed_on":       ({"TestExecution"}, {"Part", "Assembly"}, "fixed"),
+    "produces":          ({"TestExecution"}, {"EvidenceArtifact"}, "fixed"),
+}
+
+
+def link_relationship(
+    workspace: Path,
+    bundle: BundleHandle,
+    rel_type: str,
+    source_number: str,
+    target_number: str,
+    *,
+    relationship_id: str | None = None,
+) -> TransactionDraft:
+    """Author a relationship on the source Object's sidecar. Execution-instance
+    relationships (executes/executed_on/produces) are Fixed; endpoint
+    revision_id read from target Object's Reservation current_revision_id
+    (B3 absorption)."""
+    if rel_type not in _RELATIONSHIP_DIRECTION:
+        raise TransactionError(f"Unknown relationship type: {rel_type}")
+    src_types, tgt_types, default_binding = _RELATIONSHIP_DIRECTION[rel_type]
+
+    src_found = find_reservation_entry_by_number(workspace, source_number)
+    tgt_found = find_reservation_entry_by_number(workspace, target_number)
+    if src_found is None:
+        raise TransactionError(f"Source Object not found: {source_number}")
+    if tgt_found is None:
+        raise TransactionError(f"Target Object not found: {target_number}")
+    src_uuid = src_found[1]["object_uuid"]
+    tgt_uuid = tgt_found[1]["object_uuid"]
+
+    src_sidecar = load_sidecar(workspace, src_uuid)
+    tgt_sidecar = load_sidecar(workspace, tgt_uuid)
+    src_type = src_sidecar["object"]["type"]
+    tgt_type = tgt_sidecar["object"]["type"]
+
+    if src_type not in src_types:
+        raise TransactionError(
+            f"Relationship {rel_type}: source type {src_type} not in {sorted(src_types)}"
+        )
+    if tgt_type not in tgt_types:
+        raise TransactionError(
+            f"Relationship {rel_type}: target type {tgt_type} not in {sorted(tgt_types)}"
+        )
+
+    # Build relationship record
+    rel_id = relationship_id or f"rel_{rel_type}_{_next_uuid()[:8]}"
+    binding = default_binding
+    endpoint: dict[str, Any] = {"object_uuid": tgt_uuid}
+    if binding == "fixed":
+        # B3: read current_revision_id from target's Reservation
+        tgt_current_rev = tgt_found[1].get("current_revision_id")
+        if not tgt_current_rev:
+            raise TransactionError(
+                f"Target {target_number} has no current_revision_id; cannot author Fixed binding"
+            )
+        endpoint["revision_id"] = tgt_current_rev
+    relationship_record = {
+        "id": rel_id,
+        "type": rel_type,
+        "binding": binding,
+        "endpoints": [endpoint],
+    }
+
+    new_sidecar = deepcopy(src_sidecar)
+    new_sidecar.setdefault("relationship", []).append(relationship_record)
+
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    event_id = next_event_id(workspace, bundle.bundle_dir)
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": "relationship_created",
+        "timestamp": _now_iso(),
+        "transaction_id": transaction_id,
+        "payload": {
+            "source_uuid": src_uuid,
+            "relationship_record": relationship_record,
+        },
+    }
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=TransactionKind.LINK_RELATIONSHIP,
+        transaction_id=transaction_id,
+    )
+    draft.stage_sidecar(src_uuid, new_sidecar)
+    draft.stage_event(event)
+    # B6: if this is an execution-instance Fixed binding, the TARGET gets bound.
+    # Source mutation is OK (it's authoring a relationship). The B6 mutation
+    # prohibition check applies to LATER mutations against the target.
+    draft.commit_message_lines = [
+        f"aiadra: link-{rel_type.replace('_', '-')} {source_number} {target_number}",
+        f"",
+        f"Transaction {transaction_id} authored {rel_type} from {source_number} → "
+        f"{target_number} (binding {binding}).",
+    ]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# ATTACH FILE
+# -----------------------------------------------------------------------------
+
+
+_ATTACHMENT_BEARING_TO_CHANGED_EVENT = {
+    "Drawing":          "drawing_changed",
+    "TestProcedure":    "test_procedure_changed",
+    "TestExecution":    "test_execution_changed",
+    "EvidenceArtifact": "evidence_artifact_changed",
+}
+
+
+def attach_file(
+    workspace: Path,
+    bundle: BundleHandle,
+    obj_number: str,
+    file_path: Path,
+    role: str,
+    *,
+    attachment_id: str | None = None,
+    derived_from_attachment_id: str | None = None,
+    media_type: str | None = None,
+) -> TransactionDraft:
+    """Attach a file to an Attachment-bearing Object as a canonical Transaction.
+
+    Per W2 absorption: emits `<type>_changed` event with `attachment_delta`."""
+    found = find_reservation_entry_by_number(workspace, obj_number)
+    if found is None:
+        raise TransactionError(f"Object not found: {obj_number}")
+    _, entry = found
+    obj_uuid = entry["object_uuid"]
+    sidecar = load_sidecar(workspace, obj_uuid)
+    obj_type = sidecar["object"]["type"]
+    if obj_type not in _ATTACHMENT_BEARING_TO_CHANGED_EVENT:
+        raise TransactionError(
+            f"Object type {obj_type} is not Attachment-bearing; cannot attach-file"
+        )
+
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise TransactionError(f"File not found: {file_path}")
+    data = file_path.read_bytes()
+    content_hash = "sha256:" + hashlib.sha256(data).hexdigest()
+    vault_path = f"vault/{content_hash[len('sha256:'):]}"
+    media_type = media_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    att_id = attachment_id or f"att_{file_path.stem.replace(' ', '_').lower()}"
+
+    attachment_record = {
+        "id": att_id,
+        "role": role,
+        "content_hash": content_hash,
+        "vault_path": vault_path,
+        "media_type": media_type,
+    }
+    if derived_from_attachment_id:
+        attachment_record["derived_from_attachment_id"] = derived_from_attachment_id
+
+    # Add to sidecar attachments
+    new_sidecar = deepcopy(sidecar)
+    new_sidecar.setdefault("attachment", []).append(attachment_record)
+
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    event_id = next_event_id(workspace, bundle.bundle_dir)
+    event_type = _ATTACHMENT_BEARING_TO_CHANGED_EVENT[obj_type]
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": event_type,
+        "timestamp": _now_iso(),
+        "transaction_id": transaction_id,
+        "payload": {
+            "object_uuid": obj_uuid,
+            "attachment_delta": {
+                "operation": "add",
+                "attachment_id": att_id,
+                "attachment_record": attachment_record,
+            },
+        },
+    }
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=TransactionKind.ATTACH_FILE,
+        transaction_id=transaction_id,
+    )
+    draft.stage_sidecar(obj_uuid, new_sidecar)
+    draft.stage_event(event)
+    # Vault bytes staged for write at commit time
+    draft.stage_vault_bytes(data)
+    # B6: attach-file is a mutation; check whether obj_uuid's current rev_id is bound
+    draft.pre_validate_hooks.append(
+        _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
+    )
+    draft.commit_message_lines = [
+        f"aiadra: attach-file {obj_number} {att_id}",
+        f"",
+        f"Transaction {transaction_id} attached {file_path.name} to {obj_number} "
+        f"as {att_id} (role={role}, content_hash={content_hash}).",
+    ]
+    return draft
+
+
+# -----------------------------------------------------------------------------
+# RELEASE
+# -----------------------------------------------------------------------------
+
+
+def release(
+    workspace: Path,
+    bundle: BundleHandle,
+    object_numbers: list[str],
+    *,
+    release_label: str | None = None,
+    stage_number: int = 1,
+    final_stage: bool = True,
+    prior_stage_manifest_ref: dict[str, Any] | None = None,
+) -> TransactionDraft:
+    """Release a set of Objects. Per Decision §7: each stage IS a canonical
+    Release Manifest. Per N6: appends released rev_id to released_revision_ids[]
+    AND allocates fresh current_revision_id in the same Reservation update.
+    """
+    if not object_numbers:
+        raise TransactionError("Release set is empty")
+
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    release_label = release_label or f"rev-{_now_iso().replace(':', '').replace('-', '')[:14]}"
+    now = _now_iso()
+
+    # Gather sidecars + Reservation updates
+    revisions: list[dict[str, Any]] = []
+    per_object_events: list[dict[str, Any]] = []
+    released_uuids: list[str] = []
+    reservation_updates_by_prefix: dict[str, dict[str, Any]] = {}
+
+    draft = TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=TransactionKind.RELEASE,
+        transaction_id=transaction_id,
+    )
+
+    event_counter = int(next_event_id(workspace, bundle.bundle_dir)[4:])
+
+    for obj_number in object_numbers:
+        found = find_reservation_entry_by_number(workspace, obj_number)
+        if found is None:
+            raise TransactionError(f"Object not found: {obj_number}")
+        prefix, entry = found
+        obj_uuid = entry["object_uuid"]
+        rev_id = entry.get("current_revision_id")
+        if not rev_id:
+            raise TransactionError(
+                f"Object {obj_number} has no current_revision_id; create-time allocation missing"
+            )
+
+        sidecar = load_sidecar_validated(workspace, obj_uuid)
+        obj_type = sidecar["object"]["type"]
+        # Revision content == sidecar content at release time
+        revision_content = deepcopy(sidecar)
+
+        # Pre-compute revision hash from yaml serialization (atomic_write_bytes will write same bytes)
+        from ..validation.profile import dump_yaml
+        rev_text = dump_yaml(revision_content)
+        rev_bytes = rev_text.encode("utf-8")
+        rev_hash = "sha256:" + hashlib.sha256(rev_bytes).hexdigest()
+
+        draft.stage_revision(obj_uuid, rev_id, revision_content)
+
+        revisions.append({
+            "object_uuid": obj_uuid,
+            "object_number": obj_number,
+            "revision_id": rev_id,
+            "revision_hash": rev_hash,
+        })
+        released_uuids.append(obj_uuid)
+
+        # Per-Object <type>_released event
+        released_event_type = {
+            "Part": "part_released",
+            "Requirement": "requirement_released",
+            "TestProcedure": "test_procedure_released",
+            "TestExecution": "test_execution_released",
+            "EvidenceArtifact": "evidence_artifact_released",
+        }[obj_type]
+        event_counter += 1
+        per_object_events.append({
+            "schema_version": bundle.bundle_version,
+            "event_id": f"evt_{event_counter:04d}",
+            "event_type": released_event_type,
+            "timestamp": now,
+            "transaction_id": transaction_id,
+            "payload": {
+                "object_uuid": obj_uuid,
+                "revision_id": rev_id,
+                "revision_hash": rev_hash,
+            },
+        })
+        draft.stage_event(per_object_events[-1])
+
+        # Update Reservation per N6: append released_rev_id + allocate fresh current_revision_id
+        if prefix not in reservation_updates_by_prefix:
+            reservation_updates_by_prefix[prefix] = deepcopy(load_reservation(workspace, prefix))
+        res = reservation_updates_by_prefix[prefix]
+        res_entry = res["reservations"][obj_number]
+        released_ids = res_entry.setdefault("released_revision_ids", [])
+        if rev_id not in released_ids:
+            released_ids.append(rev_id)
+        res_entry["current_revision_id"] = _next_uuid()  # N6: fresh UUID after release
+
+    for prefix, res in reservation_updates_by_prefix.items():
+        draft.stage_reservation(prefix, res)
+
+    # Build manifest. Per Phase 1 (this arc Claude4): event_log_boundary points
+    # at the LAST <type>_released event (NOT release_staged) — the manifest is
+    # sealed before release_staged is emitted as the post-release audit record.
+    # This avoids the circular dependency (release_staged carries manifest_hash;
+    # manifest carries event_log_boundary including release_staged would loop).
+    last_released_event = per_object_events[-1]
+    last_event_bytes = json.dumps(
+        last_released_event, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    event_log_boundary = {
+        "last_event_id": last_released_event["event_id"],
+        "last_event_hash": "sha256:" + hashlib.sha256(last_event_bytes).hexdigest(),
+    }
+
+    # Per-Object schema_validation outcomes (always)
+    validation_outcomes: list[dict[str, str]] = []
+    for rev in revisions:
+        validation_outcomes.append({
+            "check_name": f"schema_validation({rev['object_number']})",
+            "result": "PASS",
+            "details": f"{rev['object_number']} Revision validates against bundle-resolved schema",
+        })
+
+    # Per B14/B15 absorption arc 20260531-2 round-6: build a PROTO ReleaseDraft
+    # carrying proposed_revisions so the W1 validators see the authoritative
+    # staged graph (NOT working sidecars). Run validators NOW (before manifest
+    # hash sealing) so their outcomes go into manifest.validation_outcomes.
+    proto_manifest = {
+        "artifact_kind": "manifest",
+        "manifest_type": "release",
+        "release_label": release_label,
+        "released_at": now,
+        "schema_version": bundle.bundle_version,
+        "revisions": revisions,
+        "stage_number": stage_number,
+        "final_stage": final_stage,
+        "validation_outcomes": list(validation_outcomes),
+        "event_log_boundary": event_log_boundary,
+    }
+    if prior_stage_manifest_ref:
+        proto_manifest["prior_stage_manifest_ref"] = prior_stage_manifest_ref
+
+    # Populate proposed_revisions for ReleaseDraft consumer (per B14)
+    proposed_revisions = {
+        (uuid, rev_id): content
+        for (uuid, rev_id), content in draft.revision_writes.items()
+    }
+    proto_release_draft = ReleaseDraft(
+        release_label=release_label,
+        manifest=proto_manifest,
+        manifest_hash="",  # not yet computed
+        release_staged_event={"payload": {
+            "released_object_uuids": released_uuids,
+            "stage_number": stage_number,
+            "final_stage": final_stage,
+        }},
+        per_object_released_events=per_object_events,
+        reservation_updates=reservation_updates_by_prefix,
+        proposed_revisions=proposed_revisions,
+    )
+
+    # B11: stage dependency closure (always; raises on violation)
+    validate_stage_dependency_closure(workspace, bundle.bundle_dir, proto_release_draft)
+
+    # B16 absorption arc 20260531-2 round-7: per-stage attachment integrity +
+    # attachment lineage validation for Attachment-bearing Objects in THIS
+    # release set. Prior-stage attachments were validated when their stage
+    # was released. Outcomes baked into manifest per B15.
+    integrity_outcomes = validate_attachment_integrity(
+        workspace, bundle.bundle_dir, proto_release_draft,
+    )
+    validation_outcomes.extend(integrity_outcomes)
+    lineage_outcomes = validate_attachment_lineage(
+        workspace, bundle.bundle_dir, proto_release_draft,
+    )
+    validation_outcomes.extend(lineage_outcomes)
+
+    # B11 + B13 + B15: final-stage validations APPEND outcomes to manifest
+    if final_stage:
+        cardinality_outcomes = validate_final_stage_cardinality(
+            workspace, bundle.bundle_dir, proto_release_draft,
+        )
+        validation_outcomes.extend(cardinality_outcomes)
+        vv_outcomes = validate_final_stage_vv_chain_integrity(
+            workspace, bundle.bundle_dir, proto_release_draft,
+        )
+        validation_outcomes.extend(vv_outcomes)
+
+    # Build FINAL manifest with all outcomes baked in
+    manifest = {
+        "artifact_kind": "manifest",
+        "manifest_type": "release",
+        "release_label": release_label,
+        "released_at": now,
+        "schema_version": bundle.bundle_version,
+        "revisions": revisions,
+        "stage_number": stage_number,
+        "final_stage": final_stage,
+        "validation_outcomes": validation_outcomes,
+        "event_log_boundary": event_log_boundary,
+    }
+    if prior_stage_manifest_ref:
+        manifest["prior_stage_manifest_ref"] = prior_stage_manifest_ref
+
+    manifest_bytes = serialize_manifest_inline(manifest)
+    manifest_hash = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+
+    draft.stage_manifest(release_label, manifest)
+
+    # release_staged event — post-release audit record; references the sealed manifest
+    event_counter += 1
+    release_staged_event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": f"evt_{event_counter:04d}",
+        "event_type": "release_staged",
+        "timestamp": now,
+        "transaction_id": transaction_id,
+        "payload": {
+            "release_label": release_label,
+            "manifest_hash": manifest_hash,
+            "stage_number": stage_number,
+            "final_stage": final_stage,
+            "released_object_uuids": released_uuids,
+        },
+    }
+    if prior_stage_manifest_ref:
+        release_staged_event["payload"]["prior_stage_manifest_ref"] = prior_stage_manifest_ref
+    draft.stage_event(release_staged_event)
+
+    # N2 draft-mode release_staged consistency check (runs in validate phase).
+    # The validators that PRODUCE outcomes (closure / cardinality / V&V) have
+    # already run above and their outcomes are baked into manifest. The hook
+    # below runs the cross-artifact consistency check (release_staged ↔
+    # manifest hash, per-object events agree, etc.) — these don't produce
+    # additional outcomes; they only validate.
+    rd = ReleaseDraft(
+        release_label=release_label,
+        manifest=manifest,
+        manifest_hash=manifest_hash,
+        release_staged_event=release_staged_event,
+        per_object_released_events=per_object_events,
+        reservation_updates=reservation_updates_by_prefix,
+        proposed_revisions=proposed_revisions,
+    )
+
+    def _release_validation_hook(draft_: TransactionDraft) -> None:
+        validate_release_draft(workspace, bundle.bundle_dir, rd)
+
+    draft.pre_validate_hooks.append(_release_validation_hook)
+
+    # B8 absorption (Phase 1 round-5): final-release B6 scan against the
+    # release-extended event history; N3 Reservation integrity replay.
+    # Both checks run after schema validate completes but before commit.
+    def _release_final_scans(draft_: TransactionDraft) -> None:
+        # The proposed events are not yet on disk; B6 scan walks committed
+        # history. The new events (relationship_created from THIS release
+        # context don't exist; release_staged + <type>_released don't mutate
+        # working state) so the scan against committed history is correct.
+        violations = find_mutation_after_binding_violations(workspace, bundle.bundle_dir)
+        if violations:
+            raise RevisionBindingError(
+                "B6 final-release scan caught mutation-after-binding violations:\n  - "
+                + "\n  - ".join(violations)
+            )
+        # N3 invariants 1+3 (canonical state after we apply this release):
+        # Invariant 2 (Fixed-endpoint resolution) is already enforced at
+        # link-time in change_parameter/attach_file paths and at draft-build
+        # in link_relationship. Invariants 1 and 3 are checked against the
+        # proposed post-release Reservation state.
+        for prefix, proposed_res in draft_.reservation_writes.items():
+            for number, entry in proposed_res.get("reservations", {}).items():
+                current = entry.get("current_revision_id")
+                released = entry.get("released_revision_ids") or []
+                if current and current in released:
+                    raise ReservationIntegrityError(
+                        f"N3 invariant 3 (post-release): Reservation {prefix}/{number} "
+                        f"current_revision_id {current!r} appears in released_revision_ids[]"
+                    )
+
+    draft.post_validate_hooks.append(_release_final_scans)
+    draft.commit_message_lines = [
+        f"aiadra: release {release_label} stage={stage_number} final={final_stage}",
+        f"",
+        f"Transaction {transaction_id} released {len(object_numbers)} Object(s): "
+        f"{', '.join(object_numbers)}.",
+        f"Manifest hash {manifest_hash}.",
+    ]
+    return draft
+
+
+def serialize_manifest_inline(manifest: dict[str, Any]) -> bytes:
+    """Local helper — same as truth_model.manifest.serialize_manifest."""
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

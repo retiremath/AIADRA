@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - relationship_created",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "relationship_created"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "source_uuid",
+        "relationship_record"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source_uuid": {
+          "type": "string"
+        },
+        "relationship_record": {
+          "oneOf": [
+            {
+              "$ref": "../relationship/satisfies.schema.json"
+            },
+            {
+              "$ref": "../relationship/tested_against.schema.json"
+            },
+            {
+              "$ref": "../relationship/verifies.schema.json"
+            },
+            {
+              "$ref": "../relationship/cites.schema.json"
+            },
+            {
+              "$ref": "../relationship/executes.schema.json"
+            },
+            {
+              "$ref": "../relationship/executed_on.schema.json"
+            },
+            {
+              "$ref": "../relationship/produces.schema.json"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

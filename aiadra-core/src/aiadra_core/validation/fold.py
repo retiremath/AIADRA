@@ -26,13 +26,85 @@ class FoldInconsistencyError(ValueError):
     """Sidecar/event invariant violation."""
 
 
+_ATTACHMENT_CHANGED_EVENTS = (
+    "drawing_changed",
+    "test_procedure_changed",
+    "test_execution_changed",
+    "evidence_artifact_changed",
+)
+
+
+def _apply_attachment_delta(
+    state: dict[str, dict[str, Any]],
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Apply a `<type>_changed.attachment_delta` event to fold state.
+
+    Per B5 absorption (Phase 1 arc 20260531-2): enforces add/update/remove
+    semantic invariants — add MUST fail if id exists; update/remove MUST fail
+    if id missing; record.id MUST equal attachment_id.
+    """
+    uuid = payload["object_uuid"]
+    delta = payload["attachment_delta"]
+    op = delta["operation"]
+    att_id = delta["attachment_id"]
+    if uuid not in state:
+        raise FoldInconsistencyError(
+            f"{event_type} for unknown Object {uuid!r} (no <type>_created event)"
+        )
+    sidecar_attachments = state[uuid].setdefault("attachment", [])
+    by_id = {a["id"]: i for i, a in enumerate(sidecar_attachments)}
+
+    if op == "add":
+        if att_id in by_id:
+            raise FoldInconsistencyError(
+                f"{event_type} add attachment_id {att_id!r} but already present on {uuid}"
+            )
+        rec = delta.get("attachment_record")
+        if not rec:
+            raise FoldInconsistencyError(
+                f"{event_type} add missing attachment_record"
+            )
+        if rec.get("id") != att_id:
+            raise FoldInconsistencyError(
+                f"{event_type} attachment_record.id {rec.get('id')!r} != "
+                f"attachment_id {att_id!r}"
+            )
+        sidecar_attachments.append(json.loads(json.dumps(rec)))
+    elif op == "update":
+        if att_id not in by_id:
+            raise FoldInconsistencyError(
+                f"{event_type} update attachment_id {att_id!r} but not present on {uuid}"
+            )
+        rec = delta.get("attachment_record")
+        if not rec:
+            raise FoldInconsistencyError(
+                f"{event_type} update missing attachment_record"
+            )
+        if rec.get("id") != att_id:
+            raise FoldInconsistencyError(
+                f"{event_type} attachment_record.id {rec.get('id')!r} != "
+                f"attachment_id {att_id!r}"
+            )
+        sidecar_attachments[by_id[att_id]] = json.loads(json.dumps(rec))
+    elif op == "remove":
+        if att_id not in by_id:
+            raise FoldInconsistencyError(
+                f"{event_type} remove attachment_id {att_id!r} but not present on {uuid}"
+            )
+        sidecar_attachments[:] = [a for a in sidecar_attachments if a["id"] != att_id]
+
+
 def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[str, Any]]:
     """Replay validated events; build current working-state by UUID.
 
     Handles generic `<type>_created` events (Wedge-002 round-1 B1 pattern:
     `et.endswith('_created') + initial_sidecar payload`), `relationship_created`,
-    `parameter_changed`, and `<type>_released` (no working-state mutation —
-    Revisions are separate immutable artifacts per ADR/0001 §3).
+    `parameter_changed`, `<type>_changed` (W2 absorption — attachment_delta with
+    B5 invariants), `release_staged` (audit-oriented; no working-state mutation),
+    and `<type>_released` (no working-state mutation — Revisions are separate
+    immutable artifacts per ADR/0001 §3).
     """
     state: dict[str, dict[str, Any]] = {}
     for event in read_events(workspace, bundle_dir):  # validated iterator
@@ -52,6 +124,11 @@ def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[st
                 if p.get("id") == pid:
                     p["value"] = new_value
                     break
+        elif et in _ATTACHMENT_CHANGED_EVENTS:
+            _apply_attachment_delta(state, et, event["payload"])
+        elif et == "release_staged":
+            # Audit-oriented per B1 absorption; no working-state mutation.
+            pass
         # <type>_released and <type>_retired events do not mutate working state.
     return state
 
