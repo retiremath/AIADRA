@@ -52,9 +52,19 @@ class CommitError(RuntimeError):
 
 @dataclass
 class ValidationOutcome:
+    """One validator's result.
+
+    Per Phase D Codex1 B4 + D5b absorption (arc 20260531-10): extended with
+    optional `tree: ExplanationNode | None` field for FAIL outcomes carrying
+    structured failure data. Existing `details: str` field unchanged so
+    Phase 1-C validators that produce flat string outcomes continue working
+    without changes; new validators populate both `details` (rendered text)
+    and `tree` (structured node).
+    """
     check_name: str
     result: str  # "PASS" | "FAIL"
     details: str = ""
+    tree: "ExplanationNode | None" = None  # forward ref — explain module imported lazily
 
 
 @dataclass
@@ -118,11 +128,19 @@ def git_repo_dirty_for_aiadra_paths(workspace: Path) -> tuple[bool, str]:
         "Reservations/", "revisions/", "Releases/", "vault/",
         ".aiadra/", "events.jsonl",
     )
+    # Phase D (arc 20260531-10): per ADR/0026 §9 + Codex2 B1 path discipline
+    # (arc 20260531-6), the `.aiadra/audit/` subdirectory is carved OUT of
+    # the dirty-guard so failed-Transaction audit emission never blocks
+    # subsequent canonical Transactions. `.aiadra/audit-config.yaml` at the
+    # `.aiadra/` ROOT remains managed configuration and stays guarded.
+    aiadra_carve_out_prefixes = (".aiadra/audit/",)
     for line in result.stdout.splitlines():
         # porcelain format: XY <path>
         if len(line) < 3:
             continue
         path = line[3:].strip()
+        if path.startswith(aiadra_carve_out_prefixes):
+            continue  # .aiadra/audit/* carved out per Phase D
         if path.startswith(tuple(aiadra_managed_prefixes)) or path == "events.jsonl":
             return True, f"AIADRA-managed path dirty: {path}"
     return False, ""
@@ -165,6 +183,14 @@ class TransactionDraft:
     # should treat the draft as opaque post-terminal.
     _lifecycle_state: str = "open"  # "open" | "committed" | "rolled_back"
 
+    # Phase D (arc 20260531-10) Codex1 B3 absorption: single-record audit
+    # semantics. Each TransactionDraft may emit at most one failed-Transaction
+    # audit record. Set by `_emit_audit_once()`; subsequent emission attempts
+    # no-op silently. Triggers — `audit_failure()` (operations-layer catch
+    # path), `rollback()` (only if not already emitted AND staged content
+    # exists), `commit()` on CommitError (write-time crash).
+    _audit_emitted: bool = False
+
     def _assert_open(self, op: str) -> None:
         """Raise TransactionError if the draft is in a terminal state.
         Called by commit / rollback / modify-call-paths per Codex1 B3."""
@@ -173,6 +199,93 @@ class TransactionDraft:
                 f"cannot {op}: draft is {self._lifecycle_state} (terminal state); "
                 f"create a new draft via protocol.propose()"
             )
+
+    # -------------------------------------------------------------------------
+    # Phase D (arc 20260531-10) Codex1 B3 absorption: audit emission helpers.
+    # -------------------------------------------------------------------------
+
+    def _emit_audit_once(
+        self,
+        *,
+        reason_text: str,
+        reason_classification: str,
+        agent_ref: str | None,
+        validation_error_trees: list,
+    ) -> None:
+        """Write a single failed-Transaction audit record at most once per
+        draft. Per Codex1 B3 absorption: short-circuits silently if
+        `_audit_emitted` is already True; sets the flag regardless of
+        write outcome (success or stderr-warned failure) so subsequent
+        attempts no-op.
+
+        Per Codex1 Q5: NEVER raises. Audit is diagnostic; failure to write
+        MUST NOT mask validation/rollback/commit errors.
+        """
+        if self._audit_emitted:
+            return
+        try:
+            from ..audit import AuditRecord, write_audit_record, _now_iso_utc
+            from ..explain import node_to_dict
+            attempted_at = _now_iso_utc()
+            record = AuditRecord(
+                transaction_id=self.transaction_id,
+                attempted_at=attempted_at,
+                kind=self.kind.value,
+                proposed_events=list(self.events),
+                validation_errors=[node_to_dict(t) for t in validation_error_trees if t is not None],
+                reason_classification=reason_classification,
+                reason_text=reason_text,
+                agent_ref=agent_ref,
+            )
+            write_audit_record(self.workspace, record)
+        except Exception as e:
+            # Audit MUST NEVER mask original error per Codex1 Q5.
+            import sys as _sys
+            print(
+                f"aiadra audit: emission failed for {self.transaction_id}: "
+                f"{type(e).__name__}: {e}",
+                file=_sys.stderr,
+            )
+        finally:
+            # Always mark emitted (even on failure) so subsequent attempts
+            # no-op rather than re-attempting and re-failing.
+            self._audit_emitted = True
+
+    def audit_failure(
+        self,
+        reason: str,
+        exception: BaseException,
+        *,
+        agent_ref: str | None = None,
+        reason_classification: str | None = None,
+    ) -> None:
+        """Emit a failed-Transaction audit record for a draft that raised
+        from `validate()` (or any other operation-layer failure). Called
+        by callers that catch the exception themselves; ensures the
+        diagnostic record is on disk before the draft is discarded.
+
+        Per Codex1 N1 absorption: `agent_ref` is explicit kwarg (NOT parsed
+        from `reason`); CLI omits, Python agents pass.
+
+        Per Codex1 Q6 absorption: if `reason_classification` is omitted, it
+        is inferred from `exception`'s class via `classify_exception()`.
+
+        No-op if a prior audit record has already been emitted for this draft.
+        """
+        from ..explain import classify_exception, validation_error_node
+        cls = reason_classification or classify_exception(exception)
+        trees = [validation_error_node(
+            error_type=type(exception).__name__,
+            classification=cls,
+            check_name="audit_failure",
+            message=str(exception),
+        )]
+        self._emit_audit_once(
+            reason_text=reason,
+            reason_classification=cls,
+            agent_ref=agent_ref,
+            validation_error_trees=trees,
+        )
 
     def stage_sidecar(self, obj_uuid: str | UUID, sidecar: dict[str, Any]) -> None:
         self.sidecar_writes[str(obj_uuid)] = sidecar
@@ -212,65 +325,223 @@ class TransactionDraft:
         Draft-then-commit boundary. In addition to per-artifact schema checks,
         it folds proposed events + sidecars against current on-disk state and
         rejects any sidecar/event invariant violation BEFORE commit.
+
+        Phase D Codex1 B1 absorption (arc 20260531-10): now delegates to
+        `_validate_internal(collect_failures=False)`. The commit path keeps
+        raise-on-first-fail semantics; the new `simulate()` method calls
+        `_validate_internal(collect_failures=True)` to collect structured
+        FAIL outcomes without raising — agents reason via the report, commit
+        gates via the exception.
         """
+        return self._validate_internal(collect_failures=False)
+
+    def simulate(self) -> list[ValidationOutcome]:
+        """Run all validation checks in collect-mode — never raises on a known
+        validation exception; converts each to a FAIL `ValidationOutcome` with
+        `tree` populated. Phase D Codex1 B1 absorption (arc 20260531-10).
+
+        Writes nothing. Emits no audit. Asserts open per Codex1 B3 lifecycle
+        pattern (Phase C) — running simulate on a closed draft makes no sense.
+
+        Returns the full outcome list (PASS + FAIL mixed) for the caller to
+        wrap in `ValidationReport`. The protocol-level free function
+        `protocol.simulate(draft)` is the agent-facing surface.
+        """
+        self._assert_open("simulate")
+        return self._validate_internal(collect_failures=True)
+
+    def _validate_internal(self, *, collect_failures: bool) -> list[ValidationOutcome]:
+        """Shared validation runner. Phase D Codex1 B1 absorption.
+
+        When `collect_failures=False` (commit path): preserves Phase 1-C
+        raise-on-first-fail semantics — known validation exceptions propagate.
+
+        When `collect_failures=True` (simulate path): catches each section's
+        known exceptions, appends a structured FAIL `ValidationOutcome` with
+        `tree=validation_error_node(...)`, continues to next section. Per
+        Codex1 B1 absorption — agents need structured failure data without
+        side effects.
+
+        Phase D Codex2 B3 absorption (arc 20260531-10): in collect mode,
+        dependent proposed-state checks (`_validate_proposed_fold` +
+        `_validate_proposed_b6_scan`) are SKIPPED when earlier schema checks
+        failed (a malformed event missing `event_type` would otherwise raise
+        `KeyError` from fold). A "SKIPPED" outcome is recorded so the report
+        explains the cascade. Additionally, the inner `_try` catches a
+        broader exception set in collect mode (any Exception → "other"
+        classification) as a safety net for non-validation bugs in dependent
+        checks; this keeps simulate's contract — never raises on a malformed
+        draft.
+        """
+        # Local import — keeps explain dependency lazy + breaks circular risk.
+        from ..explain import classify_exception, validation_error_node
+        from ..validation.binding import RevisionBindingError
+        from ..validation.reservation_integrity import ReservationIntegrityError
+        from ..validation.release import ReleaseConsistencyError
+
+        # Per Codex1 B1: commit path catches only known validation exceptions.
+        # Per Codex2 B3 (arc 20260531-10): simulate path also catches a
+        # broader Exception in dependent-check sections as a safety net.
+        _KNOWN_EXC = (
+            SchemaValidationError, ProfileViolationError, FoldInconsistencyError,
+            RevisionBindingError, ReservationIntegrityError, ReleaseConsistencyError,
+        )
         outcomes: list[ValidationOutcome] = []
 
-        # Run pre-validate hooks (B6 mutation-prohibition, etc.)
-        for hook in self.pre_validate_hooks:
-            hook(self)
+        def _try(check_name: str, body, *, broad_catch: bool = False):
+            """Run body(); on exception:
+              - commit mode: re-raise (known exceptions only — broad_catch ignored).
+              - simulate mode: append FAIL outcome with tree, continue.
+                If broad_catch=True, also catches any Exception (Codex2 B3
+                safety net for dependent-check sections after schema fail).
+            """
+            try:
+                body()
+            except _KNOWN_EXC as e:
+                if not collect_failures:
+                    raise
+                outcomes.append(ValidationOutcome(
+                    check_name=check_name, result="FAIL",
+                    details=str(e),
+                    tree=validation_error_node(
+                        error_type=type(e).__name__,
+                        classification=classify_exception(e),
+                        check_name=check_name,
+                        message=str(e),
+                    ),
+                ))
+                return False
+            except Exception as e:
+                if not (collect_failures and broad_catch):
+                    raise
+                outcomes.append(ValidationOutcome(
+                    check_name=check_name, result="FAIL",
+                    details=f"{type(e).__name__}: {e}",
+                    tree=validation_error_node(
+                        error_type=type(e).__name__,
+                        classification="other",
+                        check_name=check_name,
+                        message=str(e),
+                    ),
+                ))
+                return False
+            return True
+
+        # Pre-validate hooks (B6 mutation-prohibition, etc.)
+        for i, hook in enumerate(self.pre_validate_hooks):
+            _try(f"pre_validate_hook[{i}]", lambda h=hook: h(self))
+
+        # Track schema-check failure count separately so dependent checks
+        # (fold + b6 scan) can skip when schema is broken (Codex2 B3).
+        schema_failures_before_dependent = 0
+
+        def _count_schema_failures() -> int:
+            return sum(
+                1 for o in outcomes
+                if o.result == "FAIL" and o.check_name.startswith("schema(")
+            )
 
         # 1. Schema-validate each staged sidecar
         for uuid, sc in self.sidecar_writes.items():
-            obj_type = sc.get("object", {}).get("type")
-            if not obj_type:
-                raise SchemaValidationError(f"Staged sidecar for {uuid} missing object.type")
-            self.bundle.validate(sc, "sidecar", obj_type)
-            outcomes.append(ValidationOutcome(f"schema(sidecar:{uuid})", "PASS"))
+            check_name = f"schema(sidecar:{uuid})"
+
+            def _body(uuid=uuid, sc=sc):
+                obj_type = sc.get("object", {}).get("type")
+                if not obj_type:
+                    raise SchemaValidationError(f"Staged sidecar for {uuid} missing object.type")
+                self.bundle.validate(sc, "sidecar", obj_type)
+
+            if _try(check_name, _body):
+                outcomes.append(ValidationOutcome(check_name, "PASS"))
 
         # 2. Schema-validate each staged event
         for ev in self.events:
-            et = ev.get("event_type")
-            if not et:
-                raise SchemaValidationError(f"Staged event missing event_type: {ev!r}")
-            self.bundle.validate(ev, "event", et)
-            outcomes.append(ValidationOutcome(f"schema(event:{ev.get('event_id', '?')})", "PASS"))
+            check_name = f"schema(event:{ev.get('event_id', '?')})"
+
+            def _body(ev=ev):
+                et = ev.get("event_type")
+                if not et:
+                    raise SchemaValidationError(f"Staged event missing event_type: {ev!r}")
+                self.bundle.validate(ev, "event", et)
+
+            if _try(check_name, _body):
+                outcomes.append(ValidationOutcome(check_name, "PASS"))
 
         # 3. Schema-validate each staged reservation
         for prefix, res in self.reservation_writes.items():
-            self.bundle.validate(res, "reservation", prefix)
-            outcomes.append(ValidationOutcome(f"schema(reservation:{prefix})", "PASS"))
+            check_name = f"schema(reservation:{prefix})"
+            if _try(check_name, lambda prefix=prefix, res=res: self.bundle.validate(res, "reservation", prefix)):
+                outcomes.append(ValidationOutcome(check_name, "PASS"))
 
         # 4. Schema-validate each staged revision
         for (uuid, rev_id), content in self.revision_writes.items():
-            obj_type = content.get("object", {}).get("type")
-            self.bundle.validate(content, "revision", obj_type)
-            outcomes.append(ValidationOutcome(f"schema(revision:{rev_id})", "PASS"))
+            check_name = f"schema(revision:{rev_id})"
+
+            def _body(content=content):
+                obj_type = content.get("object", {}).get("type")
+                self.bundle.validate(content, "revision", obj_type)
+
+            if _try(check_name, _body):
+                outcomes.append(ValidationOutcome(check_name, "PASS"))
 
         # 5. Schema-validate each staged manifest
         for label, m in self.manifest_writes.items():
-            self.bundle.validate(m, "manifest", m.get("manifest_type", "release"))
-            outcomes.append(ValidationOutcome(f"schema(manifest:{label})", "PASS"))
+            check_name = f"schema(manifest:{label})"
+            if _try(check_name, lambda m=m: self.bundle.validate(m, "manifest", m.get("manifest_type", "release"))):
+                outcomes.append(ValidationOutcome(check_name, "PASS"))
 
-        # 6. B9: Proposed-state sidecar/event fold check. Skip for INIT
-        # (workspace empty; no events to fold; reservations are seeded fresh).
+        schema_failures_before_dependent = _count_schema_failures()
+
+        # 6. B9: Proposed-state sidecar/event fold check. Skip for INIT.
+        # Phase D Codex2 B3 absorption: in collect mode, skip if any schema
+        # check failed (fold would crash on the malformed artifact); record
+        # a SKIPPED outcome so the report explains the cascade.
         if self.kind != TransactionKind.INIT:
-            self._validate_proposed_fold(outcomes)
+            if collect_failures and schema_failures_before_dependent > 0:
+                outcomes.append(ValidationOutcome(
+                    check_name="proposed_fold_invariant",
+                    result="FAIL",
+                    details=f"SKIPPED: {schema_failures_before_dependent} prior schema check(s) failed; "
+                            f"proposed-state fold cannot be evaluated on malformed staged artifacts.",
+                    tree=validation_error_node(
+                        error_type="DependencySkipped",
+                        classification="other",
+                        check_name="proposed_fold_invariant",
+                        message=f"skipped due to {schema_failures_before_dependent} prior schema failure(s)",
+                    ),
+                ))
+            else:
+                _try(
+                    "proposed_fold_invariant",
+                    lambda: self._validate_proposed_fold(outcomes),
+                    broad_catch=True,  # Codex2 B3 safety net
+                )
 
-        # 7. Codex2 B1 absorption (arc 20260531-9): proposed-state B6
-        # mutation-after-binding scan. Composable `modify()` can stage a Fixed
-        # execution binding AND a mutation of the bound target in the same
-        # draft; the per-op `_mutation_prohibition_hook` only walked committed
-        # disk state, so it could not catch this. Running the scan over
-        # `committed_events + draft.events` here forces the Draft-then-commit
-        # boundary to reject the violation BEFORE writes hit disk, instead
-        # of relying on the post-commit `protocol.validate()` to notice.
-        # Skip for INIT (no events; bootstrap) — every other kind needs it.
+        # 7. Codex2 B1 absorption (arc 20260531-9): proposed-state B6 scan.
         if self.kind != TransactionKind.INIT:
-            self._validate_proposed_b6_scan(outcomes)
+            if collect_failures and schema_failures_before_dependent > 0:
+                outcomes.append(ValidationOutcome(
+                    check_name="proposed_binding_mutation_scan",
+                    result="FAIL",
+                    details=f"SKIPPED: {schema_failures_before_dependent} prior schema check(s) failed; "
+                            f"proposed-state B6 scan cannot be evaluated on malformed staged artifacts.",
+                    tree=validation_error_node(
+                        error_type="DependencySkipped",
+                        classification="other",
+                        check_name="proposed_binding_mutation_scan",
+                        message=f"skipped due to {schema_failures_before_dependent} prior schema failure(s)",
+                    ),
+                ))
+            else:
+                _try(
+                    "proposed_binding_mutation_scan",
+                    lambda: self._validate_proposed_b6_scan(outcomes),
+                    broad_catch=True,  # Codex2 B3 safety net
+                )
 
-        # Run post-validate hooks (final-stage scans, etc.)
-        for hook in self.post_validate_hooks:
-            hook(self)
+        # Post-validate hooks (final-stage scans, etc.)
+        for i, hook in enumerate(self.post_validate_hooks):
+            _try(f"post_validate_hook[{i}]", lambda h=hook: h(self), broad_catch=True)
 
         return outcomes
 
@@ -401,24 +672,46 @@ class TransactionDraft:
 
     # -------------------------------------------------------------------------
 
-    def rollback(self, *, reason: str | None = None) -> "RollbackResult":
-        """Discard the draft. Phase A per ADR/0026 §9 + arc 20260531-7:
-        discard-only, no audit emission (Phase D adds audit).
+    def rollback(
+        self,
+        *,
+        reason: str | None = None,
+        reason_classification: str = "other",
+        agent_ref: str | None = None,
+    ) -> "RollbackResult":
+        """Discard the draft.
 
-        Clears ALL staged mutable collections per Codex1 Q5 absorption:
-        sidecar_writes, sidecar_deletes, events, reservation_writes,
-        revision_writes, manifest_writes, vault_writes, project_pin_write,
-        commit_message_lines, pre_validate_hooks, post_validate_hooks.
+        Clears ALL staged mutable collections per Codex1 Q5 absorption (Phase A).
 
         Phase C (arc 20260531-9) Codex1 B3 absorption: terminal-state guard.
         Raises if the draft is already in a terminal state (committed or
         rolled_back); marks lifecycle state as "rolled_back" on success.
+
+        Phase D (arc 20260531-10) Codex1 B3 absorption: emits a failed-
+        Transaction audit record BEFORE clearing if `_audit_emitted == False`
+        AND there is staged content to record. Single-record semantics —
+        `_emit_audit_once()` no-ops if `audit_failure()` already emitted.
+        Audit emission failure NEVER masks rollback semantics.
+
+        Phase D Codex1 N1 absorption: `agent_ref` is explicit kwarg (NOT
+        parsed from `reason`); CLI omits, Python agents pass.
 
         Returns a `RollbackResult` carrying the original `transaction_id`,
         optional `reason`, and `discarded_change_count` = sum of all the
         non-empty staged collections at the time of rollback.
         """
         self._assert_open("rollback")
+        # Phase D Codex2 N1 absorption (arc 20260531-10): VALIDATE
+        # reason_classification up-front while the draft is still open.
+        # Silent coercion to "other" makes diagnostic data less trustworthy;
+        # operators / agents should see typos immediately rather than later.
+        from ..explain import REASON_CLASSIFICATIONS
+        if reason_classification not in REASON_CLASSIFICATIONS:
+            raise ValueError(
+                f"rollback reason_classification must be one of "
+                f"{sorted(REASON_CLASSIFICATIONS)}; got {reason_classification!r} "
+                f"(Codex2 N1 absorption arc 20260531-10)."
+            )
         discarded = (
             len(self.events)
             + len(self.sidecar_writes)
@@ -428,6 +721,19 @@ class TransactionDraft:
             + len(self.manifest_writes)
             + len(self.vault_writes)
         )
+        # Phase D B3: audit emit BEFORE clearing (needs staged data). Skip if
+        # already emitted via audit_failure(), or if nothing was staged
+        # (rollback-on-empty-draft is not a "failed Transaction"). Per
+        # Codex2 N3 absorption (arc 20260531-10): validation_errors=[] is
+        # the explicit wire shape for rolled-back-without-validation — null
+        # would also work but empty list is simpler for consumers.
+        if not self._audit_emitted and discarded > 0:
+            self._emit_audit_once(
+                reason_text=reason or "rollback",
+                reason_classification=reason_classification,
+                agent_ref=agent_ref,
+                validation_error_trees=[],
+            )
         self.sidecar_writes.clear()
         self.sidecar_deletes.clear()
         self.events.clear()
@@ -526,9 +832,20 @@ class TransactionDraft:
                     _git(self.workspace, "commit", "-m", msg)
                     commit_hash = _git(self.workspace, "rev-parse", "HEAD").stdout.strip()
                 except subprocess.CalledProcessError as e:
-                    raise CommitError(
+                    # Phase D (arc 20260531-10) Codex1 B3 absorption: emit
+                    # audit record for commit-time failure (rare; git crash
+                    # mid-commit). Single-record semantics via _emit_audit_once.
+                    # Audit emission failure MUST NOT mask CommitError.
+                    err = CommitError(
                         f"git commit failed: {e.stderr.strip() or e.stdout.strip()}"
-                    ) from e
+                    )
+                    self._emit_audit_once(
+                        reason_text=f"commit failed: {err}",
+                        reason_classification="other",
+                        agent_ref=None,
+                        validation_error_trees=[],
+                    )
+                    raise err from e
 
         # Phase C (arc 20260531-9) Codex1 B3 absorption: mark terminal AFTER
         # all writes succeed. A second commit() now raises via _assert_open.

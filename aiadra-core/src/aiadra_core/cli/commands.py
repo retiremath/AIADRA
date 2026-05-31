@@ -443,6 +443,165 @@ def cmd_release(argv: list[str]) -> int:
     )
 
 
+def cmd_explain(argv: list[str]) -> int:
+    """aiadra explain <workspace> <object-or-relationship-ref> [--depth N] [--json]
+
+    Phase D (arc 20260531-10) per ADR/0026 §2: walks an Object or Relationship's
+    history into an `ExplanationTree`. `ref` accepts Object Number (`P-000001`),
+    Object UUID, or `<obj-ref>:relationship:<rel_id>`. Default depth=1 (walks
+    one hop of related Objects); `--json` switches output from human-readable
+    indented text to JSON dump.
+    """
+    import argparse
+    p = argparse.ArgumentParser(prog="aiadra explain")
+    p.add_argument("workspace")
+    p.add_argument("ref", help="Object Number / UUID / <obj-ref>:relationship:<rel_id>")
+    p.add_argument("--depth", type=int, default=1)
+    p.add_argument("--json", action="store_true", help="JSON output (default: human-readable)")
+    args = p.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    from ..protocol import explain as protocol_explain, ProjectPinError, ObjectNotFoundError
+    try:
+        tree = protocol_explain(workspace, args.ref, depth=args.depth)
+    except ProjectPinError as e:
+        print(f"project pin failure: {e}", file=sys.stderr)
+        return 3
+    except ObjectNotFoundError as e:
+        print(f"explain: not found: {e}", file=sys.stderr)
+        return 2
+    if args.json:
+        import json
+        from ..explain import tree_to_dict
+        print(json.dumps(tree_to_dict(tree), indent=2, sort_keys=True))
+    else:
+        _print_tree_human(tree)
+    return 0
+
+
+def _print_tree_human(tree) -> None:
+    """Indented human-readable rendering for `aiadra explain` default output."""
+    print(f"# {tree.root.label}  (bundle v{tree.bundle_version})")
+
+    def _walk(node, indent: int) -> None:
+        prefix = "  " * indent
+        print(f"{prefix}- [{node.kind}] {node.label}  ref={node.ref}")
+        for k, v in node.details.items():
+            if v is None:
+                continue
+            print(f"{prefix}    {k}: {v}")
+        for child in node.children:
+            _walk(child, indent + 1)
+
+    _walk(tree.root, 0)
+
+
+def cmd_audit(argv: list[str]) -> int:
+    """aiadra audit list <workspace> [--date YYYY-MM-DD]
+       aiadra audit show <workspace> <tx_NNNN> [--date YYYY-MM-DD]
+
+    Phase D (arc 20260531-10) per ADR/0026 §9. Failures only (successes are
+    queryable via `git log` + `events.jsonl`).
+    """
+    if not argv:
+        print("usage: aiadra audit {list|show} <workspace> [...]", file=sys.stderr)
+        return 2
+    subcmd = argv[0]
+    if subcmd == "list":
+        return _cmd_audit_list(argv[1:])
+    if subcmd == "show":
+        return _cmd_audit_show(argv[1:])
+    print(f"aiadra audit: unknown subcommand {subcmd!r}; expected 'list' or 'show'", file=sys.stderr)
+    return 2
+
+
+def _cmd_audit_list(argv: list[str]) -> int:
+    import argparse
+    p = argparse.ArgumentParser(prog="aiadra audit list")
+    p.add_argument("workspace")
+    p.add_argument("--date", default=None, help="Filter to YYYY-MM-DD subdirectory")
+    args = p.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    from ..audit import list_audit_files
+    files = list_audit_files(workspace)
+    if args.date:
+        files = [f for f in files if f"/{args.date}/" in f.as_posix() or f"\\{args.date}\\" in str(f)]
+    if not files:
+        print("(no audit records)" if not args.date else f"(no audit records for {args.date})")
+        return 0
+    for f in files:
+        rel = f.relative_to(workspace).as_posix() if workspace in f.parents else str(f)
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        print(f"{rel}  ({size} bytes)")
+    return 0
+
+
+def _cmd_audit_show(argv: list[str]) -> int:
+    import argparse, json as _json
+    p = argparse.ArgumentParser(prog="aiadra audit show")
+    p.add_argument("workspace")
+    p.add_argument("tx_id", help="Transaction id (e.g. tx_0003)")
+    p.add_argument("--date", default=None, help="YYYY-MM-DD subdirectory (default: search all)")
+    args = p.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    from ..audit import list_audit_files
+    files = list_audit_files(workspace)
+    if args.date:
+        files = [f for f in files if f"/{args.date}/" in f.as_posix() or f"\\{args.date}\\" in str(f)]
+    matches = [f for f in files if f.name.startswith(f"{args.tx_id}-failed-")]
+    if not matches:
+        scope = f" on {args.date}" if args.date else ""
+        print(f"aiadra audit show: no records for {args.tx_id}{scope}", file=sys.stderr)
+        return 2
+    for f in matches:
+        rel = f.relative_to(workspace).as_posix() if workspace in f.parents else str(f)
+        print(f"# {rel}")
+        try:
+            record = _json.loads(f.read_text(encoding="utf-8"))
+            print(_json.dumps(record, indent=2, sort_keys=True))
+        except Exception as e:
+            print(f"(could not parse: {type(e).__name__}: {e})", file=sys.stderr)
+    return 0
+
+
+def cmd_audit_prune(argv: list[str]) -> int:
+    """aiadra audit-prune <workspace> [--dry-run]
+
+    Phase D (arc 20260531-10) per ADR/0026 §9: applies retention policy from
+    `.aiadra/audit-config.yaml` (defaults: max_age_days=30, max_total_mb=50).
+    Per Codex1 N2: `audit-prune` reads config in STRICT mode — parse errors
+    surface to the operator (unlike emission-path which falls back to
+    defaults silently).
+    """
+    import argparse
+    p = argparse.ArgumentParser(prog="aiadra audit-prune")
+    p.add_argument("workspace")
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    from ..audit import load_audit_config, compute_prune_set, apply_prune
+    try:
+        config = load_audit_config(workspace, strict=True)
+    except Exception as e:
+        print(f"audit-prune: config parse failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        to_delete, to_keep = compute_prune_set(workspace, config)
+        print(f"audit-prune dry-run: would delete {len(to_delete)} file(s); keep {len(to_keep)}.")
+        for p_ in to_delete:
+            try:
+                rel = p_.relative_to(workspace).as_posix()
+            except ValueError:
+                rel = str(p_)
+            print(f"  would delete: {rel}")
+        return 0
+    count, freed = apply_prune(workspace, config)
+    print(f"audit-prune: deleted {count} file(s); freed {freed} bytes.")
+    return 0
+
+
 def cmd_migrate(argv: list[str]) -> int:
     """aiadra migrate <workspace> --to-bundle <version> [--dry-run]
 

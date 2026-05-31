@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - release_staged (B1 absorption Phase 1)",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "release_staged"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "release_label",
+        "manifest_hash",
+        "stage_number",
+        "final_stage",
+        "released_object_uuids"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "release_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stage_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "final_stage": {
+          "type": "boolean"
+        },
+        "prior_stage_manifest_ref": {
+          "type": "object",
+          "required": [
+            "manifest_hash",
+            "stage_number"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "manifest_hash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "stage_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "release_label": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "released_object_uuids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Object UUIDs released in this stage. Per-Object <type>_released events carry the rev_id + hash details."
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

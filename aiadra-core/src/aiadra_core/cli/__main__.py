@@ -77,6 +77,13 @@ def main(argv: list[str] | None = None) -> int:
         return c.cmd_release(rest)
     if cmd == "migrate":
         return c.cmd_migrate(rest)
+    # Phase D commands (arc 20260531-10)
+    if cmd == "explain":
+        return c.cmd_explain(rest)
+    if cmd == "audit":
+        return c.cmd_audit(rest)
+    if cmd == "audit-prune":
+        return c.cmd_audit_prune(rest)
     if cmd == "recover":
         print(
             "aiadra recover: not implemented in Phase 1 (per Codex2 B7 absorption).\n"
@@ -127,7 +134,11 @@ State-changing (Phase 1):
   link-produces <workspace> <test-exec> <evidence>
   attach-file <workspace> <obj-num> <file-path> --role <role>
   release <workspace> --objects <num1,num2,...> [--stage N] [--no-final]
-  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0|0.24.0|0.25.0|0.26.0}} [--dry-run]
+  migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0|0.24.0|0.25.0|0.26.0|0.27.0}} [--dry-run]
+  explain <workspace> <object-or-relationship-ref> [--depth N] [--json]
+  audit list <workspace> [--date YYYY-MM-DD]
+  audit show <workspace> <tx_NNNN> [--date YYYY-MM-DD]
+  audit-prune <workspace> [--dry-run]
 
 Misc:
   --version                                   Print version

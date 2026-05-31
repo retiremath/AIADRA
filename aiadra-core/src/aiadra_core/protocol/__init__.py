@@ -1,34 +1,44 @@
 """AIADRA Ring 2 AI Action Protocol — canonical Python entry points.
 
 Per [ADR/0026](../../../Docs/ADR/0026-ai-action-protocol-scope.md) §"Sequencing"
-**Phase A** + **Phase B** + **Phase C**. Formalizes the existing aiadra-core
-surface as the agent-facing Ring 2 contract layer + adds the first NEW Ring 2
-operation (`query` over cumulative release graph + working set) + makes
-locality/staleness kwargs operational + lifts `TransactionDraft` to a
-first-class Ring 2 entity via `propose` (fresh draft) + `modify` (extend
-existing draft).
+**Phase A** + **Phase B** + **Phase C** + **Phase D**. **9-of-9 ADR/0026 §2
+contract surface complete.** Formalizes the existing aiadra-core surface as
+the agent-facing Ring 2 contract layer + adds `query` over cumulative
+release graph + working set + makes locality/staleness kwargs operational +
+lifts `TransactionDraft` to a first-class Ring 2 entity via `propose` /
+`modify` + adds `simulate` (no-write structured-failure-collecting
+validation) + `explain` (object/relationship history walks) +
+`explain_failure` (failure-tree construction) + failed-Transaction audit
+log emission per §9.
 
 Tier-1 in-process Python entry points; CLI is the Tier-2 thin wrapper
 (`aiadra_core.cli`); Tier-3 RPC adapters (MCP, OpenAI tools, LSP-style,
 custom JSON-RPC) live in SEPARATE ecosystem packages per Manifesto P11 and
 ADR/0026 Decision §6.
 
-**Phase A + B + C surface (8 of 9 ADR/0026 §2 contracts):**
+**Full Phase A+B+C+D surface (9 of 9 ADR/0026 §2 contracts):**
 
 - `inspect(workspace, object_ref, *, locality, staleness) -> ObjectView`
 - `query(workspace, *, kind, filter, locality, staleness) -> list[ObjectView]`
-- `propose(workspace, *, kind, params, actor) -> TransactionDraft`           ← NEW Phase C
-- `modify(draft, *, kind, params, actor) -> TransactionDraft`                ← NEW Phase C
-- `propose_kinds() -> tuple[str, ...]`                                       ← NEW Phase C
-- `modify_kinds() -> tuple[str, ...]`                                        ← NEW Phase C
+- `propose(workspace, *, kind, params, actor) -> TransactionDraft`
+- `modify(draft, *, kind, params, actor) -> TransactionDraft`
+- `propose_kinds() -> tuple[str, ...]`
+- `modify_kinds() -> tuple[str, ...]`
+- `simulate(draft) -> ValidationReport`                                      ← NEW Phase D
+- `explain(workspace, ref, *, depth, locality, staleness) -> ExplanationTree`← NEW Phase D
+- `explain_failure(failure, *, bundle_version, depth) -> ExplanationTree`    ← NEW Phase D
 - `validate(workspace) -> ValidationReport`
 - `commit(draft) -> CommitResult`
-- `rollback(draft, *, reason=None) -> RollbackResult`
-- `release(workspace, bundle, object_numbers, ..., release_label=None) -> TransactionDraft`
+- `rollback(draft, *, reason, reason_classification, agent_ref) -> RollbackResult`
+- `release(workspace, bundle, object_numbers, ..., release_label) -> TransactionDraft`
 
-Future-phase contracts (`simulate` Phase C-or-D; `explain` Phase D) are
-intentionally NOT exported — their absence is clearer documentation than
-`NotImplementedError` stubs would be (Codex1 Q7 absorption arc 20260531-7).
+`commit` / `rollback` is one terminal family per ADR/0026 Codex1 N2
+absorption (arc 20260531-6); `rollback` emits a failed-Transaction audit
+record per ADR/0026 §9 before clearing.
+
+No future-op stubs remain. The 9-of-9 surface is in place; future Ring 2
+SCNs extend behavior (per-relationship-type schemas; richer ExplanationTree
+detail kinds; etc.) but do not add named operations.
 
 **BYO-AI posture per ADR/0026 §0**: AIADRA Core ships zero AI model code;
 this module is a deterministic Python API that any agent (cloud LLM, local
@@ -691,20 +701,40 @@ def commit(draft: TransactionDraft) -> CommitResult:
     return draft.commit()
 
 
-def rollback(draft: TransactionDraft, *, reason: str | None = None) -> RollbackResult:
-    """Discard a TransactionDraft. Phase A: discard-only, no audit emission
-    (Phase D per ADR/0026 §9 + Codex1 N1 absorption arc 20260531-7).
+def rollback(
+    draft: TransactionDraft,
+    *,
+    reason: str | None = None,
+    reason_classification: str = "other",
+    agent_ref: str | None = None,
+) -> RollbackResult:
+    """Discard a TransactionDraft.
 
-    Clears ALL staged mutable collections (per Codex1 Q5 absorption):
-    sidecar_writes, sidecar_deletes, events, reservation_writes,
+    Clears ALL staged mutable collections (per Codex1 Q5 absorption arc
+    20260531-7): sidecar_writes, sidecar_deletes, events, reservation_writes,
     revision_writes, manifest_writes, vault_writes, project_pin_write,
     commit_message_lines, pre_validate_hooks, post_validate_hooks.
 
+    Phase D (arc 20260531-10) per ADR/0026 §9: emits a failed-Transaction
+    audit record at `.aiadra/audit/YYYY-MM-DD/tx_NNNN-failed-<short>.jsonl`
+    BEFORE clearing IF the draft has staged content AND no prior audit
+    emission via `draft.audit_failure()`. Audit emission failure NEVER
+    masks rollback semantics (Codex1 Q5).
+
+    `reason_classification` is one of the 6 enum values per ADR/0026 §9
+    (`schema_validation` / `profile_violation` / `fold_inconsistency` /
+    `binding_violation` / `release_consistency` / `other`); defaults to
+    `"other"`. `agent_ref` is optional per Codex1 N1 — CLI omits, Python
+    agents pass.
+
     `discarded_change_count` is the sum of staged events + sidecars +
-    reservations + revisions + manifests + vault byte chunks; useful for
-    diagnostic display + future audit emission.
+    reservations + revisions + manifests + vault byte chunks.
     """
-    return draft.rollback(reason=reason)
+    return draft.rollback(
+        reason=reason,
+        reason_classification=reason_classification,
+        agent_ref=agent_ref,
+    )
 
 
 # ---------- Phase A: release ----------
@@ -995,11 +1025,322 @@ def modify(
     )
 
 
+# ---------- Phase D: simulate / explain / explain_failure ----------
+#
+# Per [ADR/0026 §"Sequencing" Phase D](../../../Docs/ADR/0026-ai-action-protocol-scope.md):
+# - `simulate(draft) → ValidationReport` (Codex2 N1 absorption arc 20260531-6:
+#   "simulate and validate are functionally identical no-write operations").
+#   Phase D Codex1 B1 absorption (arc 20260531-10): simulate MUST return
+#   structured FAIL outcomes (no exceptions, no audit) so agents can iterate
+#   over failure trees without side effects. Achieved via
+#   `TransactionDraft.simulate()` which calls `_validate_internal(collect_failures=True)`.
+# - `explain(workspace, ref, *, depth=1) → ExplanationTree`: object/relationship
+#   history walk. Phase D Codex1 B2 absorption: SIBLING to `explain_failure`
+#   (workspace-ref-based traversal).
+# - `explain_failure(failure, *, depth=0) → ExplanationTree`: failure-tree
+#   construction. Phase D Codex1 B2 absorption: satisfies ADR/0026's
+#   `explain(failure, *, depth)` contract directly. Accepts a `ValidationOutcome`
+#   with `tree` populated OR a bare `ExplanationNode`.
+
+
+def simulate(draft: TransactionDraft) -> "ValidationReport":
+    """No-write validation pass over a `TransactionDraft`. Returns a
+    `ValidationReport` carrying ALL validation outcomes — both PASS and FAIL
+    — without raising on known validation exceptions (per Codex1 B1
+    absorption arc 20260531-10). Agents reason over the structured failure
+    trees in each FAIL outcome's `tree` field.
+
+    Per Codex2 N1 absorption (arc 20260531-6): simulate and validate are
+    functionally identical no-write operations differing in lifecycle
+    position — `simulate` is iterative agent reasoning over a draft;
+    `validate(workspace)` is the post-commit/standalone gate.
+
+    Per Codex1 B1: simulate emits NO audit (no failed-Transaction record
+    written). Commit-path validation continues to raise on first failure.
+
+    Asserts open per Codex1 B3 lifecycle pattern (Phase C); raises
+    `TransactionError` on closed drafts.
+    """
+    outcomes = draft.simulate()
+    failures = sum(1 for o in outcomes if o.result == "FAIL")
+    return ValidationReport(
+        outcomes=tuple(outcomes),
+        failures_count=failures,
+        bundle_version=draft.bundle.bundle_version,
+    )
+
+
+def explain(
+    workspace: Path,
+    ref: str,
+    *,
+    depth: int = 1,
+    locality: str = _DEFAULT_LOCALITY,
+    staleness: str = _DEFAULT_STALENESS,
+) -> "ExplanationTree":
+    """Walk an Object or Relationship's history into an `ExplanationTree`.
+
+    `ref` accepts:
+      - Object Number: `"P-000001"`
+      - Object UUID: `"0193abcd-1234-7890-abcd-444444444444"`
+      - Relationship ref: `"<obj-ref>:relationship:<rel_id>"` per ADR/0015
+        fact-level addressing pattern.
+
+    Root node carries an `object_node()` (or `relationship_node()`); children
+    are event nodes (ordered by event_id ascending) for events that affected
+    this ref + any deeper traversal (for `depth>0`, walks ALL relationship
+    types where the Object is source or target, capped at `depth` per Codex
+    Q3+N4 absorption; deterministic ordering by
+    `(relationship.type, relationship.id, endpoint.object_uuid)` with a
+    visited set so graph cycles cannot explode the tree per Codex N4).
+
+    Per Codex1 B2 absorption (arc 20260531-10): sibling to `explain_failure`;
+    this function explains canonical Truth Model state; `explain_failure`
+    explains failure trees. Both return `ExplanationTree`.
+    """
+    from ..explain import (
+        ExplanationTree, KIND_RELATIONSHIP,
+        event_node, object_node, relationship_node,
+    )
+
+    _validate_locality_staleness(locality, staleness)
+    _enforce_locality_staleness(workspace, locality, staleness)
+
+    registry = BundleRegistry()
+    try:
+        bundle = registry.bundle_for_pin(workspace)
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+        raise ProjectPinError(str(e)) from e
+    bundle_dir = bundle.bundle_dir
+
+    # Relationship ref parses as "<obj-ref>:relationship:<rel_id>"
+    rel_id: str | None = None
+    obj_ref = ref
+    if ":relationship:" in ref:
+        obj_ref, _, rel_id = ref.partition(":relationship:")
+
+    uuid_or_none = _resolve_ref_to_uuid(workspace, bundle_dir, obj_ref)
+    if uuid_or_none is None:
+        raise ObjectNotFoundError(obj_ref)
+    obj_uuid = uuid_or_none
+
+    sidecar = load_sidecar_validated(workspace, obj_uuid, bundle_dir)
+    obj_block = sidecar.get("object", {})
+
+    # If relationship ref, focus root on the relationship record
+    if rel_id is not None:
+        rels = sidecar.get("relationship", []) or []
+        match = next((r for r in rels if r.get("id") == rel_id), None)
+        if match is None:
+            raise ObjectNotFoundError(f"{obj_ref}:relationship:{rel_id}")
+        root = relationship_node(
+            source_uuid=obj_uuid,
+            relationship_id=rel_id,
+            type=match.get("type", ""),
+            endpoints=list(match.get("endpoints", []) or []),
+            children=_walk_object_event_history(workspace, bundle_dir, obj_uuid),
+        )
+    else:
+        root_children: list = list(_walk_object_event_history(workspace, bundle_dir, obj_uuid))
+        if depth > 0:
+            related = _walk_related_objects(
+                workspace, bundle_dir, obj_uuid, sidecar,
+                depth=depth, visited={obj_uuid},
+            )
+            root_children.extend(related)
+        root = object_node(
+            number=obj_block.get("number", ""),
+            uuid=obj_uuid,
+            type=obj_block.get("type", ""),
+            source="working",
+            children=tuple(root_children),
+        )
+    return ExplanationTree(root=root, bundle_version=bundle.bundle_version)
+
+
+def _walk_object_event_history(workspace: Path, bundle_dir: Path, obj_uuid: str) -> tuple:
+    """Read events.jsonl; emit `event_node`s for every event whose payload
+    references `obj_uuid` (as `uuid`, `object_uuid`, or `source_uuid`)."""
+    from ..explain import event_node
+    from ..truth_model.event_log import read_events
+
+    try:
+        events = list(read_events(workspace, bundle_dir))
+    except FileNotFoundError:
+        return ()
+    matches = []
+    for ev in events:
+        payload = ev.get("payload", {}) or {}
+        refs_uuid = (
+            payload.get("uuid") == obj_uuid
+            or payload.get("object_uuid") == obj_uuid
+            or payload.get("source_uuid") == obj_uuid
+        )
+        if refs_uuid:
+            matches.append(event_node(ev))
+    matches.sort(key=lambda n: n.details.get("event_id", ""))
+    return tuple(matches)
+
+
+def _walk_related_objects(
+    workspace: Path, bundle_dir: Path, obj_uuid: str, sidecar: dict[str, Any],
+    *, depth: int, visited: set[str],
+) -> tuple:
+    """Per Codex Q3+N4 absorption + Codex2 B2 absorption (arc 20260531-10):
+    walk ALL relationship types where this Object is source OR target,
+    capped at `depth`. Deterministic ordering. `visited` set prevents cycle
+    explosion.
+
+    Outgoing direction: relationship records owned by THIS Object's sidecar
+    (`sidecar["relationship"][...]`); each endpoint's `object_uuid` is a
+    related Object.
+
+    Incoming direction (Codex2 B2 absorption): relationship records live on
+    the source sidecar, so for the TARGET side we MUST scan all working
+    sidecars and check for endpoints whose `object_uuid == obj_uuid`. The
+    matching source Object is the related Object. Without this, explaining
+    `REQ-000001` after `P-000001 satisfies REQ-000001` returned no related
+    objects — contract violation per the "source OR target" docstring.
+
+    Per Codex2 B2 "fail loudly on invalid Product Truth as `query` does":
+    `load_sidecar_validated` exceptions propagate (no silent skip).
+    """
+    from ..explain import object_node
+    from ..truth_model.sidecar import list_working_sidecar_uuids
+
+    if depth <= 0:
+        return ()
+
+    # Collect (related_obj_uuid, sort_key) pairs from BOTH directions.
+    candidates: list[tuple[str, str, str]] = []  # (sort_rel_type, sort_rel_id_or_uuid, related_uuid)
+
+    # Outgoing: rels on this Object's sidecar
+    rels_out = sidecar.get("relationship", []) or []
+    for r in rels_out:
+        if not isinstance(r, dict):
+            continue
+        rtype = r.get("type", "")
+        rid = r.get("id", "")
+        for ep in r.get("endpoints", []) or []:
+            if not isinstance(ep, dict):
+                continue
+            tgt = ep.get("object_uuid")
+            if tgt and tgt != obj_uuid:
+                candidates.append((rtype, rid, tgt))
+
+    # Incoming: scan ALL working sidecars for relationships pointing at obj_uuid
+    for src_uuid in list_working_sidecar_uuids(workspace):
+        if src_uuid == obj_uuid:
+            continue
+        src_sidecar = load_sidecar_validated(workspace, src_uuid, bundle_dir)
+        for r in src_sidecar.get("relationship", []) or []:
+            if not isinstance(r, dict):
+                continue
+            rtype = r.get("type", "")
+            rid = r.get("id", "")
+            for ep in r.get("endpoints", []) or []:
+                if not isinstance(ep, dict):
+                    continue
+                if ep.get("object_uuid") == obj_uuid:
+                    candidates.append((rtype, rid, src_uuid))
+                    break  # one match per relationship record is enough
+
+    # Deterministic ordering per Codex Q3+N4: (rel.type, rel.id, related_uuid)
+    candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+
+    children = []
+    for _, _, related_uuid in candidates:
+        if related_uuid in visited:
+            continue
+        related_sidecar = load_sidecar_validated(workspace, related_uuid, bundle_dir)
+        related_obj = related_sidecar.get("object", {})
+        visited.add(related_uuid)
+        sub_children = _walk_object_event_history(workspace, bundle_dir, related_uuid)
+        deeper = _walk_related_objects(
+            workspace, bundle_dir, related_uuid, related_sidecar,
+            depth=depth - 1, visited=visited,
+        )
+        children.append(object_node(
+            number=related_obj.get("number", ""),
+            uuid=related_uuid,
+            type=related_obj.get("type", ""),
+            source="working",
+            children=tuple(list(sub_children) + list(deeper)),
+        ))
+    return tuple(children)
+
+
+def explain_failure(
+    failure: "ValidationOutcome | ExplanationNode | dict[str, Any]",
+    *,
+    bundle_version: str = "",
+    depth: int = 0,
+) -> "ExplanationTree":
+    """Build an `ExplanationTree` rooted at a failure node.
+
+    Per Codex1 B2 absorption (arc 20260531-10): satisfies ADR/0026's
+    `explain(failure, *, depth)` contract directly. Accepts:
+      - `ValidationOutcome` whose `tree` field is populated (or `details`
+        carries a string message; in that case a single-node tree is built).
+      - bare `ExplanationNode` (e.g., from `validation_error_node(...)`).
+      - dict shape (e.g., the `validation_errors[i]` from an audit record
+        loaded from JSONL).
+
+    `depth=0` (default): the failure tree is returned as-is.
+    `depth>0`: future SCN — could traverse from `check_name` back to
+    referenced Objects/relationships. Not implemented in this arc.
+    """
+    from ..explain import ExplanationNode, ExplanationTree, validation_error_node
+    if isinstance(failure, ExplanationNode):
+        root = failure
+    elif isinstance(failure, ValidationOutcome):
+        if failure.tree is not None:
+            root = failure.tree
+        else:
+            root = validation_error_node(
+                error_type="ValidationOutcome",
+                classification="other",
+                check_name=failure.check_name,
+                message=failure.details or failure.result,
+            )
+    elif isinstance(failure, dict):
+        # Reconstruct ExplanationNode from a dict (e.g., audit record entry).
+        root = _node_from_dict(failure)
+    else:
+        raise TypeError(
+            f"explain_failure: failure must be ValidationOutcome | ExplanationNode | "
+            f"dict; got {type(failure).__name__}"
+        )
+    if depth > 0:
+        # Future SCN: would traverse `check_name` to referenced Objects.
+        # Phase D scope-limits this to depth=0 per Codex1 B2 minimum-viable.
+        pass
+    return ExplanationTree(root=root, bundle_version=bundle_version)
+
+
+def _node_from_dict(d: dict[str, Any]) -> "ExplanationNode":
+    """Recursive: rebuild `ExplanationNode` from a serialized dict (audit
+    record `validation_errors[i]` shape per `node_to_dict()`)."""
+    from ..explain import ExplanationNode
+    return ExplanationNode(
+        kind=d.get("kind", "validation_error"),
+        ref=d.get("ref", ""),
+        label=d.get("label", ""),
+        details=dict(d.get("details", {})),
+        children=tuple(_node_from_dict(c) for c in d.get("children", []) or []),
+    )
+
+
+# Re-export ExplanationNode + ExplanationTree from the explain module for
+# convenience (so agents can `from aiadra_core.protocol import ExplanationTree`).
+from ..explain import ExplanationNode, ExplanationTree  # noqa: E402
+
+
 # ---------- Module exports ----------
 
 
 __all__ = [
-    # Operations (Phase A + Phase B + Phase C)
+    # Operations (Phase A + Phase B + Phase C + Phase D)
     "inspect",
     "query",
     "propose",
@@ -1007,6 +1348,9 @@ __all__ = [
     "propose_kinds",
     "modify_kinds",
     "validate",
+    "simulate",
+    "explain",
+    "explain_failure",
     "commit",
     "rollback",
     "release",
@@ -1018,6 +1362,8 @@ __all__ = [
     "RollbackResult",
     "TransactionDraft",
     "TransactionError",
+    "ExplanationNode",
+    "ExplanationTree",
     # Exceptions
     "ObjectNotFoundError",
     "ProjectPinError",

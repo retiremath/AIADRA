@@ -158,6 +158,30 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.26.0",
+        to_version="0.27.0",
+        notes=[
+            "v0.26.0 → v0.27.0 is a MINOR pin-only bump (Phase D: aiadra_core.protocol "
+            "gains `simulate(draft) → ValidationReport` + `explain(workspace, ref, *, depth) "
+            "→ ExplanationTree` + `explain_failure(failure, *, depth) → ExplanationTree` "
+            "per ADR/0026 §\"Sequencing\"; closes 9-of-9 ADR/0026 §2 contract surface). "
+            "Bundle layout is byte-identical to v0.26.0 except _index.json + _digest.json. "
+            "No artifact data changes. NEW failed-Transaction audit log emission per "
+            "ADR/0026 §9 — `.aiadra/audit/YYYY-MM-DD/tx_NNNN-failed-<short>.jsonl`; "
+            "diagnostic-only NOT truth; NOT bundle-validated. NEW `.aiadra/audit-config.yaml` "
+            "for retention (defaults: max_entries_per_agent=100, max_age_days=30, "
+            "max_total_mb=50). `git_repo_dirty_for_aiadra_paths()` gains carve-out for "
+            "`.aiadra/audit/` PREFIX (audit-config.yaml at the `.aiadra/` ROOT remains "
+            "guarded). TransactionDraft gains private `_audit_emitted` flag + "
+            "`audit_failure()` method + `_emit_audit_once()` helper per Codex1 B3 "
+            "(single-record semantics). validate() refactored to delegate to "
+            "_validate_internal(collect_failures=) per Codex1 B1; commit path raises "
+            "on first fail; simulate path collects all FAIL outcomes with structured "
+            "ExplanationNode tree. ValidationOutcome extended with optional `tree` field."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

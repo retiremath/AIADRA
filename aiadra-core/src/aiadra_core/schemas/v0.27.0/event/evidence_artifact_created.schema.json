@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - evidence_artifact_created",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "evidence_artifact_created"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "uuid",
+        "number",
+        "initial_sidecar"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "uuid": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string",
+          "pattern": "^EVD-[0-9]{6}$"
+        },
+        "initial_sidecar": {
+          "$ref": "../object/evidence_artifact.schema.json"
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
