@@ -64,6 +64,21 @@ class CommitResult:
     event_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class RollbackResult:
+    """Returned by `TransactionDraft.rollback()` per Phase A (arc 20260531-7).
+
+    Per ADR/0026 §9 + Codex1 Q4/Q5/N1 absorption: Phase A is discard-only
+    (no audit emission); Phase D adds audit log + richer post-rollback
+    lifecycle semantics. `reason` is carried already so Phase D wires it
+    without an API break. `discarded_change_count` sums all cleared staged
+    collections (events + sidecars + reservations + revisions + manifests +
+    vault byte chunks)."""
+    transaction_id: str
+    reason: str | None
+    discarded_change_count: int
+
+
 # -----------------------------------------------------------------------------
 # git subprocess helpers (Decision §3 from Claude1 + Codex confirmation)
 # -----------------------------------------------------------------------------
@@ -316,6 +331,47 @@ class TransactionDraft:
                     f"staged sidecar and staged events would diverge post-commit"
                 )
         outcomes.append(ValidationOutcome("proposed_fold_invariant", "PASS"))
+
+    # -------------------------------------------------------------------------
+
+    def rollback(self, *, reason: str | None = None) -> "RollbackResult":
+        """Discard the draft. Phase A per ADR/0026 §9 + arc 20260531-7:
+        discard-only, no audit emission (Phase D adds audit).
+
+        Clears ALL staged mutable collections per Codex1 Q5 absorption:
+        sidecar_writes, sidecar_deletes, events, reservation_writes,
+        revision_writes, manifest_writes, vault_writes, project_pin_write,
+        commit_message_lines, pre_validate_hooks, post_validate_hooks.
+
+        Returns a `RollbackResult` carrying the original `transaction_id`,
+        optional `reason`, and `discarded_change_count` = sum of all the
+        non-empty staged collections at the time of rollback.
+        """
+        discarded = (
+            len(self.events)
+            + len(self.sidecar_writes)
+            + len(self.sidecar_deletes)
+            + len(self.reservation_writes)
+            + len(self.revision_writes)
+            + len(self.manifest_writes)
+            + len(self.vault_writes)
+        )
+        self.sidecar_writes.clear()
+        self.sidecar_deletes.clear()
+        self.events.clear()
+        self.reservation_writes.clear()
+        self.revision_writes.clear()
+        self.manifest_writes.clear()
+        self.vault_writes.clear()
+        self.project_pin_write = None
+        self.commit_message_lines.clear()
+        self.pre_validate_hooks.clear()
+        self.post_validate_hooks.clear()
+        return RollbackResult(
+            transaction_id=self.transaction_id,
+            reason=reason,
+            discarded_change_count=discarded,
+        )
 
     # -------------------------------------------------------------------------
 

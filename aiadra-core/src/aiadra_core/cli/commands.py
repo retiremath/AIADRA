@@ -94,7 +94,10 @@ def _run_draft(draft: TransactionDraft, *, allow_dirty_init: bool = False) -> in
             return 1
         raise
     try:
-        result = draft.commit()
+        # Phase A (arc 20260531-7): commit goes through the Ring 2 protocol
+        # facade for the verb-noun terminal pairing. Equivalent to draft.commit().
+        from ..protocol import commit as protocol_commit
+        result = protocol_commit(draft)
     except CommitError as e:
         print(f"commit failed: {e}", file=sys.stderr)
         return 4
@@ -382,7 +385,10 @@ def cmd_release(argv: list[str]) -> int:
         if args.prior_stage_label:
             prior_ref["release_label"] = args.prior_stage_label
     try:
-        draft = release(
+        # Phase A (arc 20260531-7): release routes through the Ring 2 protocol
+        # facade per ADR/0026 §2 (release IS a named Phase-A contract).
+        from ..protocol import release as protocol_release
+        draft = protocol_release(
             workspace, bundle, object_numbers,
             release_label=args.label,
             stage_number=args.stage,

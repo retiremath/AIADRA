@@ -109,6 +109,20 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.23.0",
+        to_version="0.24.0",
+        notes=[
+            "v0.23.0 → v0.24.0 is a MINOR pin-only bump (Phase A: aiadra_core.protocol "
+            "submodule formalization per ADR/0026 §\"Sequencing\"). Bundle layout is "
+            "byte-identical to v0.23.0 except for _index.json bundle_version + "
+            "_digest.json. No artifact data changes; existing sidecars / Revisions / "
+            "events / manifests / Reservations validate unchanged. New protocol Python "
+            "API + new rollback Transaction terminal + locality/staleness kwarg surface "
+            "(defaulted no-op). CLI behavior unchanged for existing users."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 
