@@ -1,0 +1,29 @@
+"attachment":
+  - "content_hash": "sha256:e01707236f6c237ed1bbe246b3268f9cb6d204c9e59d6b7e2b4d5f69b2b0e28c"
+    "id": "att_measurement_data"
+    "media_type": "text/csv"
+    "role": "source_authoring"
+    "vault_path": "vault/e01707236f6c237ed1bbe246b3268f9cb6d204c9e59d6b7e2b4d5f69b2b0e28c"
+"evidence":
+  "evidence_kind": "measurement"
+  "summary": "Drive bracket plate thickness measurement"
+"object":
+  "lifecycle": "released"
+  "name": "EvidenceArtifact EVD-000043"
+  "number": "EVD-000043"
+  "released_at": "2026-05-30T20:47:22Z"
+  "revision_id": "0193abcd-1234-7890-abcd-aaaaaaaaaaa7"
+  "revision_label": "rev-A"
+  "schema_version": "0.19.0"
+  "type": "EvidenceArtifact"
+  "uuid": "0193abcd-1234-7890-abcd-777777777777"
+"parameter":
+  - "datatype": "number"
+    "fact_provenance":
+      "category": "measured"
+      "derived_from":
+        - "attachment:att_measurement_data"
+    "id": "param_reported_thickness_mm"
+    "name": "reported_thickness_mm"
+    "unit": "mm"
+    "value": 6.98

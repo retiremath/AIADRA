@@ -1,0 +1,11 @@
+"artifact_kind": "reservation"
+"discriminator": "REQ"
+"name": "aiadra-reservation-REQ"
+"reservations":
+  "REQ-000058":
+    "allocated_at": "2026-05-30T18:28:09Z"
+    "allocated_by_transaction": "tx_0002"
+    "object_uuid": "0193abcd-1234-7890-abcd-222222222222"
+    "status": "current"
+"schema_version": "0.19.0"
+"status": "active"
