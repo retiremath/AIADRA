@@ -1,29 +1,34 @@
 """AIADRA Ring 2 AI Action Protocol — canonical Python entry points.
 
 Per [ADR/0026](../../../Docs/ADR/0026-ai-action-protocol-scope.md) §"Sequencing"
-**Phase A** + **Phase B**. Formalizes the existing aiadra-core surface as the
-agent-facing Ring 2 contract layer + adds the first NEW Ring 2 operation
-(`query` over cumulative release graph + working set) + makes
-locality/staleness kwargs operational.
+**Phase A** + **Phase B** + **Phase C**. Formalizes the existing aiadra-core
+surface as the agent-facing Ring 2 contract layer + adds the first NEW Ring 2
+operation (`query` over cumulative release graph + working set) + makes
+locality/staleness kwargs operational + lifts `TransactionDraft` to a
+first-class Ring 2 entity via `propose` (fresh draft) + `modify` (extend
+existing draft).
 
 Tier-1 in-process Python entry points; CLI is the Tier-2 thin wrapper
 (`aiadra_core.cli`); Tier-3 RPC adapters (MCP, OpenAI tools, LSP-style,
 custom JSON-RPC) live in SEPARATE ecosystem packages per Manifesto P11 and
 ADR/0026 Decision §6.
 
-**Phase A + B surface (6 of 9 ADR/0026 §2 contracts):**
+**Phase A + B + C surface (8 of 9 ADR/0026 §2 contracts):**
 
 - `inspect(workspace, object_ref, *, locality, staleness) -> ObjectView`
-- `query(workspace, *, kind, filter, locality, staleness) -> list[ObjectView]`   ← NEW Phase B
+- `query(workspace, *, kind, filter, locality, staleness) -> list[ObjectView]`
+- `propose(workspace, *, kind, params, actor) -> TransactionDraft`           ← NEW Phase C
+- `modify(draft, *, kind, params, actor) -> TransactionDraft`                ← NEW Phase C
+- `propose_kinds() -> tuple[str, ...]`                                       ← NEW Phase C
+- `modify_kinds() -> tuple[str, ...]`                                        ← NEW Phase C
 - `validate(workspace) -> ValidationReport`
 - `commit(draft) -> CommitResult`
 - `rollback(draft, *, reason=None) -> RollbackResult`
 - `release(workspace, bundle, object_numbers, ..., release_label=None) -> TransactionDraft`
 
-Future-phase contracts (`propose` / `modify` / `simulate` Phase C; `explain`
-Phase D) are intentionally NOT exported — their absence is clearer
-documentation than `NotImplementedError` stubs would be (Codex1 Q7
-absorption arc 20260531-7).
+Future-phase contracts (`simulate` Phase C-or-D; `explain` Phase D) are
+intentionally NOT exported — their absence is clearer documentation than
+`NotImplementedError` stubs would be (Codex1 Q7 absorption arc 20260531-7).
 
 **BYO-AI posture per ADR/0026 §0**: AIADRA Core ships zero AI model code;
 this module is a deterministic Python API that any agent (cloud LLM, local
@@ -43,9 +48,19 @@ from ..transaction.boundary import (
     CommitResult,
     RollbackResult,
     TransactionDraft,
+    TransactionError,
+    TransactionKind,
     ValidationOutcome,
 )
-from ..transaction.operations import release as _release_op
+from ..transaction.operations import (
+    add_acceptance_criterion as _add_ac_op,
+    attach_file as _attach_file_op,
+    change_parameter as _change_param_op,
+    create_object as _create_object_op,
+    init_workspace as _init_op,
+    link_relationship as _link_op,
+    release as _release_op,
+)
 from ..truth_model.manifest import list_release_labels
 from ..truth_model.reservation import list_reservation_prefixes
 from ..truth_model.sidecar import list_working_sidecar_uuids
@@ -721,13 +736,276 @@ def release(
     )
 
 
+# ---------- Phase C: propose / modify ----------
+#
+# Per [ADR/0026](../../../Docs/ADR/0026-ai-action-protocol-scope.md) §"Sequencing"
+# Phase C: `propose` allocates a fresh `TransactionDraft` for a named kind;
+# `modify` extends an existing draft by stacking another operation on it.
+# Underlying `transaction.operations.*` were extended with `existing_draft`
+# kwargs in this arc (Codex1 B1 absorption) so a single Transaction can
+# carry create + mutate + link without intermediate commits.
+#
+# Codex1 B2 absorption (arc 20260531-9):
+#   - `propose(kind="init")` resolves bundle via `BundleRegistry().latest()`
+#     because there is no project pin yet.
+#   - All other kinds resolve via `bundle_for_pin(workspace)`.
+#   - `modify(kind="init")` is REJECTED (init bootstraps an empty workspace).
+#   - `modify(kind="release")` is REJECTED (release allocates fresh
+#     current_revision_ids + validates the whole post-release graph; cannot
+#     compose with in-flight mutations in the same Transaction without
+#     conflating authorship and publication).
+#
+# Codex1 B4 absorption (arc 20260531-9): `actor` defaults to `"agent"`. The
+# CLI binding for the human-driven change-parameter path passes `actor="human"`.
+# `change_parameter` raises if `actor="agent"` AND `new_fact_provenance.category
+# == "human_input"` per ADR/0026 §5 (AI agents MUST NOT self-attest as humans).
+
+
+def _propose_init(workspace, bundle, params, actor, existing_draft):
+    if existing_draft is not None:
+        raise TransactionError(
+            "init cannot be composed (Codex1 B2 absorption arc 20260531-9): "
+            "init bootstraps an empty workspace and must start a fresh "
+            "Transaction. Call protocol.propose(kind='init') to begin."
+        )
+    return _init_op(workspace, bundle)
+
+
+def _propose_create_object_factory(obj_type: str):
+    def handler(workspace, bundle, params, actor, existing_draft):
+        return _create_object_op(
+            workspace, bundle, obj_type,
+            params["number"], params["name"],
+            uuid=params.get("uuid"),
+            revision_id=params.get("revision_id"),
+            extra_namespaces=params.get("extra_namespaces"),
+            existing_draft=existing_draft,
+        )
+    return handler
+
+
+def _propose_change_parameter(workspace, bundle, params, actor, existing_draft):
+    return _change_param_op(
+        workspace, bundle,
+        params["obj_number"], params["parameter_id"],
+        params["new_value"], params["rationale"],
+        new_fact_provenance=params.get("new_fact_provenance"),
+        actor=actor,
+        existing_draft=existing_draft,
+    )
+
+
+def _propose_add_acceptance_criterion(workspace, bundle, params, actor, existing_draft):
+    return _add_ac_op(
+        workspace, bundle,
+        params["req_number"], params["criterion_id"], params["criterion_text"],
+        language=params.get("language", "en"),
+        format=params.get("format", "freeform"),
+        threshold_expression=params.get("threshold_expression"),
+        verification_method=params.get("verification_method"),
+        references=params.get("references"),
+        name=params.get("name"),
+        existing_draft=existing_draft,
+    )
+
+
+def _propose_link_relationship_factory(rel_type: str):
+    def handler(workspace, bundle, params, actor, existing_draft):
+        return _link_op(
+            workspace, bundle, rel_type,
+            params["source_number"], params["target_number"],
+            relationship_id=params.get("relationship_id"),
+            existing_draft=existing_draft,
+        )
+    return handler
+
+
+def _propose_attach_file(workspace, bundle, params, actor, existing_draft):
+    return _attach_file_op(
+        workspace, bundle,
+        params["obj_number"], params["file_path"], params["role"],
+        attachment_id=params.get("attachment_id"),
+        derived_from_attachment_id=params.get("derived_from_attachment_id"),
+        media_type=params.get("media_type"),
+        existing_draft=existing_draft,
+    )
+
+
+def _propose_release(workspace, bundle, params, actor, existing_draft):
+    if existing_draft is not None:
+        raise TransactionError(
+            "release cannot be composed (Codex1 B2 absorption arc 20260531-9): "
+            "release allocates fresh current_revision_ids and validates the "
+            "entire post-release graph; composing with in-flight mutations "
+            "would conflate authorship and publication. Call "
+            "protocol.propose(kind='release') as a standalone Transaction."
+        )
+    return _release_op(
+        workspace, bundle,
+        params["object_numbers"],
+        release_label=params.get("release_label"),
+        stage_number=params.get("stage_number", 1),
+        final_stage=params.get("final_stage", True),
+        prior_stage_manifest_ref=params.get("prior_stage_manifest_ref"),
+    )
+
+
+# Dispatch table — keys ARE the public propose-kind catalogue.
+_PROPOSE_DISPATCH: dict[str, Callable[..., TransactionDraft]] = {
+    "init": _propose_init,
+    "create_part":             _propose_create_object_factory("Part"),
+    "create_requirement":      _propose_create_object_factory("Requirement"),
+    "create_test_procedure":   _propose_create_object_factory("TestProcedure"),
+    "create_test_execution":   _propose_create_object_factory("TestExecution"),
+    "create_evidence_artifact": _propose_create_object_factory("EvidenceArtifact"),
+    "change_parameter": _propose_change_parameter,
+    "add_acceptance_criterion": _propose_add_acceptance_criterion,
+    "link_satisfies":      _propose_link_relationship_factory("satisfies"),
+    "link_tested_against": _propose_link_relationship_factory("tested_against"),
+    "link_verifies":       _propose_link_relationship_factory("verifies"),
+    "link_cites":          _propose_link_relationship_factory("cites"),
+    "link_executes":       _propose_link_relationship_factory("executes"),
+    "link_executed_on":    _propose_link_relationship_factory("executed_on"),
+    "link_produces":       _propose_link_relationship_factory("produces"),
+    "attach_file": _propose_attach_file,
+    "release": _propose_release,
+}
+
+# Kinds REJECTED from modify per Codex1 B2 absorption.
+_MODIFY_REJECTED_KINDS: frozenset[str] = frozenset({"init", "release"})
+
+
+def propose_kinds() -> tuple[str, ...]:
+    """Introspection: sorted tuple of all kinds accepted by `propose`."""
+    return tuple(sorted(_PROPOSE_DISPATCH.keys()))
+
+
+def modify_kinds() -> tuple[str, ...]:
+    """Introspection: sorted tuple of all kinds accepted by `modify`
+    (= propose_kinds() minus init + release per Codex1 B2 absorption)."""
+    return tuple(sorted(k for k in _PROPOSE_DISPATCH if k not in _MODIFY_REJECTED_KINDS))
+
+
+def propose(
+    workspace: Path,
+    *,
+    kind: str,
+    params: dict[str, Any],
+    actor: str = "agent",
+) -> TransactionDraft:
+    """Create a fresh `TransactionDraft` for the named kind.
+
+    Per ADR/0026 §"Sequencing" Phase C: the catalogue of `kind` values is
+    `propose_kinds()`. Each kind is a state-changing operation; this returns
+    a draft for the caller to subsequently `modify()` (compose more ops),
+    `simulate()` (Phase D — not yet implemented), or `commit()`.
+
+    `params` is a kwargs-style dict; per-kind keys mirror the underlying
+    `transaction.operations.*` function signatures.
+
+    `actor`: per ADR/0026 §5 (Codex1 B4 absorption arc 20260531-9), one of
+    `"agent"` (default) or `"human"`. Only `change_parameter` currently
+    consumes this; other kinds ignore it. CLI bindings that know the
+    operator is a human pass `actor="human"`.
+
+    Raises:
+        ValueError: invalid `kind` or invalid `actor`.
+        ProjectPinError: pin lookup failed (for all kinds except `init`).
+        TransactionError: kind-specific validation failure.
+    """
+    if actor not in ("agent", "human"):
+        raise ValueError(
+            f"Invalid actor {actor!r}; expected 'agent' or 'human' "
+            f"per ADR/0026 §5 (Codex1 B4 absorption arc 20260531-9)."
+        )
+    if kind not in _PROPOSE_DISPATCH:
+        raise ValueError(
+            f"Unknown propose kind {kind!r}; expected one of {propose_kinds()}."
+        )
+
+    if kind == "init":
+        # B2: init has no project pin yet; resolve via BundleRegistry().latest().
+        bundle = BundleRegistry().latest()
+    else:
+        try:
+            bundle = BundleRegistry().bundle_for_pin(workspace)
+        except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+            raise ProjectPinError(str(e)) from e
+
+    return _PROPOSE_DISPATCH[kind](workspace, bundle, params, actor, None)
+
+
+def modify(
+    draft: TransactionDraft,
+    *,
+    kind: str,
+    params: dict[str, Any],
+    actor: str = "agent",
+) -> TransactionDraft:
+    """Extend an existing `TransactionDraft` with another operation.
+
+    Returns the SAME draft instance (mutation in place) so callers can chain:
+
+        draft = propose(workspace, kind="create_part", params={"number": "P-000001", "name": "Bracket"})
+        modify(draft, kind="change_parameter", params={...})
+        commit(draft)
+
+    Per Codex1 B2 absorption (arc 20260531-9): `kind="init"` and
+    `kind="release"` are REJECTED — init bootstraps an empty workspace,
+    release allocates fresh current_revision_ids and validates the entire
+    post-release graph; neither composes with in-flight mutations.
+
+    Per Codex1 B3 absorption (arc 20260531-9): if `draft` is in a terminal
+    state (committed or rolled-back), the underlying `_begin_or_extend_draft`
+    raises `TransactionError` via `draft._assert_open("modify")`.
+
+    `actor`: same semantics as `propose` (Codex1 B4 absorption).
+
+    Raises:
+        ValueError: invalid `kind` or invalid `actor`.
+        TransactionError: kind rejected (init/release), draft terminal, or
+            kind-specific validation failure.
+    """
+    if actor not in ("agent", "human"):
+        raise ValueError(
+            f"Invalid actor {actor!r}; expected 'agent' or 'human' "
+            f"per ADR/0026 §5 (Codex1 B4 absorption arc 20260531-9)."
+        )
+    if kind in _MODIFY_REJECTED_KINDS:
+        if kind == "init":
+            raise TransactionError(
+                "modify(kind='init') not allowed: init bootstraps an empty "
+                "workspace and must start a fresh Transaction (Codex1 B2 "
+                "absorption arc 20260531-9)."
+            )
+        raise TransactionError(
+            "modify(kind='release') not allowed: release allocates fresh "
+            "current_revision_ids and validates the entire post-release "
+            "graph; composing with in-flight mutations would conflate "
+            "authorship and publication (Codex1 B2 absorption arc 20260531-9). "
+            "Use propose(kind='release') as a standalone Transaction."
+        )
+    if kind not in _PROPOSE_DISPATCH:
+        raise ValueError(
+            f"Unknown modify kind {kind!r}; expected one of {modify_kinds()}."
+        )
+
+    return _PROPOSE_DISPATCH[kind](
+        draft.workspace, draft.bundle, params, actor, draft,
+    )
+
+
 # ---------- Module exports ----------
 
 
 __all__ = [
-    # Operations (Phase A + Phase B)
+    # Operations (Phase A + Phase B + Phase C)
     "inspect",
     "query",
+    "propose",
+    "modify",
+    "propose_kinds",
+    "modify_kinds",
     "validate",
     "commit",
     "rollback",
@@ -739,6 +1017,7 @@ __all__ = [
     "CommitResult",
     "RollbackResult",
     "TransactionDraft",
+    "TransactionError",
     # Exceptions
     "ObjectNotFoundError",
     "ProjectPinError",

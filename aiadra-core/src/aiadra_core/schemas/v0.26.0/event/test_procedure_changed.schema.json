@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - test_procedure_changed (W2 absorption Phase 1)",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "test_procedure_changed"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "object_uuid",
+        "attachment_delta"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "attachment_delta": {
+          "type": "object",
+          "required": [
+            "operation",
+            "attachment_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "enum": [
+                "add",
+                "update",
+                "remove"
+              ]
+            },
+            "attachment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "attachment_record": {
+              "$ref": "../_shared/attachment_record.schema.json"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "enum": [
+                      "add",
+                      "update"
+                    ]
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "attachment_record"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

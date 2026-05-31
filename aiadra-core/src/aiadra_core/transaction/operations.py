@@ -105,6 +105,71 @@ def _next_event_id_in_draft(workspace: Path, draft: TransactionDraft, bundle_dir
 
 
 # -----------------------------------------------------------------------------
+# Phase C (arc 20260531-9) Codex1 B1 absorption: draft-aware read helpers.
+# Operations that participate in `modify` MUST resolve state from the draft's
+# staged writes FIRST (creating an Object then mutating it within the same
+# Transaction must see the staged reservation + sidecar, not stale disk).
+# -----------------------------------------------------------------------------
+
+
+def _find_reservation_entry_by_number_with_draft(
+    workspace: Path, draft: TransactionDraft | None, number: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Like `find_reservation_entry_by_number` but checks `draft.reservation_writes`
+    first. Returns (prefix, entry) for the latest known state.
+    """
+    if draft is not None:
+        for prefix, reservation in draft.reservation_writes.items():
+            entries = reservation.get("reservations", {}) or {}
+            if number in entries:
+                return prefix, entries[number]
+    return find_reservation_entry_by_number(workspace, number)
+
+
+def _load_sidecar_with_draft(
+    workspace: Path, draft: TransactionDraft | None, obj_uuid: str,
+) -> dict[str, Any]:
+    """Like `load_sidecar` but returns the staged sidecar from `draft.sidecar_writes`
+    if present, allowing intra-Transaction mutations to read prior staged state.
+    """
+    if draft is not None and obj_uuid in draft.sidecar_writes:
+        return deepcopy(draft.sidecar_writes[obj_uuid])
+    return load_sidecar(workspace, obj_uuid)
+
+
+def _load_reservation_with_draft(
+    workspace: Path, draft: TransactionDraft | None, prefix: str,
+) -> dict[str, Any]:
+    """Like `load_reservation` but returns the staged reservation from
+    `draft.reservation_writes` if present.
+    """
+    if draft is not None and prefix in draft.reservation_writes:
+        return deepcopy(draft.reservation_writes[prefix])
+    return load_reservation(workspace, prefix)
+
+
+def _begin_or_extend_draft(
+    workspace: Path,
+    bundle: BundleHandle,
+    kind: TransactionKind,
+    existing_draft: TransactionDraft | None,
+) -> TransactionDraft:
+    """Helper to either return the existing draft (modify path) or create
+    a fresh one (propose / standalone path). When extending, the caller
+    inherits transaction_id from the existing draft; when standalone, a
+    fresh transaction_id is allocated. Per Codex1 B1+B3 absorption: in the
+    extending case, asserts the draft is still open (terminal-state guard)."""
+    if existing_draft is not None:
+        existing_draft._assert_open("modify")
+        return existing_draft
+    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
+    return TransactionDraft(
+        workspace=workspace, bundle=bundle, kind=kind,
+        transaction_id=transaction_id,
+    )
+
+
+# -----------------------------------------------------------------------------
 # B6 mutation prohibition hook (added to draft.pre_validate_hooks for mutating ops)
 # -----------------------------------------------------------------------------
 
@@ -208,14 +273,23 @@ def create_object(
     uuid: str | None = None,
     revision_id: str | None = None,
     extra_namespaces: dict[str, Any] | None = None,
+    existing_draft: TransactionDraft | None = None,
 ) -> TransactionDraft:
     """Create an Object: allocate Number + UUID + current_revision_id; emit
-    `<type>_created` event with initial_sidecar."""
+    `<type>_created` event with initial_sidecar.
+
+    Phase C (arc 20260531-9) Codex1 B1 absorption: accepts optional
+    `existing_draft` for composable propose+modify. When provided: inherits
+    transaction_id; allocates event_id via `_next_event_id_in_draft`;
+    checks for Number collisions via `_load_reservation_with_draft`
+    (staged-aware); appends to `commit_message_lines` instead of replacing.
+    """
     prefix = _prefix_for_type(obj_type)
     obj_uuid = uuid or _next_uuid()
     rev_id = revision_id or _next_uuid()
-    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
-    event_id = next_event_id(workspace, bundle.bundle_dir)
+    draft = _begin_or_extend_draft(workspace, bundle, TransactionKind.CREATE_OBJECT, existing_draft)
+    transaction_id = draft.transaction_id
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
 
     # Initial sidecar
     sidecar = {
@@ -234,8 +308,8 @@ def create_object(
     # Validate sidecar shape early
     bundle.validate(sidecar, "sidecar", obj_type)
 
-    # Reservation update (allocate Number + UUID + current_revision_id)
-    res = load_reservation(workspace, prefix)
+    # Reservation update (allocate Number + UUID + current_revision_id) — B1 draft-aware
+    res = _load_reservation_with_draft(workspace, draft, prefix)
     if number in res.get("reservations", {}):
         raise TransactionError(f"Number {number} already reserved in {prefix}.yaml")
     res.setdefault("reservations", {})[number] = {
@@ -248,7 +322,6 @@ def create_object(
 
     # <type>_created event
     event_type = f"{obj_type.lower()}_created"
-    # Map TestProcedure → test_procedure_created, etc.
     event_type = {
         "part_created":             "part_created",
         "requirement_created":      "requirement_created",
@@ -269,19 +342,21 @@ def create_object(
         },
     }
 
-    draft = TransactionDraft(
-        workspace=workspace, bundle=bundle, kind=TransactionKind.CREATE_OBJECT,
-        transaction_id=transaction_id,
-    )
     draft.stage_sidecar(obj_uuid, sidecar)
     draft.stage_event(event)
     draft.stage_reservation(prefix, res)
-    draft.commit_message_lines = [
+    _msg_lines = [
         f"aiadra: create-{obj_type.lower().replace('execution','-execution').replace('procedure','-procedure').replace('artifact','-artifact')} {number}",
-        f"",
+        "",
         f"Transaction {transaction_id} created {obj_type} {number} (uuid {obj_uuid}).",
         f"Allocated current_revision_id {rev_id} per B3 absorption.",
     ]
+    if existing_draft is None:
+        draft.commit_message_lines = _msg_lines
+    else:
+        if draft.commit_message_lines:
+            draft.commit_message_lines.append("")  # separator
+        draft.commit_message_lines.extend(_msg_lines)
     return draft
 
 
@@ -299,6 +374,8 @@ def change_parameter(
     rationale: str,
     *,
     new_fact_provenance: dict[str, Any] | None = None,
+    actor: str = "agent",
+    existing_draft: TransactionDraft | None = None,
 ) -> TransactionDraft:
     """Mutate a parameter value. B6 mutation prohibition runs in validate-phase.
 
@@ -307,13 +384,35 @@ def change_parameter(
     replaced wholesale AND the `parameter_changed` event payload carries the
     new dict. If `None`, both the sidecar's fact_provenance and the event
     payload omit the field (Phase 1 backward-compat).
+
+    Phase C (arc 20260531-9) Codex1 B1+B4 absorption:
+      - `existing_draft`: optional composable extension (B1 draft-aware).
+      - `actor`: discipline boundary per ADR/0026 §5 (B4). When `actor="agent"`
+        (default) and `new_fact_provenance.category == "human_input"`, raises
+        ValueError — AI agents MUST NOT self-attest as human_input. The CLI
+        binding layer that knows the operator is a human passes `actor="human"`.
     """
-    found = find_reservation_entry_by_number(workspace, obj_number)
+    # B4 provenance discipline at the propose/operation boundary
+    if (actor == "agent"
+            and new_fact_provenance is not None
+            and new_fact_provenance.get("category") == "human_input"):
+        raise TransactionError(
+            "AI proposals cannot self-attest as new_fact_provenance.category="
+            "'human_input' per ADR/0026 §5 (Codex1 B4 absorption arc 20260531-9). "
+            "Use 'ai_proposal' or 'computed_result' or 'measured'. "
+            "CLI bindings that know the operator is a human pass actor='human'."
+        )
+    if actor not in ("agent", "human"):
+        raise ValueError(
+            f"Invalid actor {actor!r}; expected 'agent' or 'human'."
+        )
+
+    found = _find_reservation_entry_by_number_with_draft(workspace, existing_draft, obj_number)
     if found is None:
         raise TransactionError(f"Object not found: {obj_number}")
     _, entry = found
     obj_uuid = entry["object_uuid"]
-    sidecar = load_sidecar(workspace, obj_uuid)
+    sidecar = _load_sidecar_with_draft(workspace, existing_draft, obj_uuid)
     # Apply mutation to draft sidecar
     new_sidecar = deepcopy(sidecar)
     old_value = None
@@ -327,8 +426,9 @@ def change_parameter(
     else:
         raise TransactionError(f"Parameter {parameter_id} not found on {obj_number}")
 
-    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
-    event_id = next_event_id(workspace, bundle.bundle_dir)
+    draft = _begin_or_extend_draft(workspace, bundle, TransactionKind.CHANGE_PARAMETER, existing_draft)
+    transaction_id = draft.transaction_id
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
     event_payload: dict[str, Any] = {
         "object_uuid": obj_uuid,
         "parameter_id": parameter_id,
@@ -347,21 +447,23 @@ def change_parameter(
         "payload": event_payload,
     }
 
-    draft = TransactionDraft(
-        workspace=workspace, bundle=bundle, kind=TransactionKind.CHANGE_PARAMETER,
-        transaction_id=transaction_id,
-    )
     draft.stage_sidecar(obj_uuid, new_sidecar)
     draft.stage_event(event)
     draft.pre_validate_hooks.append(
         _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
     )
-    draft.commit_message_lines = [
+    _msg_lines = [
         f"aiadra: change-parameter {obj_number} {parameter_id}={new_value}",
-        f"",
+        "",
         f"Transaction {transaction_id} parameter {parameter_id} on {obj_number} "
         f"{old_value} → {new_value}. Rationale: {rationale}",
     ]
+    if existing_draft is None:
+        draft.commit_message_lines = _msg_lines
+    else:
+        if draft.commit_message_lines:
+            draft.commit_message_lines.append("")
+        draft.commit_message_lines.extend(_msg_lines)
     return draft
 
 
@@ -383,6 +485,7 @@ def add_acceptance_criterion(
     verification_method: str | None = None,
     references: list[str] | None = None,
     name: str | None = None,
+    existing_draft: TransactionDraft | None = None,
 ) -> TransactionDraft:
     """Append a new acceptance_criterion to a Requirement sidecar.
 
@@ -394,13 +497,19 @@ def add_acceptance_criterion(
     `threshold_expression`, if supplied, is the F2 canonical primitive per
     ADR/0025 §5: numeric-only, unit-REQUIRED, no free-text parsing. Layer-2
     evaluation runs at final-stage release.
+
+    Phase C (arc 20260531-9) Codex1 B1 absorption: accepts optional
+    `existing_draft` for composable propose+modify. When provided: inherits
+    transaction_id; allocates event_id via `_next_event_id_in_draft`; reads
+    Reservation + sidecar via `_..._with_draft` helpers; appends to
+    `commit_message_lines` instead of replacing.
     """
-    found = find_reservation_entry_by_number(workspace, req_number)
+    found = _find_reservation_entry_by_number_with_draft(workspace, existing_draft, req_number)
     if found is None:
         raise TransactionError(f"Object not found: {req_number}")
     _, entry = found
     obj_uuid = entry["object_uuid"]
-    sidecar = load_sidecar(workspace, obj_uuid)
+    sidecar = _load_sidecar_with_draft(workspace, existing_draft, obj_uuid)
     if sidecar.get("object", {}).get("type") != "Requirement":
         raise TransactionError(
             f"add-acceptance-criterion target must be Requirement, "
@@ -437,8 +546,11 @@ def add_acceptance_criterion(
     new_sidecar = deepcopy(sidecar)
     new_sidecar.setdefault("acceptance_criterion", []).append(deepcopy(new_criterion))
 
-    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
-    event_id = next_event_id(workspace, bundle.bundle_dir)
+    draft = _begin_or_extend_draft(
+        workspace, bundle, TransactionKind.ADD_ACCEPTANCE_CRITERION, existing_draft,
+    )
+    transaction_id = draft.transaction_id
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
     event = {
         "schema_version": bundle.bundle_version,
         "event_id": event_id,
@@ -453,17 +565,12 @@ def add_acceptance_criterion(
         },
     }
 
-    draft = TransactionDraft(
-        workspace=workspace, bundle=bundle,
-        kind=TransactionKind.ADD_ACCEPTANCE_CRITERION,
-        transaction_id=transaction_id,
-    )
     draft.stage_sidecar(obj_uuid, new_sidecar)
     draft.stage_event(event)
     draft.pre_validate_hooks.append(
         _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
     )
-    draft.commit_message_lines = [
+    _msg_lines = [
         f"aiadra: add-acceptance-criterion {req_number} {criterion_id}",
         "",
         f"Transaction {transaction_id} appends criterion {criterion_id!r} "
@@ -471,6 +578,12 @@ def add_acceptance_criterion(
         + (f" with threshold_expression" if threshold_expression else "")
         + ".",
     ]
+    if existing_draft is None:
+        draft.commit_message_lines = _msg_lines
+    else:
+        if draft.commit_message_lines:
+            draft.commit_message_lines.append("")
+        draft.commit_message_lines.extend(_msg_lines)
     return draft
 
 
@@ -499,17 +612,24 @@ def link_relationship(
     target_number: str,
     *,
     relationship_id: str | None = None,
+    existing_draft: TransactionDraft | None = None,
 ) -> TransactionDraft:
     """Author a relationship on the source Object's sidecar. Execution-instance
     relationships (executes/executed_on/produces) are Fixed; endpoint
     revision_id read from target Object's Reservation current_revision_id
-    (B3 absorption)."""
+    (B3 absorption).
+
+    Phase C (arc 20260531-9) Codex1 B1 absorption: accepts optional
+    `existing_draft` for composable propose+modify. Source AND target are
+    resolved against staged state first so a freshly-created Object in the
+    same Transaction can be linked.
+    """
     if rel_type not in _RELATIONSHIP_DIRECTION:
         raise TransactionError(f"Unknown relationship type: {rel_type}")
     src_types, tgt_types, default_binding = _RELATIONSHIP_DIRECTION[rel_type]
 
-    src_found = find_reservation_entry_by_number(workspace, source_number)
-    tgt_found = find_reservation_entry_by_number(workspace, target_number)
+    src_found = _find_reservation_entry_by_number_with_draft(workspace, existing_draft, source_number)
+    tgt_found = _find_reservation_entry_by_number_with_draft(workspace, existing_draft, target_number)
     if src_found is None:
         raise TransactionError(f"Source Object not found: {source_number}")
     if tgt_found is None:
@@ -517,8 +637,8 @@ def link_relationship(
     src_uuid = src_found[1]["object_uuid"]
     tgt_uuid = tgt_found[1]["object_uuid"]
 
-    src_sidecar = load_sidecar(workspace, src_uuid)
-    tgt_sidecar = load_sidecar(workspace, tgt_uuid)
+    src_sidecar = _load_sidecar_with_draft(workspace, existing_draft, src_uuid)
+    tgt_sidecar = _load_sidecar_with_draft(workspace, existing_draft, tgt_uuid)
     src_type = src_sidecar["object"]["type"]
     tgt_type = tgt_sidecar["object"]["type"]
 
@@ -536,7 +656,7 @@ def link_relationship(
     binding = default_binding
     endpoint: dict[str, Any] = {"object_uuid": tgt_uuid}
     if binding == "fixed":
-        # B3: read current_revision_id from target's Reservation
+        # B3: read current_revision_id from target's Reservation (draft-aware)
         tgt_current_rev = tgt_found[1].get("current_revision_id")
         if not tgt_current_rev:
             raise TransactionError(
@@ -553,8 +673,11 @@ def link_relationship(
     new_sidecar = deepcopy(src_sidecar)
     new_sidecar.setdefault("relationship", []).append(relationship_record)
 
-    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
-    event_id = next_event_id(workspace, bundle.bundle_dir)
+    draft = _begin_or_extend_draft(
+        workspace, bundle, TransactionKind.LINK_RELATIONSHIP, existing_draft,
+    )
+    transaction_id = draft.transaction_id
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
     event = {
         "schema_version": bundle.bundle_version,
         "event_id": event_id,
@@ -567,21 +690,23 @@ def link_relationship(
         },
     }
 
-    draft = TransactionDraft(
-        workspace=workspace, bundle=bundle, kind=TransactionKind.LINK_RELATIONSHIP,
-        transaction_id=transaction_id,
-    )
     draft.stage_sidecar(src_uuid, new_sidecar)
     draft.stage_event(event)
     # B6: if this is an execution-instance Fixed binding, the TARGET gets bound.
     # Source mutation is OK (it's authoring a relationship). The B6 mutation
     # prohibition check applies to LATER mutations against the target.
-    draft.commit_message_lines = [
+    _msg_lines = [
         f"aiadra: link-{rel_type.replace('_', '-')} {source_number} {target_number}",
         f"",
         f"Transaction {transaction_id} authored {rel_type} from {source_number} → "
         f"{target_number} (binding {binding}).",
     ]
+    if existing_draft is None:
+        draft.commit_message_lines = _msg_lines
+    else:
+        if draft.commit_message_lines:
+            draft.commit_message_lines.append("")
+        draft.commit_message_lines.extend(_msg_lines)
     return draft
 
 
@@ -608,16 +733,23 @@ def attach_file(
     attachment_id: str | None = None,
     derived_from_attachment_id: str | None = None,
     media_type: str | None = None,
+    existing_draft: TransactionDraft | None = None,
 ) -> TransactionDraft:
     """Attach a file to an Attachment-bearing Object as a canonical Transaction.
 
-    Per W2 absorption: emits `<type>_changed` event with `attachment_delta`."""
-    found = find_reservation_entry_by_number(workspace, obj_number)
+    Per W2 absorption: emits `<type>_changed` event with `attachment_delta`.
+
+    Phase C (arc 20260531-9) Codex1 B1 absorption: accepts optional
+    `existing_draft` for composable propose+modify. Reservation + sidecar
+    reads are draft-aware so a freshly-created Attachment-bearing Object
+    can be modified within the same Transaction.
+    """
+    found = _find_reservation_entry_by_number_with_draft(workspace, existing_draft, obj_number)
     if found is None:
         raise TransactionError(f"Object not found: {obj_number}")
     _, entry = found
     obj_uuid = entry["object_uuid"]
-    sidecar = load_sidecar(workspace, obj_uuid)
+    sidecar = _load_sidecar_with_draft(workspace, existing_draft, obj_uuid)
     obj_type = sidecar["object"]["type"]
     if obj_type not in _ATTACHMENT_BEARING_TO_CHANGED_EVENT:
         raise TransactionError(
@@ -647,8 +779,11 @@ def attach_file(
     new_sidecar = deepcopy(sidecar)
     new_sidecar.setdefault("attachment", []).append(attachment_record)
 
-    transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
-    event_id = next_event_id(workspace, bundle.bundle_dir)
+    draft = _begin_or_extend_draft(
+        workspace, bundle, TransactionKind.ATTACH_FILE, existing_draft,
+    )
+    transaction_id = draft.transaction_id
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
     event_type = _ATTACHMENT_BEARING_TO_CHANGED_EVENT[obj_type]
     event = {
         "schema_version": bundle.bundle_version,
@@ -666,10 +801,6 @@ def attach_file(
         },
     }
 
-    draft = TransactionDraft(
-        workspace=workspace, bundle=bundle, kind=TransactionKind.ATTACH_FILE,
-        transaction_id=transaction_id,
-    )
     draft.stage_sidecar(obj_uuid, new_sidecar)
     draft.stage_event(event)
     # Vault bytes staged for write at commit time
@@ -678,12 +809,18 @@ def attach_file(
     draft.pre_validate_hooks.append(
         _mutation_prohibition_hook(workspace, bundle.bundle_dir, [obj_uuid])
     )
-    draft.commit_message_lines = [
+    _msg_lines = [
         f"aiadra: attach-file {obj_number} {att_id}",
         f"",
         f"Transaction {transaction_id} attached {file_path.name} to {obj_number} "
         f"as {att_id} (role={role}, content_hash={content_hash}).",
     ]
+    if existing_draft is None:
+        draft.commit_message_lines = _msg_lines
+    else:
+        if draft.commit_message_lines:
+            draft.commit_message_lines.append("")
+        draft.commit_message_lines.extend(_msg_lines)
     return draft
 
 

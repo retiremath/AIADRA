@@ -85,12 +85,13 @@ def test_phase_a_protocol_module_exports():
 def test_phase_a_protocol_does_not_export_future_phase_operations():
     """Per Codex1 Q7 (arc 20260531-7): don't stub future-phase operations.
 
-    Updated for Phase B (arc 20260531-8): `query` is now exported. The
-    remaining unimplemented operations (`propose`/`modify`/`simulate` Phase C;
-    `explain` Phase D) MUST still be absent — their existence as
-    `NotImplementedError` stubs would confuse agents.
+    Updated for Phase B (arc 20260531-8): `query` exported.
+    Updated for Phase C (arc 20260531-9): `propose`/`modify`/`propose_kinds`/
+    `modify_kinds` exported. The remaining unimplemented operations
+    (`simulate` Phase C-or-D; `explain` Phase D) MUST still be absent — their
+    existence as `NotImplementedError` stubs would confuse agents.
     """
-    for name in ("propose", "modify", "simulate", "explain"):
+    for name in ("simulate", "explain"):
         assert not hasattr(protocol, name), (
             f"protocol.{name} should NOT exist (no future-op stubs per Codex Q7)"
         )

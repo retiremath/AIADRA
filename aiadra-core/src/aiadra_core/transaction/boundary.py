@@ -158,6 +158,22 @@ class TransactionDraft:
     # Post-validate hooks (final-stage scans, etc.)
     post_validate_hooks: list[Callable[["TransactionDraft"], None]] = field(default_factory=list)
 
+    # Phase C (arc 20260531-9) Codex1 B3 absorption: terminal-state lifecycle
+    # guard. "open" → may accept modify / commit / rollback; "committed" or
+    # "rolled_back" → terminal; further modify/commit/rollback all raise.
+    # Private; protocol.modify + commit() + rollback() inspect this; agents
+    # should treat the draft as opaque post-terminal.
+    _lifecycle_state: str = "open"  # "open" | "committed" | "rolled_back"
+
+    def _assert_open(self, op: str) -> None:
+        """Raise TransactionError if the draft is in a terminal state.
+        Called by commit / rollback / modify-call-paths per Codex1 B3."""
+        if self._lifecycle_state != "open":
+            raise TransactionError(
+                f"cannot {op}: draft is {self._lifecycle_state} (terminal state); "
+                f"create a new draft via protocol.propose()"
+            )
+
     def stage_sidecar(self, obj_uuid: str | UUID, sidecar: dict[str, Any]) -> None:
         self.sidecar_writes[str(obj_uuid)] = sidecar
 
@@ -239,6 +255,18 @@ class TransactionDraft:
         # (workspace empty; no events to fold; reservations are seeded fresh).
         if self.kind != TransactionKind.INIT:
             self._validate_proposed_fold(outcomes)
+
+        # 7. Codex2 B1 absorption (arc 20260531-9): proposed-state B6
+        # mutation-after-binding scan. Composable `modify()` can stage a Fixed
+        # execution binding AND a mutation of the bound target in the same
+        # draft; the per-op `_mutation_prohibition_hook` only walked committed
+        # disk state, so it could not catch this. Running the scan over
+        # `committed_events + draft.events` here forces the Draft-then-commit
+        # boundary to reject the violation BEFORE writes hit disk, instead
+        # of relying on the post-commit `protocol.validate()` to notice.
+        # Skip for INIT (no events; bootstrap) — every other kind needs it.
+        if self.kind != TransactionKind.INIT:
+            self._validate_proposed_b6_scan(outcomes)
 
         # Run post-validate hooks (final-stage scans, etc.)
         for hook in self.post_validate_hooks:
@@ -332,6 +360,45 @@ class TransactionDraft:
                 )
         outcomes.append(ValidationOutcome("proposed_fold_invariant", "PASS"))
 
+    def _validate_proposed_b6_scan(self, outcomes: list[ValidationOutcome]) -> None:
+        """Codex2 B1 absorption arc 20260531-9: run the B6 mutation-after-binding
+        scan over the combined `committed_events + draft.events` stream.
+
+        Without this, a composable `modify()` draft could stage a Fixed
+        execution binding then a mutation of the bound target in the same
+        Transaction, pass `draft.validate()` (because the per-op
+        `_mutation_prohibition_hook` only walked disk state), and commit a
+        workspace that `protocol.validate(workspace)` immediately rejects.
+
+        We delegate to `find_mutation_after_binding_violations_for_events` —
+        the same rule the post-commit read-side scan uses — but feed it the
+        proposed event stream so the Draft-then-commit boundary holds.
+        """
+        if not self.events:
+            return  # nothing staged; nothing new to check (disk-only path runs in protocol.validate)
+        from ..truth_model.event_log import read_events
+        from ..validation.binding import (
+            find_mutation_after_binding_violations_for_events,
+            RevisionBindingError,
+        )
+        try:
+            committed = list(read_events(self.workspace, self.bundle.bundle_dir))
+        except FileNotFoundError:
+            committed = []
+        combined = committed + list(self.events)
+        violations = find_mutation_after_binding_violations_for_events(combined)
+        if violations:
+            raise RevisionBindingError(
+                "B6 proposed-state mutation-after-binding scan caught violation(s) "
+                "(Codex2 B1 absorption arc 20260531-9):\n  - "
+                + "\n  - ".join(violations)
+            )
+        outcomes.append(ValidationOutcome(
+            "proposed_binding_mutation_scan", "PASS",
+            f"no mutation-after-binding violations in committed+staged event stream "
+            f"(committed={len(committed)}, staged={len(self.events)})",
+        ))
+
     # -------------------------------------------------------------------------
 
     def rollback(self, *, reason: str | None = None) -> "RollbackResult":
@@ -343,10 +410,15 @@ class TransactionDraft:
         revision_writes, manifest_writes, vault_writes, project_pin_write,
         commit_message_lines, pre_validate_hooks, post_validate_hooks.
 
+        Phase C (arc 20260531-9) Codex1 B3 absorption: terminal-state guard.
+        Raises if the draft is already in a terminal state (committed or
+        rolled_back); marks lifecycle state as "rolled_back" on success.
+
         Returns a `RollbackResult` carrying the original `transaction_id`,
         optional `reason`, and `discarded_change_count` = sum of all the
         non-empty staged collections at the time of rollback.
         """
+        self._assert_open("rollback")
         discarded = (
             len(self.events)
             + len(self.sidecar_writes)
@@ -367,6 +439,7 @@ class TransactionDraft:
         self.commit_message_lines.clear()
         self.pre_validate_hooks.clear()
         self.post_validate_hooks.clear()
+        self._lifecycle_state = "rolled_back"
         return RollbackResult(
             transaction_id=self.transaction_id,
             reason=reason,
@@ -376,7 +449,13 @@ class TransactionDraft:
     # -------------------------------------------------------------------------
 
     def commit(self) -> CommitResult:
-        """Write all staged changes + git add + git commit. Atomic boundary."""
+        """Write all staged changes + git add + git commit. Atomic boundary.
+
+        Phase C (arc 20260531-9) Codex1 B3 absorption: terminal-state guard.
+        Raises if the draft is already in a terminal state (committed or
+        rolled_back); marks lifecycle state as "committed" on success.
+        """
+        self._assert_open("commit")
         touched_paths: list[Path] = []
         vault = LocalFSVaultAdapter(self.workspace)
 
@@ -451,6 +530,9 @@ class TransactionDraft:
                         f"git commit failed: {e.stderr.strip() or e.stdout.strip()}"
                     ) from e
 
+        # Phase C (arc 20260531-9) Codex1 B3 absorption: mark terminal AFTER
+        # all writes succeed. A second commit() now raises via _assert_open.
+        self._lifecycle_state = "committed"
         return CommitResult(
             commit_hash=commit_hash,
             transaction_id=self.transaction_id,

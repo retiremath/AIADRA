@@ -139,6 +139,25 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.25.0",
+        to_version="0.26.0",
+        notes=[
+            "v0.25.0 → v0.26.0 is a MINOR pin-only bump (Phase C: aiadra_core.protocol "
+            "gains `propose(workspace, kind, **kwargs) → TransactionDraft` + `modify(draft, "
+            "mutation_spec) → TransactionDraft` + `propose_kinds() → tuple[str, ...]` per "
+            "ADR/0026 §\"Sequencing\"). Bundle layout is byte-identical to v0.25.0 except "
+            "_index.json + _digest.json. No artifact data changes. TransactionDraft gains "
+            "private `_lifecycle_state` (open/committed/rolled_back) for terminal-state "
+            "discipline per Codex1 B3 absorption. transaction.operations.* functions gain "
+            "optional `existing_draft=` kwarg with draft-aware reads per Codex1 B1. "
+            "propose(kind=\"change_parameter\") rejects new_fact_provenance.category="
+            "\"human_input\" by default (agent attestation discipline per ADR/0026 §5 + "
+            "Codex1 B4); CLI binding passes actor=\"human\" for human-attestation path. "
+            "modify rejects kind=init + kind=release per Codex1 B2."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

@@ -108,18 +108,22 @@ def is_revision_bound(
     return False
 
 
-def find_mutation_after_binding_violations(
-    workspace: Path, bundle_dir: Path,
-    registry: BundleRegistry | None = None,
+def find_mutation_after_binding_violations_for_events(
+    events: list[dict[str, Any]],
 ) -> list[str]:
-    """B6 final-release scan: walk event log; flag any mutation event whose
-    target Object had an unreleased Fixed execution-instance binding at the
-    time the mutation was emitted.
+    """B6 scan over an explicit event stream. Pure function — does not read
+    from disk; caller assembles the stream.
+
+    Per Codex2 B1 absorption (arc 20260531-9): split out from the workspace-
+    bound `find_mutation_after_binding_violations` so `TransactionDraft.validate()`
+    can run the SAME rule over `committed_events + draft.events` before commit.
+    Without this split, composable `modify()` could stage a Fixed binding and
+    a subsequent mutation in the same draft, pass pre-commit validation
+    (because the hook only walked disk state), then commit a workspace that
+    the read-side scan immediately declares invalid.
 
     Returns a list of human-readable violation descriptions (empty if clean).
     """
-    events = list(read_events(workspace, bundle_dir))
-
     # Build: for each (target_uuid, target_rev_id), the event_index at which
     # the binding was created.
     bindings: dict[tuple[str, str], int] = {}
@@ -169,3 +173,21 @@ def find_mutation_after_binding_violations(
                 f"{bind_i} (event_id {events[bind_i].get('event_id', '?')})."
             )
     return violations
+
+
+def find_mutation_after_binding_violations(
+    workspace: Path, bundle_dir: Path,
+    registry: BundleRegistry | None = None,
+) -> list[str]:
+    """B6 final-release scan: walk event log; flag any mutation event whose
+    target Object had an unreleased Fixed execution-instance binding at the
+    time the mutation was emitted.
+
+    Thin wrapper over `find_mutation_after_binding_violations_for_events` per
+    Codex2 B1 absorption arc 20260531-9 — disk-read + delegate to the
+    pure-stream scan.
+
+    Returns a list of human-readable violation descriptions (empty if clean).
+    """
+    events = list(read_events(workspace, bundle_dir))
+    return find_mutation_after_binding_violations_for_events(events)

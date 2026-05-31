@@ -1,24 +1,34 @@
-"""CLI command implementations — thin adapters around transaction/operations.
+"""CLI command implementations — thin adapters around protocol.propose.
+
+Phase C (arc 20260531-9) Codex1 B1+B2+B4 absorption: state-changing CLI
+commands route through the Ring 2 `protocol.propose()` facade. The CLI is
+the Tier-2 binding layer per ADR/0026 Decision §6; the human-driven
+`change-parameter` path passes `actor="human"` so the operator may attest
+`new_fact_provenance.category="human_input"` per ADR/0026 §5 (AI agents
+MUST NOT self-attest as humans; Codex1 B4 absorption).
 
 Each command:
 1. Parses workspace + command-specific args.
-2. Verifies project pin via BundleRegistry.
-3. Builds a TransactionDraft via the appropriate operations function.
-4. Runs draft.validate(); on FAIL outputs error + exits non-zero.
-5. Runs draft.commit(); reports commit hash + event IDs.
+2. Routes through `protocol.propose(workspace, kind=..., params=..., actor=...)`.
+   `propose` handles pin resolution (BundleRegistry.bundle_for_pin for all
+   kinds except `init`, which uses `BundleRegistry().latest()` per Codex1 B2).
+3. Runs draft.validate(); on FAIL outputs error + exits non-zero.
+4. Runs draft.commit(); reports commit hash + event IDs.
 
 Exit codes:
   0  success
   1  validation failure (schema / Profile / fold / reservation_integrity)
-  2  CLI argument error / Object-not-found
+  2  CLI argument error / Object-not-found / TransactionError
   3  project pin failure (missing / digest mismatch)
+  4  commit error
+  5  dirty AIADRA-managed working tree (B9 guard)
   6  B6 revision binding error (mutation prohibited)
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from ..transaction.boundary import (
     CommitError,
@@ -26,37 +36,11 @@ from ..transaction.boundary import (
     TransactionError,
     git_repo_dirty_for_aiadra_paths,
 )
-from ..transaction.operations import (
-    add_acceptance_criterion,
-    attach_file,
-    change_parameter,
-    create_object,
-    init_workspace,
-    link_relationship,
-    release,
-)
 from ..validation.binding import RevisionBindingError
-from ..validation.bundle_registry import (
-    BundleDigestMismatchError,
-    BundleNotFoundError,
-    BundleRegistry,
-)
 from ..validation.profile import ProfileViolationError
 from ..validation.reservation_integrity import ReservationIntegrityError
 from ..validation.release import ReleaseConsistencyError
 from ..validation.schema import SchemaValidationError
-
-
-def _registry() -> BundleRegistry:
-    return BundleRegistry()
-
-
-def _pin_bundle(workspace: Path):
-    try:
-        return _registry().bundle_for_pin(workspace)
-    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
-        print(f"project pin failure: {e}", file=sys.stderr)
-        sys.exit(3)
 
 
 def _run_draft(draft: TransactionDraft, *, allow_dirty_init: bool = False) -> int:
@@ -87,15 +71,12 @@ def _run_draft(draft: TransactionDraft, *, allow_dirty_init: bool = False) -> in
         print(f"validation failed ({type(e).__name__}): {e}", file=sys.stderr)
         return rc
     except Exception as e:
-        # Fold mismatch comes from validation.fold.FoldInconsistencyError; catch broadly
         from ..validation.fold import FoldInconsistencyError
         if isinstance(e, FoldInconsistencyError):
             print(f"validation failed (FoldInconsistencyError): {e}", file=sys.stderr)
             return 1
         raise
     try:
-        # Phase A (arc 20260531-7): commit goes through the Ring 2 protocol
-        # facade for the verb-noun terminal pairing. Equivalent to draft.commit().
         from ..protocol import commit as protocol_commit
         result = protocol_commit(draft)
     except CommitError as e:
@@ -110,6 +91,42 @@ def _run_draft(draft: TransactionDraft, *, allow_dirty_init: bool = False) -> in
     return 0
 
 
+def _run_protocol_propose(
+    workspace: Path,
+    *,
+    kind: str,
+    params: dict[str, Any],
+    actor: str = "agent",
+    allow_dirty_init: bool = False,
+    failure_label: str | None = None,
+) -> int:
+    """Common delegation path: protocol.propose → _run_draft.
+
+    `failure_label` is the human-readable command name used in the
+    TransactionError message (default: the kind itself).
+    """
+    from ..protocol import propose, ProjectPinError
+    try:
+        draft = propose(workspace, kind=kind, params=params, actor=actor)
+    except ProjectPinError as e:
+        print(f"project pin failure: {e}", file=sys.stderr)
+        return 3
+    except TransactionError as e:
+        label = failure_label or kind
+        print(f"{label} failed: {e}", file=sys.stderr)
+        return 2
+    return _run_draft(draft, allow_dirty_init=allow_dirty_init)
+
+
+_OBJ_TYPE_TO_KIND = {
+    "Part":             "create_part",
+    "Requirement":      "create_requirement",
+    "TestProcedure":    "create_test_procedure",
+    "TestExecution":    "create_test_execution",
+    "EvidenceArtifact": "create_evidence_artifact",
+}
+
+
 # ---------------- CLI command entry points ----------------
 
 
@@ -119,10 +136,11 @@ def cmd_init(argv: list[str]) -> int:
         print("usage: aiadra init <workspace>", file=sys.stderr)
         return 2
     workspace = Path(argv[0]).resolve()
-    bundle = _registry().latest()
-    draft = init_workspace(workspace, bundle)
     # B9: dirty-guard skipped for init (workspace pre-init has no .git or only fresh files)
-    return _run_draft(draft, allow_dirty_init=True)
+    return _run_protocol_propose(
+        workspace, kind="init", params={}, allow_dirty_init=True,
+        failure_label="init",
+    )
 
 
 def cmd_create_object(obj_type: str, argv: list[str]) -> int:
@@ -136,16 +154,16 @@ def cmd_create_object(obj_type: str, argv: list[str]) -> int:
     p.add_argument("--revision-id", default=None)
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
-    try:
-        draft = create_object(
-            workspace, bundle, obj_type, args.number, args.name,
-            uuid=args.uuid, revision_id=args.revision_id,
-        )
-    except TransactionError as e:
-        print(f"create-object failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    kind = _OBJ_TYPE_TO_KIND[obj_type]
+    params: dict[str, Any] = {"number": args.number, "name": args.name}
+    if args.uuid is not None:
+        params["uuid"] = args.uuid
+    if args.revision_id is not None:
+        params["revision_id"] = args.revision_id
+    return _run_protocol_propose(
+        workspace, kind=kind, params=params,
+        failure_label="create-object",
+    )
 
 
 def cmd_change_parameter(argv: list[str]) -> int:
@@ -158,6 +176,10 @@ def cmd_change_parameter(argv: list[str]) -> int:
     fact_provenance wholesale. If ANY --provenance-* flag is present,
     --provenance-category is REQUIRED. If none are present, fact_provenance
     is unchanged (Phase 1 backward-compat).
+
+    Per Codex1 B4 absorption arc 20260531-9: CLI passes actor="human" so
+    the operator MAY attest provenance.category="human_input"; AI agents
+    using protocol.propose with actor="agent" (default) cannot.
     """
     import argparse
     p = argparse.ArgumentParser(prog="aiadra change-parameter")
@@ -178,7 +200,6 @@ def cmd_change_parameter(argv: list[str]) -> int:
                    help="Optional `derived_from` field of fact_provenance; comma-separated.")
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
     new_fact_provenance = None
     any_provenance_flag = any([
         args.provenance_category is not None,
@@ -196,16 +217,19 @@ def cmd_change_parameter(argv: list[str]) -> int:
             new_fact_provenance["derived_from"] = [
                 s.strip() for s in args.provenance_derived_from.split(",") if s.strip()
             ]
-    try:
-        draft = change_parameter(
-            workspace, bundle, args.obj_number, args.parameter_id,
-            args.new_value, args.rationale,
-            new_fact_provenance=new_fact_provenance,
-        )
-    except TransactionError as e:
-        print(f"change-parameter failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    params: dict[str, Any] = {
+        "obj_number": args.obj_number,
+        "parameter_id": args.parameter_id,
+        "new_value": args.new_value,
+        "rationale": args.rationale,
+    }
+    if new_fact_provenance is not None:
+        params["new_fact_provenance"] = new_fact_provenance
+    return _run_protocol_propose(
+        workspace, kind="change_parameter", params=params,
+        actor="human",  # Codex1 B4: CLI is the human-driven binding
+        failure_label="change-parameter",
+    )
 
 
 def cmd_add_acceptance_criterion(argv: list[str]) -> int:
@@ -283,20 +307,36 @@ def cmd_add_acceptance_criterion(argv: list[str]) -> int:
         }
 
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
-    try:
-        draft = add_acceptance_criterion(
-            workspace, bundle, args.req_number, args.criterion_id, args.text,
-            language=args.language, format=args.format,
-            threshold_expression=threshold_expression,
-            verification_method=args.verification_method,
-            references=args.reference,
-            name=args.name,
-        )
-    except TransactionError as e:
-        print(f"add-acceptance-criterion failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    params: dict[str, Any] = {
+        "req_number": args.req_number,
+        "criterion_id": args.criterion_id,
+        "criterion_text": args.text,
+        "language": args.language,
+        "format": args.format,
+    }
+    if threshold_expression is not None:
+        params["threshold_expression"] = threshold_expression
+    if args.verification_method is not None:
+        params["verification_method"] = args.verification_method
+    if args.reference is not None:
+        params["references"] = args.reference
+    if args.name is not None:
+        params["name"] = args.name
+    return _run_protocol_propose(
+        workspace, kind="add_acceptance_criterion", params=params,
+        failure_label="add-acceptance-criterion",
+    )
+
+
+_REL_TYPE_TO_KIND = {
+    "satisfies":      "link_satisfies",
+    "tested_against": "link_tested_against",
+    "verifies":       "link_verifies",
+    "cites":          "link_cites",
+    "executes":       "link_executes",
+    "executed_on":    "link_executed_on",
+    "produces":       "link_produces",
+}
 
 
 def cmd_link_relationship(rel_type: str, argv: list[str]) -> int:
@@ -309,14 +349,16 @@ def cmd_link_relationship(rel_type: str, argv: list[str]) -> int:
     p.add_argument("--id", dest="relationship_id", default=None)
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
-    try:
-        draft = link_relationship(workspace, bundle, rel_type, args.source_number,
-                                   args.target_number, relationship_id=args.relationship_id)
-    except TransactionError as e:
-        print(f"link failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    params: dict[str, Any] = {
+        "source_number": args.source_number,
+        "target_number": args.target_number,
+    }
+    if args.relationship_id is not None:
+        params["relationship_id"] = args.relationship_id
+    return _run_protocol_propose(
+        workspace, kind=_REL_TYPE_TO_KIND[rel_type], params=params,
+        failure_label="link",
+    )
 
 
 def cmd_attach_file(argv: list[str]) -> int:
@@ -333,18 +375,21 @@ def cmd_attach_file(argv: list[str]) -> int:
     p.add_argument("--media-type", default=None)
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
-    try:
-        draft = attach_file(
-            workspace, bundle, args.obj_number, Path(args.file_path), args.role,
-            attachment_id=args.attachment_id,
-            derived_from_attachment_id=args.derived_from_attachment_id,
-            media_type=args.media_type,
-        )
-    except TransactionError as e:
-        print(f"attach-file failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    params: dict[str, Any] = {
+        "obj_number": args.obj_number,
+        "file_path": Path(args.file_path),
+        "role": args.role,
+    }
+    if args.attachment_id is not None:
+        params["attachment_id"] = args.attachment_id
+    if args.derived_from_attachment_id is not None:
+        params["derived_from_attachment_id"] = args.derived_from_attachment_id
+    if args.media_type is not None:
+        params["media_type"] = args.media_type
+    return _run_protocol_propose(
+        workspace, kind="attach_file", params=params,
+        failure_label="attach-file",
+    )
 
 
 def cmd_release(argv: list[str]) -> int:
@@ -371,7 +416,6 @@ def cmd_release(argv: list[str]) -> int:
                    help="Prior stage release_label (optional convenience metadata)")
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
-    bundle = _pin_bundle(workspace)
     object_numbers = [n.strip() for n in args.objects.split(",") if n.strip()]
     prior_ref = None
     if args.prior_stage_hash:
@@ -384,21 +428,19 @@ def cmd_release(argv: list[str]) -> int:
         }
         if args.prior_stage_label:
             prior_ref["release_label"] = args.prior_stage_label
-    try:
-        # Phase A (arc 20260531-7): release routes through the Ring 2 protocol
-        # facade per ADR/0026 §2 (release IS a named Phase-A contract).
-        from ..protocol import release as protocol_release
-        draft = protocol_release(
-            workspace, bundle, object_numbers,
-            release_label=args.label,
-            stage_number=args.stage,
-            final_stage=not args.no_final,
-            prior_stage_manifest_ref=prior_ref,
-        )
-    except TransactionError as e:
-        print(f"release failed: {e}", file=sys.stderr)
-        return 2
-    return _run_draft(draft)
+    params: dict[str, Any] = {
+        "object_numbers": object_numbers,
+        "stage_number": args.stage,
+        "final_stage": not args.no_final,
+    }
+    if args.label is not None:
+        params["release_label"] = args.label
+    if prior_ref is not None:
+        params["prior_stage_manifest_ref"] = prior_ref
+    return _run_protocol_propose(
+        workspace, kind="release", params=params,
+        failure_label="release",
+    )
 
 
 def cmd_migrate(argv: list[str]) -> int:
