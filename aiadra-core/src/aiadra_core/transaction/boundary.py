@@ -268,9 +268,16 @@ class TransactionDraft:
                 uuid = event["payload"]["object_uuid"]
                 pid = event["payload"]["parameter_id"]
                 nv = event["payload"]["new_value"]
+                # B1 absorption Phase 2 round-2 (arc 20260531-3): proposed-state
+                # fold path MUST honor new_fact_provenance identically to the
+                # read-side fold path in validation/fold.py. Both must agree
+                # post-Transaction or the F3 boundary catches false drift.
+                new_fp = event["payload"].get("new_fact_provenance")
                 for p in state.get(uuid, {}).get("parameter", []):
                     if p.get("id") == pid:
                         p["value"] = nv
+                        if new_fp is not None:
+                            p["fact_provenance"] = json.loads(json.dumps(new_fp))
                         break
             elif et in ("drawing_changed", "test_procedure_changed",
                         "test_execution_changed", "evidence_artifact_changed"):

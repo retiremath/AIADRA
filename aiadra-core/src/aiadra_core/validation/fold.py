@@ -120,9 +120,15 @@ def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[st
             uuid = event["payload"]["object_uuid"]
             pid = event["payload"]["parameter_id"]
             new_value = event["payload"]["new_value"]
+            # F1 absorption Phase 2 (arc 20260531-3): if new_fact_provenance
+            # present, replace the parameter's fact_provenance dict wholesale.
+            # If absent, fact_provenance unchanged (backward-compat with v0.20.0).
+            new_fp = event["payload"].get("new_fact_provenance")
             for p in state[uuid].get("parameter", []):
                 if p.get("id") == pid:
                     p["value"] = new_value
+                    if new_fp is not None:
+                        p["fact_provenance"] = json.loads(json.dumps(new_fp))
                     break
         elif et in _ATTACHMENT_CHANGED_EVENTS:
             _apply_attachment_delta(state, et, event["payload"])

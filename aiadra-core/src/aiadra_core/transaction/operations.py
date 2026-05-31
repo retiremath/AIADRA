@@ -296,8 +296,17 @@ def change_parameter(
     parameter_id: str,
     new_value: float,
     rationale: str,
+    *,
+    new_fact_provenance: dict[str, Any] | None = None,
 ) -> TransactionDraft:
-    """Mutate a parameter value. B6 mutation prohibition runs in validate-phase."""
+    """Mutate a parameter value. B6 mutation prohibition runs in validate-phase.
+
+    Per F1 absorption Phase 2 (arc 20260531-3): if `new_fact_provenance` is
+    provided, the proposed sidecar's parameter has its `fact_provenance` dict
+    replaced wholesale AND the `parameter_changed` event payload carries the
+    new dict. If `None`, both the sidecar's fact_provenance and the event
+    payload omit the field (Phase 1 backward-compat).
+    """
     found = find_reservation_entry_by_number(workspace, obj_number)
     if found is None:
         raise TransactionError(f"Object not found: {obj_number}")
@@ -311,25 +320,30 @@ def change_parameter(
         if p.get("id") == parameter_id:
             old_value = p.get("value")
             p["value"] = new_value
+            if new_fact_provenance is not None:
+                p["fact_provenance"] = deepcopy(new_fact_provenance)
             break
     else:
         raise TransactionError(f"Parameter {parameter_id} not found on {obj_number}")
 
     transaction_id = next_transaction_id(workspace, bundle.bundle_dir)
     event_id = next_event_id(workspace, bundle.bundle_dir)
+    event_payload: dict[str, Any] = {
+        "object_uuid": obj_uuid,
+        "parameter_id": parameter_id,
+        "old_value": old_value,
+        "new_value": new_value,
+        "rationale": rationale,
+    }
+    if new_fact_provenance is not None:
+        event_payload["new_fact_provenance"] = deepcopy(new_fact_provenance)
     event = {
         "schema_version": bundle.bundle_version,
         "event_id": event_id,
         "event_type": "parameter_changed",
         "timestamp": _now_iso(),
         "transaction_id": transaction_id,
-        "payload": {
-            "object_uuid": obj_uuid,
-            "parameter_id": parameter_id,
-            "old_value": old_value,
-            "new_value": new_value,
-            "rationale": rationale,
-        },
+        "payload": event_payload,
     }
 
     draft = TransactionDraft(

@@ -145,7 +145,16 @@ def cmd_create_object(obj_type: str, argv: list[str]) -> int:
 
 
 def cmd_change_parameter(argv: list[str]) -> int:
-    """aiadra change-parameter <workspace> <obj-number> <parameter-id> <new-value> <rationale>"""
+    """aiadra change-parameter <workspace> <obj-number> <parameter-id> <new-value> <rationale>
+                              [--provenance-category {human_input|ai_proposal|computed_result|measured}]
+                              [--provenance-agent <ref>] [--provenance-derived-from <ref1,ref2,...>]
+
+    Per F1 absorption Phase 2 (arc 20260531-3): optional provenance flags
+    construct a `new_fact_provenance` dict that replaces the parameter's
+    fact_provenance wholesale. If ANY --provenance-* flag is present,
+    --provenance-category is REQUIRED. If none are present, fact_provenance
+    is unchanged (Phase 1 backward-compat).
+    """
     import argparse
     p = argparse.ArgumentParser(prog="aiadra change-parameter")
     p.add_argument("workspace")
@@ -153,12 +162,42 @@ def cmd_change_parameter(argv: list[str]) -> int:
     p.add_argument("parameter_id")
     p.add_argument("new_value", type=float)
     p.add_argument("rationale")
+    p.add_argument(
+        "--provenance-category",
+        choices=["human_input", "ai_proposal", "computed_result", "measured"],
+        default=None,
+        help="Required if any --provenance-* flag is present. Replaces parameter's fact_provenance wholesale.",
+    )
+    p.add_argument("--provenance-agent", default=None,
+                   help="Optional `ai_agent_ref` field of fact_provenance.")
+    p.add_argument("--provenance-derived-from", default=None,
+                   help="Optional `derived_from` field of fact_provenance; comma-separated.")
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
     bundle = _pin_bundle(workspace)
+    new_fact_provenance = None
+    any_provenance_flag = any([
+        args.provenance_category is not None,
+        args.provenance_agent is not None,
+        args.provenance_derived_from is not None,
+    ])
+    if any_provenance_flag:
+        if args.provenance_category is None:
+            print("--provenance-category is REQUIRED when any --provenance-* flag is provided", file=sys.stderr)
+            return 2
+        new_fact_provenance = {"category": args.provenance_category}
+        if args.provenance_agent is not None:
+            new_fact_provenance["ai_agent_ref"] = args.provenance_agent
+        if args.provenance_derived_from is not None:
+            new_fact_provenance["derived_from"] = [
+                s.strip() for s in args.provenance_derived_from.split(",") if s.strip()
+            ]
     try:
-        draft = change_parameter(workspace, bundle, args.obj_number, args.parameter_id,
-                                  args.new_value, args.rationale)
+        draft = change_parameter(
+            workspace, bundle, args.obj_number, args.parameter_id,
+            args.new_value, args.rationale,
+            new_fact_provenance=new_fact_provenance,
+        )
     except TransactionError as e:
         print(f"change-parameter failed: {e}", file=sys.stderr)
         return 2
@@ -265,28 +304,42 @@ def cmd_release(argv: list[str]) -> int:
 
 
 def cmd_migrate(argv: list[str]) -> int:
-    """aiadra migrate <workspace> --to-bundle 0.20.0 [--dry-run]"""
+    """aiadra migrate <workspace> --to-bundle {0.20.0,0.21.0} [--dry-run]
+
+    Phase 2 (arc 20260531-3): added 0.21.0 target dispatching to
+    apply_migration_v0_20_0_to_v0_21_0.
+    """
     import argparse
     from ..validation.migration import (
         apply_migration_v0_19_0_to_v0_20_0,
+        apply_migration_v0_20_0_to_v0_21_0,
         plan_migration_v0_19_0_to_v0_20_0,
+        plan_migration_v0_20_0_to_v0_21_0,
         MigrationError,
     )
     p = argparse.ArgumentParser(prog="aiadra migrate")
     p.add_argument("workspace")
-    p.add_argument("--to-bundle", required=True, choices=["0.20.0"])
+    p.add_argument("--to-bundle", required=True, choices=["0.20.0", "0.21.0"])
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     workspace = Path(args.workspace).resolve()
+    plan_fn = {
+        "0.20.0": plan_migration_v0_19_0_to_v0_20_0,
+        "0.21.0": plan_migration_v0_20_0_to_v0_21_0,
+    }[args.to_bundle]
+    apply_fn = {
+        "0.20.0": apply_migration_v0_19_0_to_v0_20_0,
+        "0.21.0": apply_migration_v0_20_0_to_v0_21_0,
+    }[args.to_bundle]
     try:
         if args.dry_run:
-            plan = plan_migration_v0_19_0_to_v0_20_0(workspace)
+            plan = plan_fn(workspace)
             print(f"Migration plan: {plan.from_bundle_version} → {plan.to_bundle_version}")
             for note in plan.notes:
                 print(f"  - {note}")
             print(f"(dry-run; no files changed)")
         else:
-            plan = apply_migration_v0_19_0_to_v0_20_0(workspace)
+            plan = apply_fn(workspace)
             print(f"Migrated: {plan.from_bundle_version} → {plan.to_bundle_version}")
             for note in plan.notes:
                 print(f"  - {note}")

@@ -35,7 +35,8 @@ def test_phase1_init_create_link_release(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     registry = BundleRegistry()
     bundle = registry.latest()
-    assert bundle.bundle_version == "0.20.0"
+    # Phase 2 (arc 20260531-3) bumped latest to v0.21.0; pre-Phase-2 latest was v0.20.0.
+    assert bundle.bundle_version in ("0.20.0", "0.21.0")
 
     # 1. init
     draft = init_workspace(workspace, bundle)
@@ -112,12 +113,17 @@ def test_phase1_init_create_link_release(tmp_path: Path) -> None:
 
 
 def test_phase1_bundle_registry_lists_both_bundles() -> None:
-    """B2: BundleRegistry resolves both v0.19.0 and v0.20.0 bundles."""
+    """B2: BundleRegistry resolves both v0.19.0 and v0.20.0 bundles.
+
+    Phase 2 (arc 20260531-3) adds v0.21.0; older bundles still ship side-by-side
+    per ADR/0003 §7 archival-mode.
+    """
     registry = BundleRegistry()
     versions = registry.versions()
     assert "0.19.0" in versions
     assert "0.20.0" in versions
-    assert registry.latest().bundle_version == "0.20.0"
+    # Latest advances with each Phase; assert it's the newest currently packaged.
+    assert registry.latest().bundle_version == max(versions, key=lambda v: tuple(int(x) for x in v.split(".")))
 
 
 def test_phase1_archival_read_v0_19_0_fixture_against_v0_20_0_registry(tmp_path: Path) -> None:

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event base — common fields per ADR/0023 + ADR/0003",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "timestamp",
+    "transaction_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^evt_[0-9]{4}$"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transaction_id": {
+      "type": "string",
+      "pattern": "^tx_[0-9]{4}$"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "enum": [
+        "human_input",
+        "ai_proposal",
+        "computed_result",
+        "measured"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
