@@ -578,7 +578,9 @@ def test_phase_c_invalid_actor_rejected_at_modify(tmp_path: Path):
 
 def test_phase_c_propose_unknown_kind_raises_value_error(tmp_path: Path):
     workspace = _init_workspace(tmp_path)
-    with pytest.raises(ValueError, match="Unknown propose kind"):
+    # arc 20260601-1: dispatch unified to _resolve_propose_handler;
+    # message changed from "Unknown propose kind" to "Unknown kind".
+    with pytest.raises(ValueError, match="Unknown kind"):
         propose(workspace, kind="totally_made_up", params={})
 
 
@@ -587,7 +589,9 @@ def test_phase_c_modify_unknown_kind_raises_value_error(tmp_path: Path):
     draft = propose(workspace, kind="create_part", params={
         "number": "P-000001", "name": "X",
     })
-    with pytest.raises(ValueError, match="Unknown modify kind"):
+    # arc 20260601-1: dispatch unified to _resolve_propose_handler;
+    # message changed from "Unknown modify kind" to "Unknown kind".
+    with pytest.raises(ValueError, match="Unknown kind"):
         modify(draft, kind="totally_made_up", params={})
 
 

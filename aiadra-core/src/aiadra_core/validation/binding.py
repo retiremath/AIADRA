@@ -152,7 +152,15 @@ def find_mutation_after_binding_violations_for_events(
         elif et in (
             "drawing_changed", "test_procedure_changed",
             "test_execution_changed", "evidence_artifact_changed",
+            "requirement_changed",
         ):
+            mutated_uuid = event["payload"]["object_uuid"]
+        elif et == "part_changed":
+            # Codex1 B3 R1 absorption arc 20260601-1: ADR/0029 (arc 13) added
+            # `part_changed` as the Part authoring mutation event; Native Engines
+            # emit it via the API surface added arc 20260601-1. Without this,
+            # `part_changed` would bypass Fixed-binding mutation prohibition,
+            # reopening the composability hole closed in arc 20260531-9.
             mutated_uuid = event["payload"]["object_uuid"]
         if mutated_uuid is None:
             continue

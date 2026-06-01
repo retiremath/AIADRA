@@ -153,11 +153,20 @@ def git_repo_dirty_for_aiadra_paths(workspace: Path) -> tuple[bool, str]:
 
 @dataclass
 class TransactionDraft:
-    """In-memory accumulation of Transaction changes per ADR/0025 §6."""
+    """In-memory accumulation of Transaction changes per ADR/0025 §6.
+
+    Per ADR/0028 D16 + arc 20260601-1: `kind` is a plain `str` (was
+    `TransactionKind` enum). Built-in callers passing `TransactionKind` enum
+    members continue to work via `__post_init__` normalization — the enum
+    member's `.value` (already a str-Enum) gets extracted so the invariant
+    `isinstance(self.kind, str) and not isinstance(self.kind, TransactionKind)`
+    holds after init. Native Engine operations pass the full namespaced kind
+    string directly (e.g., `kind="mechanical.adjust_parameter"`).
+    """
 
     workspace: Path
     bundle: BundleHandle
-    kind: TransactionKind
+    kind: str  # ADR/0028 D16: was TransactionKind; now str (enum members normalized in __post_init__)
     transaction_id: str = ""
 
     # Staged operations (in-memory):
@@ -190,6 +199,19 @@ class TransactionDraft:
     # path), `rollback()` (only if not already emitted AND staged content
     # exists), `commit()` on CommitError (write-time crash).
     _audit_emitted: bool = False
+
+    def __post_init__(self) -> None:
+        """ADR/0028 D16 normalization: if `kind` was passed as a
+        `TransactionKind` enum member (built-in callers from arc 9 onward),
+        extract its str value. Native Engine callers pass plain str directly
+        (no normalization needed). After this runs, `self.kind` is always a
+        plain `str` (not an enum instance), so the audit + commit-message
+        serialization sites can use `self.kind` directly without `.value`.
+        """
+        if isinstance(self.kind, TransactionKind):
+            # Use object.__setattr__ to bypass dataclass-generated __setattr__
+            # if frozen (this dataclass is NOT frozen but the pattern is safe).
+            self.kind = self.kind.value
 
     def _assert_open(self, op: str) -> None:
         """Raise TransactionError if the draft is in a terminal state.
@@ -230,7 +252,7 @@ class TransactionDraft:
             record = AuditRecord(
                 transaction_id=self.transaction_id,
                 attempted_at=attempted_at,
-                kind=self.kind.value,
+                kind=self.kind,  # ADR/0028 D16: kind is plain str post __post_init__ normalization
                 proposed_events=list(self.events),
                 validation_errors=[node_to_dict(t) for t in validation_error_trees if t is not None],
                 reason_classification=reason_classification,
@@ -838,7 +860,7 @@ class TransactionDraft:
             ]
             if rel_paths:
                 _git(self.workspace, "add", "--", *rel_paths)
-                msg = "\n".join(self.commit_message_lines) or f"aiadra: {self.kind.value} {self.transaction_id}"
+                msg = "\n".join(self.commit_message_lines) or f"aiadra: {self.kind} {self.transaction_id}"  # ADR/0028 D16
                 try:
                     _git(self.workspace, "commit", "-m", msg)
                     commit_hash = _git(self.workspace, "rev-parse", "HEAD").stdout.strip()

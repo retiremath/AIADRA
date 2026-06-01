@@ -906,14 +906,184 @@ _MODIFY_REJECTED_KINDS: frozenset[str] = frozenset({"init", "release"})
 
 
 def propose_kinds() -> tuple[str, ...]:
-    """Introspection: sorted tuple of all kinds accepted by `propose`."""
-    return tuple(sorted(_PROPOSE_DISPATCH.keys()))
+    """Introspection: sorted tuple of all kinds accepted by `propose`.
+
+    Per ADR/0028 D5 + arc 20260601-1: returns COMBINED built-in + LOADED
+    Native Engine kinds. Failed engines contribute zero kinds.
+    """
+    from ..native_engine.discovery import get_native_engines
+
+    loaded, _failures = get_native_engines()
+    kinds: set[str] = set(_PROPOSE_DISPATCH.keys())
+    for reg in loaded.values():
+        for kind, _handler in reg.operations:
+            kinds.add(kind)
+    return tuple(sorted(kinds))
 
 
 def modify_kinds() -> tuple[str, ...]:
     """Introspection: sorted tuple of all kinds accepted by `modify`
-    (= propose_kinds() minus init + release per Codex1 B2 absorption)."""
-    return tuple(sorted(k for k in _PROPOSE_DISPATCH if k not in _MODIFY_REJECTED_KINDS))
+    (= propose_kinds() minus init + release per Codex1 B2 absorption).
+    Native Engine kinds are namespaced and CANNOT collide with `init` or
+    `release` per ADR/0028 D2 invariants #2 + #3."""
+    return tuple(k for k in propose_kinds() if k not in _MODIFY_REJECTED_KINDS)
+
+
+# -----------------------------------------------------------------------------
+# Native Engine dispatch (ADR/0028 D5 four-case discipline + D3 adapter
+# bridging engine handler shape to _PROPOSE_DISPATCH shape).
+# Implemented arc 20260601-1 per ADR/0028 D14 step 3 (renumbered after
+# ADR/0029 consumed the 0.10.0 slot).
+# -----------------------------------------------------------------------------
+
+
+def _resolve_propose_handler(kind: str) -> Callable[..., TransactionDraft]:
+    """Resolve `kind` to a propose handler.
+
+    Built-in kinds dispatch via `_PROPOSE_DISPATCH` directly (unchanged).
+    Engine-namespaced kinds (containing a '.') parse `engine_id`, look up in
+    discovery cache, raise `EngineNotAvailableError` per ADR/0028 D5 four-case
+    discipline.
+    """
+    if kind in _PROPOSE_DISPATCH:
+        return _PROPOSE_DISPATCH[kind]
+    if "." not in kind:
+        # Not built-in; not namespaced — caller passed a bad kind.
+        raise ValueError(
+            f"Unknown kind {kind!r}; valid kinds: {propose_kinds()}"
+        )
+    engine_id, _op = kind.split(".", 1)
+    from ..native_engine.discovery import get_native_engines
+    from ..native_engine.exceptions import EngineNotAvailableError
+
+    loaded, failures = get_native_engines()
+    if engine_id in loaded:
+        ops = dict(loaded[engine_id].operations)
+        if kind in ops:
+            return _native_engine_dispatch_adapter(ops[kind], engine_id, kind)
+        # Engine loaded but doesn't define this specific kind.
+        raise EngineNotAvailableError(
+            f"engine {engine_id!r} loaded but does not register kind {kind!r}; "
+            f"engine declares: {sorted(k for k, _ in loaded[engine_id].operations)}"
+        )
+    if engine_id in failures:
+        err = EngineNotAvailableError(
+            f"engine {engine_id!r} failed to load: {failures[engine_id]!r}"
+        )
+        err.__cause__ = failures[engine_id]
+        raise err
+    # Not loaded; not failed; not installed.
+    raise EngineNotAvailableError(
+        f"engine {engine_id!r} not installed; try: pip install aiadra-{engine_id}"
+    )
+
+
+def _native_engine_dispatch_adapter(
+    handler: Callable, engine_id: str, operation_kind: str
+) -> Callable[..., TransactionDraft]:
+    """Wrap a Native Engine handler (ADR/0028 D3 shape `(context, params)
+    → None`) to match the `_PROPOSE_DISPATCH` signature `(workspace, bundle,
+    params, actor, existing_draft) → TransactionDraft`.
+
+    The adapter:
+        1. Begins or extends a draft via `_begin_or_extend_draft` (Phase C
+           Codex1 B1 + B3 — draft-aware reads + terminal-state guard).
+        2. Constructs `NativeEngineContext` wrapping the draft + workspace +
+           bundle + actor + operation_kind + engine_id.
+        3. Calls `handler(context, params)`.
+        4. PASSTHROUGH exceptions propagate as-is (user-facing per ADR/0028 D9).
+        5. Other exceptions get wrapped as `NativeEngineKernelError` with
+           `__cause__` preserved; `draft.audit_failure(...)` emitted FIRST per
+           Codex1 Q3 R1 acknowledgement (single-record audit discipline per
+           arc 10 Phase D Codex1 B3).
+        6. Returns the draft.
+    """
+    # Lazy imports to avoid module-load-time circular dependencies.
+    from ..native_engine.context import NativeEngineContext
+    from ..native_engine.exceptions import (
+        EngineNotAvailableError,
+        NativeEngineKernelError,
+        NativeEngineRegistrationError,
+    )
+    from ..transaction.boundary import TransactionError
+    from ..transaction.operations import _begin_or_extend_draft
+    from ..validation.binding import RevisionBindingError
+    from ..validation.bundle_registry import (
+        BundleDigestMismatchError,
+        BundleNotFoundError,
+        SchemaValidationError,
+    )
+
+    # Per Codex1 N5 R1 arc 20260601-1: narrow passthrough list (NOT broad ValueError).
+    PASSTHROUGH_EXCEPTIONS: tuple[type[BaseException], ...] = (
+        TransactionError,
+        SchemaValidationError,
+        RevisionBindingError,
+        EngineNotAvailableError,
+        NativeEngineRegistrationError,
+        BundleDigestMismatchError,
+        BundleNotFoundError,
+        ProjectPinError,
+        ObjectNotFoundError,
+    )
+
+    def dispatch_handler(
+        workspace: Path,
+        bundle,
+        params: dict[str, Any],
+        actor: str,
+        existing_draft: TransactionDraft | None,
+    ) -> TransactionDraft:
+        draft = _begin_or_extend_draft(workspace, bundle, operation_kind, existing_draft)
+        context = NativeEngineContext(
+            draft=draft,
+            workspace=workspace,
+            bundle=bundle,
+            actor=actor,
+            operation_kind=operation_kind,
+            engine_id=engine_id,
+        )
+        try:
+            handler(context, params)
+        except PASSTHROUGH_EXCEPTIONS:
+            raise
+        except Exception as e:
+            # Per Codex1 Q3 R1 acknowledgement: emit audit BEFORE re-raising so
+            # the single-record discipline holds (arc 10 Phase D Codex1 B3).
+            try:
+                draft.audit_failure(
+                    reason=f"Native Engine kernel failure: {e!r}",
+                    exception=e,
+                    agent_ref=actor,
+                    reason_classification="other",
+                )
+            except Exception:
+                # Audit emission must NEVER mask the original kernel failure.
+                pass
+            raise NativeEngineKernelError(
+                f"engine {engine_id!r} kernel failure during {operation_kind!r}: {e!r}",
+                engine_id=engine_id,
+                operation_kind=operation_kind,
+            ) from e
+        return draft
+
+    return dispatch_handler
+
+
+def refresh_native_engines() -> None:
+    """Re-export of `aiadra_core.native_engine.refresh_native_engines` per
+    ADR/0028 D5 + Codex Q6 explicit escape hatch."""
+    from ..native_engine.discovery import refresh_native_engines as _refresh
+
+    _refresh()
+
+
+def native_engine_status() -> dict[str, Any]:
+    """Re-export of `aiadra_core.native_engine.native_engine_status` per
+    ADR/0028 D15 item 11 + Codex1 N4 R1 acknowledgement arc 20260601-1."""
+    from ..native_engine.discovery import native_engine_status as _status
+
+    return _status()
 
 
 def propose(
@@ -948,10 +1118,9 @@ def propose(
             f"Invalid actor {actor!r}; expected 'agent' or 'human' "
             f"per ADR/0026 §5 (Codex1 B4 absorption arc 20260531-9)."
         )
-    if kind not in _PROPOSE_DISPATCH:
-        raise ValueError(
-            f"Unknown propose kind {kind!r}; expected one of {propose_kinds()}."
-        )
+    # Resolve handler — built-in via _PROPOSE_DISPATCH OR Native Engine via
+    # _resolve_propose_handler per ADR/0028 D5 (arc 20260601-1).
+    handler = _resolve_propose_handler(kind)
 
     if kind == "init":
         # B2: init has no project pin yet; resolve via BundleRegistry().latest().
@@ -962,7 +1131,7 @@ def propose(
         except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
             raise ProjectPinError(str(e)) from e
 
-    return _PROPOSE_DISPATCH[kind](workspace, bundle, params, actor, None)
+    return handler(workspace, bundle, params, actor, None)
 
 
 def modify(
@@ -1015,14 +1184,9 @@ def modify(
             "authorship and publication (Codex1 B2 absorption arc 20260531-9). "
             "Use propose(kind='release') as a standalone Transaction."
         )
-    if kind not in _PROPOSE_DISPATCH:
-        raise ValueError(
-            f"Unknown modify kind {kind!r}; expected one of {modify_kinds()}."
-        )
-
-    return _PROPOSE_DISPATCH[kind](
-        draft.workspace, draft.bundle, params, actor, draft,
-    )
+    # Resolve handler — built-in OR Native Engine per ADR/0028 D5 (arc 20260601-1).
+    handler = _resolve_propose_handler(kind)
+    return handler(draft.workspace, draft.bundle, params, actor, draft)
 
 
 # ---------- Phase D: simulate / explain / explain_failure ----------
@@ -1335,6 +1499,16 @@ def _node_from_dict(d: dict[str, Any]) -> "ExplanationNode":
 # convenience (so agents can `from aiadra_core.protocol import ExplanationTree`).
 from ..explain import ExplanationNode, ExplanationTree  # noqa: E402
 
+# Re-export Native Engine API surface from the native_engine submodule per
+# ADR/0028 D14 step 3 (renumbered; arc 20260601-1).
+from ..native_engine import (  # noqa: E402
+    EngineNotAvailableError,
+    NativeEngineContext,
+    NativeEngineKernelError,
+    NativeEngineRegistrar,
+    NativeEngineRegistrationError,
+)
+
 
 # ---------- Module exports ----------
 
@@ -1368,4 +1542,12 @@ __all__ = [
     "ObjectNotFoundError",
     "ProjectPinError",
     "NetworkUnreachableError",
+    # Native Engine API (arc 20260601-1; ADR/0028 D2 + D3 + D5 + D9 + D16)
+    "NativeEngineRegistrar",
+    "NativeEngineContext",
+    "NativeEngineRegistrationError",
+    "EngineNotAvailableError",
+    "NativeEngineKernelError",
+    "refresh_native_engines",
+    "native_engine_status",
 ]
