@@ -14,6 +14,7 @@ neither silently wins."
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,392 @@ _ATTACHMENT_CHANGED_EVENTS = (
     "test_execution_changed",
     "evidence_artifact_changed",
 )
+
+
+def _apply_part_changed(
+    state: dict[str, dict[str, Any]],
+    payload: dict[str, Any],
+    actor: str,
+) -> None:
+    """Apply a `part_changed` event to fold state per ADR/0029.
+
+    Codex1 B3 atomic delta rules (arc 20260531-13):
+      Within ONE delta object (feature_delta OR geometry_ref_delta):
+      - No duplicate ids in any single array (added/updated/removed).
+      - The same id cannot appear in more than one of added/updated/removed.
+      - added[].id MUST NOT pre-exist on the sidecar.
+      - updated[].id and removed[] entries MUST exist on the sidecar.
+      - updated[].new_record.id MUST equal updated[].id.
+      Apply the FULL delta atomically, then enforce post-conditions:
+      - depends_on_feature_ids acyclic per Codex1 B6 (DAG, not tree).
+      - No dangling references after removals (cascade-rejects).
+      - Provenance discipline per Codex1 B4: feature records' fact_provenance
+        matches actor; geometry_ref records' computed_result + derived_from
+        cross-checks derived_from_feature_ids via the canonical `feature:<id>`
+        address form.
+    """
+    uuid = payload["object_uuid"]
+    if uuid not in state:
+        raise FoldInconsistencyError(
+            f"part_changed for unknown Object {uuid!r} (no part_created event)"
+        )
+
+    if "feature_delta" in payload:
+        _apply_feature_delta(state[uuid], payload["feature_delta"], actor, uuid)
+    if "geometry_ref_delta" in payload:
+        _apply_geometry_ref_delta(state[uuid], payload["geometry_ref_delta"], uuid)
+
+    # Post-conditions over the post-delta sidecar:
+    _enforce_feature_dependency_acyclicity(state[uuid], uuid)
+    _enforce_no_dangling_feature_references(state[uuid], uuid)
+
+
+def _apply_feature_delta(
+    sidecar: dict[str, Any],
+    delta: dict[str, Any],
+    actor: str,
+    uuid: str,
+) -> None:
+    added = delta.get("added", [])
+    updated = delta.get("updated", [])
+    removed = delta.get("removed", [])
+
+    added_ids = [r["id"] for r in added]
+    updated_ids = [u["id"] for u in updated]
+    removed_ids = list(removed)
+
+    # Intra-array duplicates.
+    for label, ids in (("added", added_ids), ("updated", updated_ids), ("removed", removed_ids)):
+        if len(ids) != len(set(ids)):
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            raise FoldInconsistencyError(
+                f"part_changed.feature_delta.{label}: duplicate id(s) within array: {dupes}"
+            )
+
+    # Cross-array overlap.
+    union_buckets = {"added": set(added_ids), "updated": set(updated_ids), "removed": set(removed_ids)}
+    for a, b in (("added", "updated"), ("added", "removed"), ("updated", "removed")):
+        overlap = union_buckets[a] & union_buckets[b]
+        if overlap:
+            raise FoldInconsistencyError(
+                f"part_changed.feature_delta: id(s) {sorted(overlap)} appear in both {a!r} and {b!r}"
+            )
+
+    features = sidecar.setdefault("feature", [])
+    by_id = {f["id"]: i for i, f in enumerate(features)}
+
+    # added: ids MUST NOT pre-exist.
+    pre_existing_added = sorted(set(added_ids) & set(by_id))
+    if pre_existing_added:
+        raise FoldInconsistencyError(
+            f"part_changed.feature_delta.added: id(s) {pre_existing_added} already present on Part {uuid}"
+        )
+    # updated + removed: ids MUST exist.
+    missing_updated = sorted(set(updated_ids) - set(by_id))
+    if missing_updated:
+        raise FoldInconsistencyError(
+            f"part_changed.feature_delta.updated: id(s) {missing_updated} not present on Part {uuid}"
+        )
+    missing_removed = sorted(set(removed_ids) - set(by_id))
+    if missing_removed:
+        raise FoldInconsistencyError(
+            f"part_changed.feature_delta.removed: id(s) {missing_removed} not present on Part {uuid}"
+        )
+
+    # updated[].new_record.id MUST equal updated[].id.
+    for u in updated:
+        if u["new_record"]["id"] != u["id"]:
+            raise FoldInconsistencyError(
+                f"part_changed.feature_delta.updated: new_record.id {u['new_record']['id']!r} "
+                f"!= wrapper id {u['id']!r}"
+            )
+
+    # Per Codex1 B4 provenance discipline: feature records carry caller provenance.
+    expected_cat = "ai_proposal" if actor == "agent" else "human_input"
+    for rec in added:
+        cat = rec.get("fact_provenance", {}).get("category")
+        if cat != expected_cat:
+            raise FoldInconsistencyError(
+                f"part_changed.feature_delta.added[{rec['id']}].fact_provenance.category "
+                f"= {cat!r}; actor={actor!r} requires {expected_cat!r} per ADR/0028 D8"
+            )
+    for u in updated:
+        cat = u["new_record"].get("fact_provenance", {}).get("category")
+        if cat != expected_cat:
+            raise FoldInconsistencyError(
+                f"part_changed.feature_delta.updated[{u['id']}].new_record.fact_provenance.category "
+                f"= {cat!r}; actor={actor!r} requires {expected_cat!r} per ADR/0028 D8"
+            )
+
+    # Apply atomically: removes first, then updates, then adds.
+    if removed_ids:
+        features[:] = [f for f in features if f["id"] not in set(removed_ids)]
+    if updated_ids:
+        by_id = {f["id"]: i for i, f in enumerate(features)}
+        for u in updated:
+            features[by_id[u["id"]]] = json.loads(json.dumps(u["new_record"]))
+    if added_ids:
+        for rec in added:
+            features.append(json.loads(json.dumps(rec)))
+
+
+def _apply_geometry_ref_delta(
+    sidecar: dict[str, Any],
+    delta: dict[str, Any],
+    uuid: str,
+) -> None:
+    added = delta.get("added", [])
+    updated = delta.get("updated", [])
+    removed = delta.get("removed", [])
+
+    added_ids = [r["id"] for r in added]
+    updated_ids = [u["id"] for u in updated]
+    removed_ids = list(removed)
+
+    for label, ids in (("added", added_ids), ("updated", updated_ids), ("removed", removed_ids)):
+        if len(ids) != len(set(ids)):
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            raise FoldInconsistencyError(
+                f"part_changed.geometry_ref_delta.{label}: duplicate id(s) within array: {dupes}"
+            )
+
+    union_buckets = {"added": set(added_ids), "updated": set(updated_ids), "removed": set(removed_ids)}
+    for a, b in (("added", "updated"), ("added", "removed"), ("updated", "removed")):
+        overlap = union_buckets[a] & union_buckets[b]
+        if overlap:
+            raise FoldInconsistencyError(
+                f"part_changed.geometry_ref_delta: id(s) {sorted(overlap)} appear in both {a!r} and {b!r}"
+            )
+
+    geoms = sidecar.setdefault("geometry_ref", [])
+    by_id = {g["id"]: i for i, g in enumerate(geoms)}
+
+    pre_existing_added = sorted(set(added_ids) & set(by_id))
+    if pre_existing_added:
+        raise FoldInconsistencyError(
+            f"part_changed.geometry_ref_delta.added: id(s) {pre_existing_added} already present on Part {uuid}"
+        )
+    missing_updated = sorted(set(updated_ids) - set(by_id))
+    if missing_updated:
+        raise FoldInconsistencyError(
+            f"part_changed.geometry_ref_delta.updated: id(s) {missing_updated} not present on Part {uuid}"
+        )
+    missing_removed = sorted(set(removed_ids) - set(by_id))
+    if missing_removed:
+        raise FoldInconsistencyError(
+            f"part_changed.geometry_ref_delta.removed: id(s) {missing_removed} not present on Part {uuid}"
+        )
+
+    for u in updated:
+        if u["new_record"]["id"] != u["id"]:
+            raise FoldInconsistencyError(
+                f"part_changed.geometry_ref_delta.updated: new_record.id {u['new_record']['id']!r} "
+                f"!= wrapper id {u['id']!r}"
+            )
+
+    # Codex1 B4 + Codex2 B2 provenance discipline: geometry_ref records are
+    # computed_result; the fold enforces STRICT set-equality (NOT subset coverage)
+    # between declared geometric inputs and provenance-attested inputs.
+    # Cross-Object address form `<uuid>:feature:<id>` is REJECTED in v0.28.0
+    # (reserved for future SCN when cross-Part geometry derivation lands).
+    for rec in added + [u["new_record"] for u in updated]:
+        if rec.get("role") == "authoring_geometry":
+            _enforce_authoring_geometry_provenance_consistency(rec, uuid)
+        elif rec.get("role") == "derived_export":
+            _enforce_derived_export_provenance_consistency(rec, uuid)
+
+    if removed_ids:
+        geoms[:] = [g for g in geoms if g["id"] not in set(removed_ids)]
+    if updated_ids:
+        by_id = {g["id"]: i for i, g in enumerate(geoms)}
+        for u in updated:
+            geoms[by_id[u["id"]]] = json.loads(json.dumps(u["new_record"]))
+    if added_ids:
+        for rec in added:
+            geoms.append(json.loads(json.dumps(rec)))
+
+
+_INTRA_PART_FEATURE_ADDRESS_RE = re.compile(r"^feature:(feat_\d{4})$")
+_INTRA_PART_GEOMETRY_ADDRESS_RE = re.compile(r"^geometry_ref:(geom_\d{4})$")
+
+
+def _enforce_authoring_geometry_provenance_consistency(rec: dict[str, Any], uuid: str) -> None:
+    """Codex1 B4 + Codex2 B2: STRICT set-equality between
+    `derived_from_feature_ids` and the intra-Part `feature:<id>` entries in
+    `fact_provenance.derived_from`.
+
+    Rules (per ADR/0029 D6 + Codex2 B2 absorption):
+    - Cross-Object form `<uuid>:feature:<feat_id>` REJECTED in v0.28.0
+      (reserved for future SCN).
+    - Every entry in `fact_provenance.derived_from` MUST match
+      `^feature:feat_\\d{4}$` (intra-Part canonical address form).
+    - The set of feature ids extracted from `fact_provenance.derived_from`
+      MUST EQUAL the set in `derived_from_feature_ids` — neither
+      under-covering (missing) nor over-attesting (dangling extras) allowed.
+    """
+    declared = set(rec.get("derived_from_feature_ids", []))
+    provenance_entries = rec.get("fact_provenance", {}).get("derived_from", [])
+
+    addressed_ids: set[str] = set()
+    for s in provenance_entries:
+        if not isinstance(s, str):
+            raise FoldInconsistencyError(
+                f"part_changed: geometry_ref {rec['id']!r} on Part {uuid}: "
+                f"fact_provenance.derived_from entry {s!r} is not a string"
+            )
+        m = _INTRA_PART_FEATURE_ADDRESS_RE.match(s)
+        if not m:
+            raise FoldInconsistencyError(
+                f"part_changed: geometry_ref {rec['id']!r} on Part {uuid}: "
+                f"fact_provenance.derived_from entry {s!r} not in canonical "
+                f"`feature:<feat_NNNN>` form (cross-Object `<uuid>:feature:<id>` "
+                f"form reserved for future SCN per ADR/0029 D14 item 6)"
+            )
+        addressed_ids.add(m.group(1))
+
+    missing = sorted(declared - addressed_ids)
+    extras = sorted(addressed_ids - declared)
+    if missing or extras:
+        problems = []
+        if missing:
+            problems.append(f"missing {missing} (declared in derived_from_feature_ids but not attested in fact_provenance.derived_from)")
+        if extras:
+            problems.append(f"extras {extras} (attested in fact_provenance.derived_from but not declared in derived_from_feature_ids)")
+        raise FoldInconsistencyError(
+            f"part_changed: geometry_ref {rec['id']!r} on Part {uuid}: "
+            f"set mismatch — {'; '.join(problems)} (per ADR/0029 D6 STRICT set-equality)"
+        )
+
+
+def _enforce_derived_export_provenance_consistency(rec: dict[str, Any], uuid: str) -> None:
+    """Codex2 B2 absorption (recommended extension to derived_export):
+    STRICT set-equality between geom-to-geom `derived_from` (ADR/0005 D7
+    lineage) and the intra-Part `geometry_ref:<id>` entries in
+    `fact_provenance.derived_from`.
+
+    Cross-Object address form `<uuid>:geometry_ref:<geom_id>` REJECTED in
+    v0.28.0 (reserved for future SCN, symmetric to feature-address discipline).
+    """
+    declared = set(rec.get("derived_from", []))  # geom-to-geom lineage per ADR/0005 D7
+    provenance_entries = rec.get("fact_provenance", {}).get("derived_from", [])
+
+    addressed_ids: set[str] = set()
+    for s in provenance_entries:
+        if not isinstance(s, str):
+            raise FoldInconsistencyError(
+                f"part_changed: geometry_ref {rec['id']!r} on Part {uuid}: "
+                f"fact_provenance.derived_from entry {s!r} is not a string"
+            )
+        m = _INTRA_PART_GEOMETRY_ADDRESS_RE.match(s)
+        if not m:
+            raise FoldInconsistencyError(
+                f"part_changed: geometry_ref {rec['id']!r} (derived_export) on Part {uuid}: "
+                f"fact_provenance.derived_from entry {s!r} not in canonical "
+                f"`geometry_ref:<geom_NNNN>` form (cross-Object form "
+                f"reserved for future SCN per ADR/0029 D14 item 6)"
+            )
+        addressed_ids.add(m.group(1))
+
+    missing = sorted(declared - addressed_ids)
+    extras = sorted(addressed_ids - declared)
+    if missing or extras:
+        problems = []
+        if missing:
+            problems.append(f"missing {missing} (declared in derived_from but not attested in fact_provenance.derived_from)")
+        if extras:
+            problems.append(f"extras {extras} (attested in fact_provenance.derived_from but not declared in derived_from)")
+        raise FoldInconsistencyError(
+            f"part_changed: geometry_ref {rec['id']!r} (derived_export) on Part {uuid}: "
+            f"set mismatch — {'; '.join(problems)} (per ADR/0029 D6 STRICT set-equality)"
+        )
+
+
+def _enforce_feature_dependency_acyclicity(sidecar: dict[str, Any], uuid: str) -> None:
+    """Codex1 B6 + ADR/0029 D9: depends_on_feature_ids forms a DAG.
+
+    Detects cycles via Kahn-style topological walk. O(V+E) over the feature set
+    of a single Part.
+    """
+    features = sidecar.get("feature", [])
+    if not features:
+        return
+    ids = {f["id"] for f in features}
+    deps = {f["id"]: set(f.get("depends_on_feature_ids", [])) for f in features}
+    # First check: every depends_on_feature_id must reference an existing feature.
+    for fid, ds in deps.items():
+        dangling = ds - ids
+        if dangling:
+            raise FoldInconsistencyError(
+                f"part_changed: feature {fid!r} on Part {uuid} depends_on_feature_ids "
+                f"{sorted(dangling)} which do not exist on the Part"
+            )
+    # Topological walk via Kahn's algorithm.
+    in_count = {fid: 0 for fid in ids}
+    for fid, ds in deps.items():
+        for d in ds:
+            in_count[fid] += 1  # fid depends on d, so fid has an incoming edge from d
+    # Actually we want in-degree based on inverted edges. Use reverse map:
+    out: dict[str, set[str]] = {fid: set() for fid in ids}
+    for fid, ds in deps.items():
+        for d in ds:
+            out[d].add(fid)  # edge d -> fid
+    in_deg = {fid: len(deps[fid]) for fid in ids}
+    queue = [fid for fid in ids if in_deg[fid] == 0]
+    removed_count = 0
+    while queue:
+        fid = queue.pop()
+        removed_count += 1
+        for succ in out[fid]:
+            in_deg[succ] -= 1
+            if in_deg[succ] == 0:
+                queue.append(succ)
+    if removed_count != len(ids):
+        cyclic = sorted(fid for fid, d in in_deg.items() if d > 0)
+        raise FoldInconsistencyError(
+            f"part_changed: feature dependency cycle on Part {uuid} involving features {cyclic} "
+            f"(depends_on_feature_ids must form a DAG per ADR/0029 D9)"
+        )
+
+
+def _enforce_no_dangling_feature_references(sidecar: dict[str, Any], uuid: str) -> None:
+    """ADR/0029 D12 + Codex1 B3 + Codex2 B2 cascade rule: after applying the FULL
+    delta atomically, no surviving record may reference a removed id.
+
+    Checks:
+    - feature.depends_on_feature_ids ⊆ surviving feature ids
+    - authoring_geometry.derived_from_feature_ids ⊆ surviving feature ids
+    - derived_export.derived_from ⊆ surviving geometry_ref ids
+    """
+    feature_ids = {f["id"] for f in sidecar.get("feature", [])}
+    geometry_ids = {g["id"] for g in sidecar.get("geometry_ref", [])}
+
+    # Surviving features must not depend on removed features.
+    for f in sidecar.get("feature", []):
+        dangling = set(f.get("depends_on_feature_ids", [])) - feature_ids
+        if dangling:
+            raise FoldInconsistencyError(
+                f"part_changed: feature {f['id']!r} on Part {uuid} "
+                f"depends_on_feature_ids {sorted(dangling)} not present on Part after delta "
+                f"(cascade-reject per ADR/0029 D12)"
+            )
+
+    for g in sidecar.get("geometry_ref", []):
+        if g.get("role") == "authoring_geometry":
+            dangling = set(g.get("derived_from_feature_ids", [])) - feature_ids
+            if dangling:
+                raise FoldInconsistencyError(
+                    f"part_changed: geometry_ref {g['id']!r} on Part {uuid} "
+                    f"derived_from_feature_ids {sorted(dangling)} not present on Part after delta "
+                    f"(cascade-reject per ADR/0029 D12)"
+                )
+        elif g.get("role") == "derived_export":
+            dangling = set(g.get("derived_from", [])) - geometry_ids
+            if dangling:
+                raise FoldInconsistencyError(
+                    f"part_changed: geometry_ref {g['id']!r} (derived_export) on Part {uuid} "
+                    f"derived_from {sorted(dangling)} not present on Part after delta "
+                    f"(cascade-reject per ADR/0029 D12; Codex2 B2 absorption)"
+                )
 
 
 def _apply_attachment_delta(
@@ -149,6 +536,12 @@ def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[st
                     )
                 existing.append(json.loads(json.dumps(crit)))
                 existing_ids.add(crit["id"])
+        elif et == "part_changed":
+            # ADR/0029 Part authoring SCN (arc 20260531-13): apply full
+            # add/update/remove deltas for feature + geometry_ref namespaces,
+            # then enforce atomic post-conditions (DAG acyclicity, no dangling
+            # references, provenance discipline per actor).
+            _apply_part_changed(state, event["payload"], event["actor"])
         elif et == "release_staged":
             # Audit-oriented per B1 absorption; no working-state mutation.
             pass

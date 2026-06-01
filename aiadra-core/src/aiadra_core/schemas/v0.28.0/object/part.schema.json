@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Part sidecar / Revision (Wedge-002 widened per Codex1 B2 to allow tested_against; v0.28.0 adds feature + geometry_ref namespaces per ADR/0029 Part authoring SCN arc 20260531-13)",
+  "type": "object",
+  "required": [
+    "object"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "object": {
+      "type": "object",
+      "required": [
+        "uuid",
+        "number",
+        "type",
+        "name",
+        "lifecycle",
+        "schema_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "number": {
+          "type": "string",
+          "pattern": "^P-[0-9]{6}$"
+        },
+        "type": {
+          "const": "Part"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle": {
+          "enum": [
+            "in_work",
+            "released"
+          ]
+        },
+        "schema_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "fact_provenance": {
+          "$ref": "#/$defs/fact_provenance"
+        },
+        "fact_uncertainty": {
+          "$ref": "#/$defs/fact_uncertainty"
+        },
+        "revision_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "revision_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "released_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "lifecycle": {
+                "const": "released"
+              }
+            },
+            "required": [
+              "lifecycle"
+            ]
+          },
+          "then": {
+            "required": [
+              "revision_id",
+              "revision_label",
+              "released_at"
+            ]
+          }
+        }
+      ]
+    },
+    "parameter": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "value",
+          "datatype"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^param_[a-z0-9_]+$"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "value": {
+            "type": "number"
+          },
+          "datatype": {
+            "enum": [
+              "number"
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fact_provenance": {
+            "$ref": "#/$defs/fact_provenance"
+          },
+          "fact_uncertainty": {
+            "$ref": "#/$defs/fact_uncertainty"
+          }
+        }
+      }
+    },
+    "relationship": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"]
+      }
+    },
+    "feature": {
+      "type": "array",
+      "items": {
+        "$ref": "../_shared/feature_record.schema.json"
+      },
+      "description": "Per ADR/0029 D2 (Part authoring SCN arc 20260531-13): parametric feature records authoring this Part's geometry. OPTIONAL on Part sidecar (a Part with only parameters + no features is still valid; matches v0.27.0 minimum). Codex1 B2 absorption: namespace key is `feature` without colon — `feature:<id>` is the address-notation form used in derived_from refs etc., not the serialized JSON key."
+    },
+    "geometry_ref": {
+      "type": "array",
+      "items": {
+        "$ref": "../_shared/geometry_ref_record.schema.json"
+      },
+      "description": "Per ADR/0029 D2 + ADR/0005 D7 + D9: engine-computed geometric artifacts derived from feature evaluation, plus D7-derived exports (STEP/IGES/mesh) retained as Part-bound references. Each record carries vault_ref (canonical content-hash anchor) per ADR/0005 D7. OPTIONAL on Part sidecar."
+    }
+  },
+  "$defs": {
+    "fact_provenance": {
+      "type": "object",
+      "required": [
+        "category"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "human_input",
+            "ai_proposal",
+            "computed_result",
+            "measured"
+          ]
+        },
+        "ai_agent_ref": {
+          "type": "string"
+        },
+        "derived_from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "fact_uncertainty": {
+      "enum": [
+        "verified",
+        "requires_validation",
+        "computed",
+        "estimated"
+      ]
+    }
+  }
+}

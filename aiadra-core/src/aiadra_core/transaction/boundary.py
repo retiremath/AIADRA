@@ -558,7 +558,12 @@ class TransactionDraft:
         if not self.events and not self.sidecar_writes:
             return  # nothing to fold
 
-        from ..validation.fold import _apply_attachment_delta, fold_events_to_state, FoldInconsistencyError as _FoldErr
+        from ..validation.fold import (
+            _apply_attachment_delta,
+            _apply_part_changed,
+            fold_events_to_state,
+            FoldInconsistencyError as _FoldErr,
+        )
 
         # Build current state from on-disk events.
         try:
@@ -614,6 +619,12 @@ class TransactionDraft:
                         )
                     existing.append(json.loads(json.dumps(crit)))
                     existing_ids.add(crit["id"])
+            elif et == "part_changed":
+                # ADR/0029 Part authoring SCN (arc 20260531-13): proposed-state
+                # fold MUST honor part_changed identically to the read-side
+                # fold in validation/fold.py. Mirrors the dual-fold discipline
+                # established by Phase 2 F1 / Phase 4 F2 SCNs.
+                _apply_part_changed(state, event["payload"], event["actor"])
             # release_staged + <type>_released are no-op on working state.
 
         # Compare each staged sidecar against the folded state.

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA trace-relationship base — common fields per ADR/0009 thirteen-base-pattern",
+  "type": "object",
+  "required": ["id", "type", "binding", "endpoints"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^rel_[a-z0-9_]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string"
+    },
+    "binding": {
+      "enum": ["float", "fixed"]
+    },
+    "endpoints": {
+      "type": "array",
+      "minItems": 1
+    },
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"]
+    },
+    "fact_uncertainty": {
+      "enum": ["verified", "requires_validation", "computed", "estimated"]
+    }
+  }
+}

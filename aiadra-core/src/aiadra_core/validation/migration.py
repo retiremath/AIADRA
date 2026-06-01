@@ -182,6 +182,29 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.27.0",
+        to_version="0.28.0",
+        notes=[
+            "v0.27.0 → v0.28.0 is a MINOR additive bump (ADR/0029 Part authoring "
+            "SCN arc 20260531-13). NEW `part_changed` event with feature_delta + "
+            "geometry_ref_delta payload (full add/update/remove semantics with "
+            "Codex1 B3 atomic conflict rules). NEW shared schemas: "
+            "`_shared/feature_record.schema.json` + `_shared/geometry_ref_record.schema.json` "
+            "+ `_shared/canonical_unit.schema.json`. Part Object schema gains "
+            "OPTIONAL `feature` + `geometry_ref` namespaces (both arrays). All "
+            "existing v0.27.0 sidecars / Revisions / events validate unchanged. "
+            "Fold + proposed-state fold gain `_apply_part_changed` handler with "
+            "DAG acyclicity check (Codex1 B6: depends_on_feature_ids) + "
+            "cascade-reject (no dangling references after delta application) + "
+            "provenance discipline cross-check (Codex1 B4: feature records carry "
+            "actor-derived provenance; geometry_ref records cross-check "
+            "derived_from_feature_ids vs canonical `feature:<id>` form in "
+            "fact_provenance.derived_from). Pre-condition for `aiadra-mechanical` "
+            "Wedge-003 implementation per ADR/0027 D17 + ADR/0028 D14 step 2."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

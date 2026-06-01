@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA shared - Part feature record (ADR/0029 Part authoring SCN arc 20260531-13)",
+  "description": "Parametric feature record carried in a Part's `feature` namespace + in `part_changed.feature_delta` operations. Shared across sidecar / Revision / event payload per the `acceptance_criterion_item.schema.json` precedent (ADR/0025 §5).",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "feature_type",
+    "engine",
+    "adapter_schema_version",
+    "adapter_payload",
+    "fact_provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^feat_[0-9]{4}$",
+      "description": "Stable list-addressable id per S0 commitment 7 (feat_NNNN; engine-allocated; immutable across the feature's lifetime within the Part)."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "feature_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Engine-declared feature kind (e.g., 'sketch', 'extrude', 'fillet', 'chamfer', 'hole', 'pattern_linear'). aiadra-core does NOT enforce a closed enum per ADR/0029 D8 + ADR/0028 D4 op-kind pattern; each Native Engine declares its own catalog. feature_type is for human + AI labels; semantic interpretation is the Native Engine's responsibility."
+    },
+    "depends_on_feature_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^feat_[0-9]{4}$"
+      },
+      "description": "Per ADR/0029 D9 + Codex1 B6 absorption: multi-parent dependency-graph edges to other features in the SAME Part. Forms a directed acyclic graph (DAG) — fold enforces acyclicity over this array. Empty array = no dependencies (root feature; references reference geometry only). aiadra-core validates the DAG structure; the Native Engine's own kernel cares about semantic dependency content via adapter_payload."
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "value", "datatype", "unit"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^featp_[0-9]{4}$",
+            "description": "List-addressable id within feature.parameters (featp_NNNN)."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": "number"
+          },
+          "datatype": {
+            "const": "number",
+            "description": "Numeric-only for v0.28.0 per ADR/0029 N3. Future MINOR SCN can extend the enum when a load-bearing case surfaces."
+          },
+          "unit": {
+            "$ref": "./canonical_unit.schema.json"
+          }
+        }
+      },
+      "description": "Named scalar inputs driving this feature (extrude depth, fillet radius, etc.). Per ADR/0028 D8: caller-supplied design intent — the unit MUST be canonical (D10) and the parent feature record's fact_provenance MUST reflect actor-derived caller provenance (handled at the feature-record level; not duplicated per parameter)."
+    },
+    "adapter_payload": {
+      "type": "object",
+      "description": "Engine-opaque payload carrying the kernel-specific data (sketch primitives, BREP operation parameters, etc.). aiadra-core schema-validates only that it IS an object per ADR/0029 D7 + ADR/0028 D6 cache freshness + ADR/0027 D11 ecosystem-package boundary. The engine + adapter_schema_version fields pin the format. Structural / semantic validation is the Native Engine's responsibility."
+    },
+    "engine": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Native Engine discriminator per ADR/0005 §9 + ADR/0027 D18 wire-name preservation. Examples: 'mechanical-native', 'electrical-native'. Read-compatible with legacy values ('freecad', 'kicad') per the D18 reframing."
+    },
+    "adapter_schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Native Engine's adapter contract version. Pins adapter_payload format independently of the AIADRA canonical bundle version."
+    },
+    "engine_artifact_ref": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Optional Vault content-hash anchoring this feature to a portable engine artifact. Per ADR/0005 §9 anchor requirement: features may use stable_engine_object_id resolving within a referenced geometry artifact (whose own vault_ref provides the canonical anchor) when no direct engine_artifact_ref applies."
+    },
+    "stable_engine_object_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional engine-internal stable id portable across Workspaces. Per ADR/0005 §9."
+    },
+    "status": {
+      "enum": ["active", "suppressed"],
+      "description": "Optional structural metadata per ADR/0029 D4 + Codex1 N1 absorption: absence is interpreted as 'active' by aiadra-core fold (no JSON Schema default annotation since defaults aren't written into sidecars). Native Engine decides any recompute semantics for suppressed features per Q8."
+    },
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": ["human_input", "ai_proposal"],
+          "description": "Per ADR/0029 D6 + ADR/0028 D8: feature records are caller-supplied design intent. category MUST be 'ai_proposal' if event actor=agent OR 'human_input' if event actor=human. Schema-rejects 'computed_result' and 'measured' at the feature level (those belong on geometry_ref records)."
+        },
+        "ai_agent_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "derived_from": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "fact_uncertainty": {
+      "enum": ["verified", "requires_validation", "computed", "estimated"]
+    }
+  }
+}
