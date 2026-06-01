@@ -1,0 +1,6 @@
+"artifact_kind": "reservation"
+"discriminator": "EVD"
+"name": "aiadra-reservation-EVD"
+"reservations": {}
+"schema_version": "0.28.0"
+"status": "active"

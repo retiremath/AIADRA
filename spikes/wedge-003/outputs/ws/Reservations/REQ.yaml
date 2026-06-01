@@ -1,0 +1,6 @@
+"artifact_kind": "reservation"
+"discriminator": "REQ"
+"name": "aiadra-reservation-REQ"
+"reservations": {}
+"schema_version": "0.28.0"
+"status": "active"

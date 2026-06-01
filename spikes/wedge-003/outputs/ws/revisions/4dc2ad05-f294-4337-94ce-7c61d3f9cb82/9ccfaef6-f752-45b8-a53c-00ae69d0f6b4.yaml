@@ -1,0 +1,58 @@
+"feature":
+  - "adapter_payload":
+      "primitives":
+        - "height_mm": 10.0
+          "type": "rectangle"
+          "width_mm": 20.0
+          "x_mm": 0.0
+          "y_mm": 0.0
+        - "cx_mm": 5.0
+          "cy_mm": 5.0
+          "radius_mm": 2.0
+          "type": "circle"
+    "adapter_schema_version": "0.1.0"
+    "engine": "mechanical_spike"
+    "fact_provenance":
+      "category": "ai_proposal"
+    "feature_type": "sketch"
+    "id": "feat_0001"
+    "name": "sketch_feat_0001"
+  - "adapter_payload":
+      "depth_parameter_id": "featp_0001"
+      "direction": "z+"
+      "sketch_feature_id": "feat_0001"
+    "adapter_schema_version": "0.1.0"
+    "depends_on_feature_ids":
+      - "feat_0001"
+    "engine": "mechanical_spike"
+    "fact_provenance":
+      "category": "ai_proposal"
+    "feature_type": "extrude"
+    "id": "feat_0002"
+    "name": "extrude_feat_0002"
+    "parameters":
+      - "datatype": "number"
+        "id": "featp_0001"
+        "name": "depth_mm"
+        "unit": "mm"
+        "value": 8.0
+"geometry_ref":
+  - "derived_from_feature_ids":
+      - "feat_0001"
+      - "feat_0002"
+    "fact_provenance":
+      "category": "computed_result"
+      "derived_from":
+        - "feature:feat_0001"
+        - "feature:feat_0002"
+    "id": "geom_0001"
+    "kind": "solid"
+    "role": "authoring_geometry"
+    "vault_ref": "sha256:96f99417fea9d209edf4de6ef0c165d11c08eadd02197212d2a978c49c1d1191"
+"object":
+  "lifecycle": "in_work"
+  "name": "BracketSpike"
+  "number": "P-000001"
+  "schema_version": "0.28.0"
+  "type": "Part"
+  "uuid": "4dc2ad05-f294-4337-94ce-7c61d3f9cb82"

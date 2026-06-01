@@ -1,0 +1,6 @@
+"artifact_kind": "reservation"
+"discriminator": "TST"
+"name": "aiadra-reservation-TST"
+"reservations": {}
+"schema_version": "0.28.0"
+"status": "active"

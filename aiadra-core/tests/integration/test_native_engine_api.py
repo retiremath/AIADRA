@@ -735,8 +735,13 @@ def test_protocol_refresh_is_same_as_native_engine_refresh():
 
 
 def test_native_engine_status_empty_when_no_engines():
-    refresh_native_engines()
-    assert native_engine_status() == {}
+    """Friction surfaced by Wedge-003 install (arc 20260601-3): pre-existing
+    tests that ASSUMED no engines installed broke when the spike package
+    was added to the dev venv. Fix: use the same monkeypatched-empty
+    entry-points pattern as the other tests in this file."""
+    with _patch_entry_points([]):
+        refresh_native_engines()
+        assert native_engine_status() == {}
 
 
 def test_native_engine_status_lists_loaded_engines_with_operations():

@@ -78,7 +78,12 @@ def test_phase_c_propose_kinds_catalogue():
         assert f"create_{t}" in kinds
     for r in ("satisfies", "tested_against", "verifies", "cites", "executes", "executed_on", "produces"):
         assert f"link_{r}" in kinds
-    assert len(kinds) == 17
+    # Friction surfaced by Wedge-003 install (arc 20260601-3): propose_kinds()
+    # now returns COMBINED built-in + LOADED engine kinds per ADR/0028 D5. If
+    # mechanical_spike (or any other engine) is installed, the count exceeds
+    # 17. Fix: count only built-in kinds (those without a dot prefix).
+    builtin_kinds = [k for k in kinds if "." not in k]
+    assert len(builtin_kinds) == 17
 
 
 def test_phase_c_modify_kinds_excludes_init_and_release():

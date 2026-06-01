@@ -1,0 +1,2 @@
+a: "anchor_value"
+b: *some_alias

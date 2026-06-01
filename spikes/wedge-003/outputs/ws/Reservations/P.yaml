@@ -1,0 +1,14 @@
+"artifact_kind": "reservation"
+"discriminator": "P"
+"name": "aiadra-reservation-P"
+"reservations":
+  "P-000001":
+    "allocated_at": "2026-06-01T23:02:49Z"
+    "allocated_by_transaction": "tx_0001"
+    "current_revision_id": "a0e71f50-7f19-4d2b-92b2-d90a5cf5e068"
+    "object_uuid": "4dc2ad05-f294-4337-94ce-7c61d3f9cb82"
+    "released_revision_ids":
+      - "9ccfaef6-f752-45b8-a53c-00ae69d0f6b4"
+    "status": "current"
+"schema_version": "0.28.0"
+"status": "active"

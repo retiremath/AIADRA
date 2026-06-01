@@ -1,0 +1,1 @@
+[{"id": "feat_0001", "parameters": [], "payload": {"primitives": [{"height_mm": 10.0, "type": "rectangle", "width_mm": 20.0, "x_mm": 0.0, "y_mm": 0.0}, {"cx_mm": 5.0, "cy_mm": 5.0, "radius_mm": 2.0, "type": "circle"}]}, "type": "sketch"}]

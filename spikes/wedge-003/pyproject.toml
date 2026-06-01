@@ -1,0 +1,25 @@
+[project]
+name = "aiadra-mechanical-spike"
+version = "0.0.1"
+description = "AIADRA Wedge-003 spike — Native-Engine-instrumented mechanical authoring loop per ADR/0030 (throwaway spike per ADR/0023 §4)"
+requires-python = ">=3.11"
+# NOTE: aiadra-core is NOT declared as a dependency here because it is not
+# published to PyPI — it lives in this same repo at ../../aiadra-core. The
+# spike is INSTALL-ASSUMES-aiadra-core-already-present in the same venv
+# (per the README + run_demo.sh install precondition; install path:
+# `aiadra-core/.venv/Scripts/pip.exe install -e ./spikes/wedge-003`).
+# If aiadra-core is missing, the spike's `register()` function fails with
+# `ModuleNotFoundError` at entry-point discovery time, which surfaces as a
+# clean failure in `aiadra_core.protocol.native_engine_status()`.
+dependencies = []
+
+[project.entry-points."aiadra.native_engines"]
+mechanical_spike = "aiadra_mechanical_spike:register"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aiadra_mechanical_spike*"]

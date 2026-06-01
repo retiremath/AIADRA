@@ -1,0 +1,6 @@
+"artifact_kind": "reservation"
+"discriminator": "TEX"
+"name": "aiadra-reservation-TEX"
+"reservations": {}
+"schema_version": "0.28.0"
+"status": "active"
