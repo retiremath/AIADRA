@@ -1,0 +1,57 @@
+# Cross-platform CI for aiadra-mechanical v0.0.1 (ADR/0031 D11; arc 20260602-1 Codex1 B2).
+#
+# B2: GitHub Actions only discovers workflows at the REPOSITORY ROOT
+# `.github/workflows/`. A nested `aiadra-mechanical/.github/workflows/` file
+# would be inert. Package-local tests stay under `aiadra-mechanical/tests/`;
+# only this workflow file lives at the root.
+#
+# The smoke job is load-bearing: it installs aiadra-core (the precondition) +
+# aiadra-mechanical, runs the OCP packaging smoke, records the exact
+# cadquery-ocp version, and runs the test suite — across {Linux, macOS, Windows}.
+# A platform whose OCP wheel is unusable surfaces here as packaging friction
+# (ADR/0031 D4 fallback route), not silently.
+name: aiadra-mechanical CI
+
+on:
+  push:
+    paths:
+      - "aiadra-mechanical/**"
+      - "aiadra-core/**"
+      - ".github/workflows/aiadra-mechanical-ci.yml"
+  pull_request:
+    paths:
+      - "aiadra-mechanical/**"
+      - "aiadra-core/**"
+      - ".github/workflows/aiadra-mechanical-ci.yml"
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install aiadra-core (install precondition; not on PyPI)
+        run: python -m pip install -e ./aiadra-core
+
+      - name: Install aiadra-mechanical (+ cadquery-ocp wheel)
+        run: python -m pip install -e ./aiadra-mechanical
+
+      - name: Packaging smoke — record OCP/OCCT version
+        run: |
+          python -c "import importlib.metadata as m; print('cadquery-ocp', m.version('cadquery-ocp'))"
+          python -c "from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; from OCP.BRepCheck import BRepCheck_Analyzer; s=BRepPrimAPI_MakeBox(20.0,10.0,5.0).Shape(); assert not s.IsNull() and BRepCheck_Analyzer(s).IsValid(); print('OCP smoke OK')"
+
+      - name: Run aiadra-mechanical tests
+        run: |
+          python -m pip install pytest
+          python -m pytest ./aiadra-mechanical/tests -q

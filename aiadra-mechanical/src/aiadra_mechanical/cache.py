@@ -1,0 +1,71 @@
+"""Per-process evaluated-solid cache with the ADR/0031 D8 freshness key.
+
+Per [ADR/0028 D6] Native Engine caches are advisory + per-process; before
+reuse a handler must prove the cached inputs still match current Workspace
+authority. The cache key (ADR/0031 D8 + arc 20260602-1 Codex1 N3) is:
+
+    (recipe-hash, event_log_last_event_id, adapter_schema_version, OCP/OCCT version)
+
+The recipe-hash component coincides with the `geometry_ref.vault_ref` identity
+(it IS the recipe hash), so identity and cache key share that component; the
+event-log boundary + version material guard the cache WITHOUT touching identity
+(`vault_ref` stays recipe-only per ADR/0031 D6). Including the OCP/OCCT version
+ensures a cached shape is never reused across a kernel/binding upgrade.
+
+For v0.0.1 the cache is primarily a PATTERN-EXERCISE — the toy-scale evaluation
+is sub-millisecond — proving the D8 keying discipline is cheap to implement
+(FINDINGS §6).
+"""
+from __future__ import annotations
+
+import importlib.metadata
+from typing import Any
+
+from . import geometry
+from .kernel import recipe_hash
+
+_OCP_VERSION: str = importlib.metadata.version("cadquery-ocp")
+_SOLID_CACHE: dict[str, Any] = {}
+
+
+def ocp_version() -> str:
+    """The frozen OCP/OCCT binding version (cache-key + FINDINGS material)."""
+    return _OCP_VERSION
+
+
+def cache_key(
+    features: list[dict[str, Any]],
+    *,
+    last_event_id: str | None,
+    adapter_schema_version: str,
+) -> str:
+    return f"{recipe_hash(features)}|{last_event_id}|{adapter_schema_version}|{_OCP_VERSION}"
+
+
+def evaluate_with_cache(
+    features: list[dict[str, Any]],
+    *,
+    last_event_id: str | None,
+    adapter_schema_version: str,
+) -> Any:
+    """Validity-gate the recipe through OCCT, reusing a per-process cached solid
+    only when the full D8 freshness key matches. Propagates `TransactionError`
+    (Class-1) and `MechanicalKernelEvaluationError` (Class-2) from
+    `geometry.evaluate_part`."""
+    key = cache_key(
+        features, last_event_id=last_event_id, adapter_schema_version=adapter_schema_version
+    )
+    if key in _SOLID_CACHE:
+        return _SOLID_CACHE[key]
+    shape = geometry.evaluate_part(features)
+    _SOLID_CACHE[key] = shape
+    return shape
+
+
+def clear() -> None:
+    """Test hook: drop all cached solids."""
+    _SOLID_CACHE.clear()
+
+
+def size() -> int:
+    return len(_SOLID_CACHE)

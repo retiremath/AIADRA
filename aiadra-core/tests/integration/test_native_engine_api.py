@@ -399,9 +399,15 @@ def test_dispatch_builtin_kind_unaffected_by_engine_load_state(tmp_path: Path):
 
 
 def test_dispatch_raises_engine_not_available_when_engine_missing():
-    """ADR/0028 D5 case 4: engine_id not installed."""
+    """ADR/0028 D5 case 4: engine_id not installed.
+
+    Uses a guaranteed-never-installed engine_id. Friction surfaced by the
+    aiadra-mechanical install (arc 20260602-1): `mechanical` is now a REAL
+    installed engine_id, so a test asserting it is "not installed" must use a
+    fake id that no real package declares (extends the arc 20260601-3 / arc-5
+    README rule "no test may assume a specific real engine_id is absent")."""
     with pytest.raises(EngineNotAvailableError, match="not installed"):
-        _resolve_propose_handler("mechanical.adjust_parameter")
+        _resolve_propose_handler("faketestengine.adjust_parameter")
 
 
 def test_dispatch_raises_engine_not_available_when_engine_failed():
@@ -810,28 +816,31 @@ def test_kernel_passthrough_transaction_error_not_wrapped(tmp_path: Path):
 
 
 def test_refresh_native_engines_clears_cache():
-    register_fn = _make_register_fn([("mechanical.foo", lambda c, p: None)])
-    ep = _FakeEntryPoint("mechanical", register_fn)
+    # Uses a never-installed fake engine_id so the after-exit assertion holds
+    # regardless of real engines in the venv (arc 20260602-1: `mechanical` is
+    # now a REAL installed engine_id via aiadra-mechanical).
+    register_fn = _make_register_fn([("faketestengine.foo", lambda c, p: None)])
+    ep = _FakeEntryPoint("faketestengine", register_fn)
     with _patch_entry_points([ep]):
         refresh_native_engines()
         loaded, _ = get_native_engines()
-        assert "mechanical" in loaded
-    # After exiting the patch, refresh + re-discover sees empty:
+        assert "faketestengine" in loaded
+    # After exiting the patch, refresh + re-discover no longer sees the fake:
     refresh_native_engines()
     loaded, _ = get_native_engines()
-    assert "mechanical" not in loaded
+    assert "faketestengine" not in loaded
 
 
 def test_protocol_refresh_is_same_as_native_engine_refresh():
     """aiadra_core.protocol.refresh_native_engines is the re-export."""
-    register_fn = _make_register_fn([("mechanical.foo", lambda c, p: None)])
-    ep = _FakeEntryPoint("mechanical", register_fn)
+    register_fn = _make_register_fn([("faketestengine.foo", lambda c, p: None)])
+    ep = _FakeEntryPoint("faketestengine", register_fn)
     with _patch_entry_points([ep]):
         refresh_native_engines()
         get_native_engines()  # populate cache
     protocol_refresh()  # via protocol re-export
     loaded, _ = get_native_engines()
-    assert "mechanical" not in loaded
+    assert "faketestengine" not in loaded
 
 
 # =============================================================================

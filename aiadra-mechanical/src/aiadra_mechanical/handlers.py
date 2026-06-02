@@ -1,0 +1,381 @@
+"""4 Native Engine handlers for `aiadra-mechanical` v0.0.1 (ADR/0031 D5).
+
+Mirrors the proven Wedge-003 handler flow against the production API, with
+three production deltas:
+  1. **Real OCCT validity gate** — each geometry-changing handler evaluates the
+     current feature recipe through `cache.evaluate_with_cache` → OCCT. A
+     recipe that cannot build a valid solid fails loudly (Class-1
+     `TransactionError` for domain errors; Class-2 propagates from
+     `geometry.py` and the dispatch adapter wraps it as
+     `NativeEngineKernelError` — the engine never constructs that itself, per
+     arc 20260602-1 Codex1 B1).
+  2. **`kind` omitted** on `geometry_ref` records (ADR/0031 D6/B1): `vault_ref`
+     addresses canonical *recipe* JSON bytes, not solid bytes, so v0.0.1 does
+     not assert a `kind`.
+  3. **Identity is recipe-hash** — the bytes staged into the Vault are the
+     canonical recipe (`kernel.compute_recipe_bytes`), never the evaluated BREP.
+
+Per ADR/0028 D8 provenance split: feature records carry actor-derived
+`ai_proposal`/`human_input`; geometry_ref records carry `computed_result` +
+`derived_from` in STRICT set-equality with `derived_from_feature_ids`.
+"""
+from __future__ import annotations
+
+import copy
+from typing import TYPE_CHECKING, Any
+
+from aiadra_core.transaction.boundary import TransactionError
+
+from . import cache
+from .adapter_payload import build_extrude_payload, build_sketch_payload
+from .kernel import compute_recipe_bytes, vault_ref_for_bytes
+
+if TYPE_CHECKING:
+    from aiadra_core.native_engine.context import NativeEngineContext
+
+ENGINE_ID = "mechanical"
+ADAPTER_SCHEMA_VERSION = "0.1.0"
+
+
+# =============================================================================
+# Handler 1: add_sketch_feature
+# =============================================================================
+
+
+def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_sketch_feature")
+    primitives = _require_param(params, "primitives", list, "mechanical.add_sketch_feature")
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
+    geom_id = _next_id(sidecar.get("geometry_ref", []), prefix="geom_")
+
+    feature_record = {
+        "id": feature_id,
+        "name": f"sketch_{feature_id}",
+        "feature_type": "sketch",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "adapter_payload": build_sketch_payload(primitives),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    # Real OCCT validity gate (also exercises the D8 cache key).
+    _gate_validity(context, sidecar["feature"])
+
+    # Recipe-hash identity (ADR/0031 D6): stage the canonical RECIPE bytes.
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    geom_record = {
+        "id": geom_id,
+        "role": "authoring_geometry",
+        "vault_ref": vault_ref,  # NB: `kind` omitted per ADR/0031 D6/B1.
+        "derived_from_feature_ids": [feature_id],
+        "fact_provenance": {
+            "category": "computed_result",
+            "derived_from": [f"feature:{feature_id}"],
+        },
+    }
+    sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(geom_record))
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": f"add sketch feature {feature_id} with {len(primitives)} primitive(s)",
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"added": [copy.deepcopy(geom_record)]},
+    })
+
+
+# =============================================================================
+# Handler 2: add_extrude_feature
+# =============================================================================
+
+
+def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_extrude_feature")
+    sketch_feature_id = _require_param(params, "sketch_feature_id", str, "mechanical.add_extrude_feature")
+    depth_mm = _require_param(params, "depth_mm", (int, float), "mechanical.add_extrude_feature")
+    direction = _require_param(params, "direction", str, "mechanical.add_extrude_feature")
+
+    if depth_mm <= 0:
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: depth_mm must be positive, got {depth_mm!r}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    sketch_feature = next(
+        (f for f in sidecar.get("feature", [])
+         if f.get("id") == sketch_feature_id and f.get("feature_type") == "sketch"),
+        None,
+    )
+    if sketch_feature is None:
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: sketch feature {sketch_feature_id!r} "
+            f"not found on Part {part_number}"
+        )
+
+    feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
+    depth_param_id = _next_id_within_parameters(sidecar.get("feature", []), prefix="featp_")
+    depth_param_record = {
+        "id": depth_param_id,
+        "name": "depth_mm",
+        "value": float(depth_mm),
+        "datatype": "number",
+        "unit": "mm",
+    }
+    feature_record = {
+        "id": feature_id,
+        "name": f"extrude_{feature_id}",
+        "feature_type": "extrude",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "depends_on_feature_ids": [sketch_feature_id],
+        "parameters": [depth_param_record],
+        "adapter_payload": build_extrude_payload(
+            sketch_feature_id=sketch_feature_id,
+            direction=direction,
+            depth_parameter_id=depth_param_id,
+        ),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    _gate_validity(context, sidecar["feature"])
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    # Subtree-output (ADR/0030 D4 step 3): the extrude REPLACES the sketch's
+    # authoring_geometry with one derived from BOTH features.
+    existing_geom = next(
+        (g for g in sidecar.get("geometry_ref", [])
+         if g.get("role") == "authoring_geometry"
+         and sketch_feature_id in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    new_geom_record = {
+        "id": existing_geom["id"] if existing_geom else _next_id(sidecar.get("geometry_ref", []), prefix="geom_"),
+        "role": "authoring_geometry",
+        "vault_ref": vault_ref,  # `kind` omitted per ADR/0031 D6/B1.
+        "derived_from_feature_ids": [sketch_feature_id, feature_id],
+        "fact_provenance": {
+            "category": "computed_result",
+            "derived_from": [f"feature:{sketch_feature_id}", f"feature:{feature_id}"],
+        },
+    }
+    if existing_geom is not None:
+        for i, g in enumerate(sidecar["geometry_ref"]):
+            if g.get("id") == new_geom_record["id"]:
+                sidecar["geometry_ref"][i] = copy.deepcopy(new_geom_record)
+                break
+        geometry_delta = {"updated": [{"id": new_geom_record["id"], "new_record": copy.deepcopy(new_geom_record)}]}
+    else:
+        sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(new_geom_record))
+        geometry_delta = {"added": [copy.deepcopy(new_geom_record)]}
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": f"add extrude feature {feature_id} consuming sketch {sketch_feature_id} (depth={depth_mm}mm)",
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": geometry_delta,
+    })
+
+
+# =============================================================================
+# Handler 3: adjust_feature_parameter
+# =============================================================================
+
+
+def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.adjust_feature_parameter")
+    feature_id = _require_param(params, "feature_id", str, "mechanical.adjust_feature_parameter")
+    parameter_name = _require_param(params, "parameter_name", str, "mechanical.adjust_feature_parameter")
+    new_value = _require_param(params, "new_value", (int, float), "mechanical.adjust_feature_parameter")
+
+    if parameter_name.endswith("depth_mm") and new_value <= 0:
+        raise TransactionError(
+            f"mechanical.adjust_feature_parameter: {parameter_name} must be positive, got {new_value!r}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    target_idx = next(
+        (i for i, f in enumerate(sidecar.get("feature", [])) if f.get("id") == feature_id), None
+    )
+    if target_idx is None:
+        raise TransactionError(
+            f"mechanical.adjust_feature_parameter: feature {feature_id!r} not found on Part {part_number}"
+        )
+    target_feature = sidecar["feature"][target_idx]
+    param_idx = next(
+        (i for i, p in enumerate(target_feature.get("parameters", []))
+         if p.get("name") == parameter_name),
+        None,
+    )
+    if param_idx is None:
+        raise TransactionError(
+            f"mechanical.adjust_feature_parameter: parameter {parameter_name!r} not found on "
+            f"feature {feature_id!r} (available: "
+            f"{[p.get('name') for p in target_feature.get('parameters', [])]})"
+        )
+
+    sidecar = copy.deepcopy(sidecar)
+    updated_feature = copy.deepcopy(target_feature)
+    updated_feature["parameters"][param_idx]["value"] = float(new_value)
+    updated_feature["fact_provenance"] = {"category": _provenance_category_for_actor(context.actor)}
+    sidecar["feature"][target_idx] = copy.deepcopy(updated_feature)
+
+    _gate_validity(context, sidecar["feature"])
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    geom_idx = next(
+        (i for i, g in enumerate(sidecar.get("geometry_ref", []))
+         if g.get("role") == "authoring_geometry"
+         and feature_id in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    if geom_idx is None:
+        raise TransactionError(
+            f"mechanical.adjust_feature_parameter: no authoring_geometry geom_ref found "
+            f"depending on feature {feature_id!r} on Part {part_number}"
+        )
+    updated_geom = copy.deepcopy(sidecar["geometry_ref"][geom_idx])
+    updated_geom["vault_ref"] = vault_ref
+    sidecar["geometry_ref"][geom_idx] = copy.deepcopy(updated_geom)
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": f"adjust {feature_id}.{parameter_name} = {new_value}",
+        "feature_delta": {"updated": [{"id": feature_id, "new_record": copy.deepcopy(updated_feature)}]},
+        "geometry_ref_delta": {"updated": [{"id": updated_geom["id"], "new_record": copy.deepcopy(updated_geom)}]},
+    })
+
+
+# =============================================================================
+# Handler 4: remove_feature
+# =============================================================================
+
+
+def handle_remove_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.remove_feature")
+    feature_ids = _require_param(params, "feature_ids", list, "mechanical.remove_feature")
+    geometry_ref_ids = params.get("geometry_ref_ids") or []
+    if not isinstance(geometry_ref_ids, list):
+        raise TransactionError(
+            f"mechanical.remove_feature: geometry_ref_ids must be a list, "
+            f"got {type(geometry_ref_ids).__name__}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    existing_feature_ids = {f["id"] for f in sidecar.get("feature", [])}
+    missing = set(feature_ids) - existing_feature_ids
+    if missing:
+        raise TransactionError(
+            f"mechanical.remove_feature: feature(s) {sorted(missing)} not present on Part {part_number}"
+        )
+    existing_geom_ids = {g["id"] for g in sidecar.get("geometry_ref", [])}
+    missing_geoms = set(geometry_ref_ids) - existing_geom_ids
+    if missing_geoms:
+        raise TransactionError(
+            f"mechanical.remove_feature: geometry_ref(s) {sorted(missing_geoms)} not present on Part {part_number}"
+        )
+
+    sidecar = copy.deepcopy(sidecar)
+    sidecar["feature"] = [f for f in sidecar.get("feature", []) if f["id"] not in set(feature_ids)]
+    if geometry_ref_ids:
+        sidecar["geometry_ref"] = [g for g in sidecar.get("geometry_ref", []) if g["id"] not in set(geometry_ref_ids)]
+
+    context.stage_sidecar(part_uuid, sidecar)
+    payload: dict[str, Any] = {
+        "object_uuid": part_uuid,
+        "rationale": f"remove feature(s) {feature_ids}"
+        + (f" + geometry_ref(s) {geometry_ref_ids}" if geometry_ref_ids else ""),
+        "feature_delta": {"removed": list(feature_ids)},
+    }
+    if geometry_ref_ids:
+        payload["geometry_ref_delta"] = {"removed": list(geometry_ref_ids)}
+    context.emit_event("part_changed", payload)
+
+
+# =============================================================================
+# Shared helpers
+# =============================================================================
+
+
+def _gate_validity(context: "NativeEngineContext", features: list[dict[str, Any]]) -> None:
+    """Evaluate the current recipe through OCCT (the v0.0.1 validity gate),
+    keyed by the D8 cache. Raises Class-1 `TransactionError` / Class-2
+    `MechanicalKernelEvaluationError`."""
+    cache.evaluate_with_cache(
+        features,
+        last_event_id=context.event_log_last_event_id(),
+        adapter_schema_version=ADAPTER_SCHEMA_VERSION,
+    )
+
+
+def _stage_recipe(context: "NativeEngineContext", features: list[dict[str, Any]]) -> str:
+    """Stage the canonical RECIPE bytes (NOT BREP) into the Vault; return the
+    recipe-hash `vault_ref` (ADR/0031 D6)."""
+    recipe_bytes = compute_recipe_bytes(features)
+    vault_ref, _vault_path = context.stage_vault_bytes(recipe_bytes)
+    # Defensive: the staged ref must equal the canonical recipe hash.
+    assert vault_ref == vault_ref_for_bytes(recipe_bytes)
+    return vault_ref
+
+
+def _require_param(params: dict[str, Any], name: str, type_: type | tuple[type, ...], op_kind: str) -> Any:
+    if name not in params:
+        raise TransactionError(f"{op_kind}: missing required param {name!r}")
+    value = params[name]
+    if not isinstance(value, type_):
+        expected = type_.__name__ if isinstance(type_, type) else " | ".join(t.__name__ for t in type_)
+        raise TransactionError(f"{op_kind}: param {name!r} must be {expected}, got {type(value).__name__}")
+    return value
+
+
+def _resolve_part_sidecar(context: "NativeEngineContext", part_number: str) -> tuple[str, dict[str, Any]]:
+    entry = context.find_reservation_entry_by_number(part_number)
+    if entry is None:
+        raise TransactionError(f"Part {part_number!r} not found in workspace reservations")
+    _prefix, res_entry = entry
+    part_uuid = res_entry["object_uuid"]
+    return part_uuid, context.load_sidecar(part_uuid)
+
+
+def _next_id(records: list[dict], *, prefix: str) -> str:
+    existing = {
+        int(r["id"][len(prefix):])
+        for r in records
+        if isinstance(r, dict) and r.get("id", "").startswith(prefix)
+    }
+    return f"{prefix}{max(existing, default=0) + 1:04d}"
+
+
+def _next_id_within_parameters(features: list[dict], *, prefix: str) -> str:
+    existing: set[int] = set()
+    for f in features:
+        for p in f.get("parameters", []) or []:
+            pid = p.get("id", "")
+            if pid.startswith(prefix):
+                try:
+                    existing.add(int(pid[len(prefix):]))
+                except ValueError:
+                    pass
+    return f"{prefix}{max(existing, default=0) + 1:04d}"
+
+
+def _provenance_category_for_actor(actor: str) -> str:
+    if actor == "agent":
+        return "ai_proposal"
+    if actor == "human":
+        return "human_input"
+    raise TransactionError(
+        f"mechanical: unsupported actor {actor!r}; expected 'agent' or 'human'"
+    )

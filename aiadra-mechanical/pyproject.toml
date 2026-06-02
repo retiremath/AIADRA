@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiadra-mechanical"
+version = "0.0.1"
+description = "AIADRA Native Engine for mechanical part authoring (OCCT via cadquery-ocp). First shippable Native Engine per ADR/0031."
+requires-python = ">=3.11"
+# Real OCCT kernel via the OCP (pybind11) binding. Exact version selected +
+# frozen during the arc 20260602-1 R2 packaging smoke test (ADR/0031 D11 / N2):
+# cadquery-ocp 7.9.3.1.1 installed cleanly via prebuilt wheel on
+# win_amd64 / CPython 3.12 (FINDINGS §1). OCCT 7.9.x.
+#
+# NOTE — aiadra-core is an INSTALL-PRECONDITION, not a declared dependency
+# (ADR/0031 D11 + Wedge-003 FRICTION_LOG §1): aiadra-core is not yet published
+# to PyPI, so pip cannot resolve it. Install aiadra-core (editable) into the
+# venv FIRST, then `pip install -e ./aiadra-mechanical`. register() raises a
+# clear error at discovery time if aiadra-core is absent.
+dependencies = [
+    "cadquery-ocp==7.9.3.1.1",
+]
+
+[project.entry-points."aiadra.native_engines"]
+mechanical = "aiadra_mechanical:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
