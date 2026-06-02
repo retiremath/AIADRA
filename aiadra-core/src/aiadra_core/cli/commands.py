@@ -616,6 +616,12 @@ def cmd_migrate(argv: list[str]) -> int:
         MigrationError,
         REGISTERED_STEPS,
     )
+    # arc 20260602-3 Codex1 N5: the "already pinned to target but digest stale"
+    # path raises BundleDigestMismatchError (NOT a MigrationError), so it
+    # previously escaped this command's error handling and surfaced as an
+    # uncaught traceback. Catch it as a normal migrate failure with an
+    # actionable message + nonzero exit.
+    from ..validation.bundle_registry import BundleDigestMismatchError
     target_choices = sorted({s.to_version for s in REGISTERED_STEPS})
     p = argparse.ArgumentParser(prog="aiadra migrate")
     p.add_argument("workspace")
@@ -637,5 +643,8 @@ def cmd_migrate(argv: list[str]) -> int:
                 print(f"  - {note}")
     except MigrationError as e:
         print(f"migration failed: {e}", file=sys.stderr)
+        return 1
+    except BundleDigestMismatchError as e:
+        print(f"migration failed (stale pin digest): {e}", file=sys.stderr)
         return 1
     return 0

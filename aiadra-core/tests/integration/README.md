@@ -30,6 +30,26 @@ Both were fixed in arc 20260601-3 R2 — see
 [Wedge-003 FRICTION_LOG §1](../../../spikes/wedge-003/FRICTION_LOG.md)
 for the full diagnosis and the recurring-violation cost.
 
+### Finer clause (arc 20260602-1): no test may assume a *specific real engine_id is absent*
+
+The Wedge-003 install only proved that *zero engines* is a bad assumption.
+The first shippable Native Engine (`aiadra-mechanical`, arc 20260602-1) made a
+**specific** engine_id real: `mechanical` is now a legitimately installed
+engine in the dev venv. Three tests that used a *fake* `mechanical` engine and
+asserted it was absent from the real discovery state (after exiting their
+`_patch_entry_points` context) broke:
+
+- `test_dispatch_raises_engine_not_available_when_engine_missing` (used
+  `mechanical.adjust_parameter` to test the "not installed" path),
+- `test_refresh_native_engines_clears_cache`,
+- `test_protocol_refresh_is_same_as_native_engine_refresh`.
+
+**Fix: negative-path tests must use a guaranteed-never-installed engine_id**
+such as `faketestengine` — never a plausible real name like `mechanical` /
+`electrical`. The same applies to any future test asserting an engine_id is
+absent or that a `<engine>.<op>` kind resolves to "not installed". See
+[aiadra-mechanical FINDINGS §1](../../../aiadra-mechanical/FINDINGS.md).
+
 ## The monkeypatch pattern (canonical)
 
 `test_native_engine_api.py` already defines the canonical helper

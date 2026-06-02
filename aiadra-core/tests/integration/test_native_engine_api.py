@@ -139,13 +139,13 @@ def test_native_engine_api_in___all__():
         assert sym in p.__all__
 
 
-def test_aiadra_core_version_bumped_to_0_11_1():
-    """Arc 20260601-5 PATCH bump: removing broad `except Exception:` guard
-    inside `NativeEngineContext.event_log_last_event_id()` is a user-visible
-    edge-behavior change (corrupt event log + missing bundle now propagate
-    per arc 20260531-8 Phase B Codex2 B1 R3 fail-loud discipline; was:
-    silent default to evt_0001). No public API expansion."""
-    assert aiadra_version == "0.11.1"
+def test_aiadra_core_version_bumped_to_0_11_2():
+    """Arc 20260602-3 PATCH bump: `aiadra migrate` now catches the
+    "already pinned to target but digest stale" path (BundleDigestMismatchError)
+    as a normal migrate failure with an actionable message + nonzero exit,
+    instead of letting it escape as an uncaught traceback (Codex1 N5). A
+    user-visible CLI behavior change; no public API expansion."""
+    assert aiadra_version == "0.11.2"
 
 
 # =============================================================================

@@ -393,3 +393,51 @@ def test_phase3_w3_registered_steps_cover_all_bundle_transitions():
     # Future-proof: chain links from_version[i+1] == to_version[i].
     for i in range(len(REGISTERED_STEPS) - 1):
         assert REGISTERED_STEPS[i + 1].from_version == REGISTERED_STEPS[i].to_version
+
+
+# ---------- 13. arc 20260602-3 housekeeping: legacy wrappers + stale-digest CLI ----------
+
+
+def test_legacy_v0_19_0_to_v0_20_0_wrappers_delegate_to_first_step(tmp_path: Path):
+    """Codex1 N4 (arc 20260602-3): direct test for the Phase-1 back-compat
+    wrappers `plan_migration_v0_19_0_to_v0_20_0` / `apply_migration_v0_19_0_to_v0_20_0`.
+    Broad chain + REGISTERED_STEPS coverage already existed; these specific
+    first-step wrappers did not have a direct test."""
+    from aiadra_core.validation.migration import (
+        apply_migration_v0_19_0_to_v0_20_0,
+        plan_migration_v0_19_0_to_v0_20_0,
+    )
+    workspace = tmp_path / "ws"
+    (workspace / ".aiadra").mkdir(parents=True)
+    reg = BundleRegistry()
+    v19 = reg.bundle("0.19.0")
+    (workspace / ".aiadra" / "schemas.yaml").write_bytes(
+        f'"bundle_version": "0.19.0"\n"bundle_digest": "{v19.bundle_digest}"\n'.encode("utf-8")
+    )
+    # plan wrapper → first step, no write
+    plan = plan_migration_v0_19_0_to_v0_20_0(workspace)
+    assert plan.from_bundle_version == "0.19.0"
+    assert plan.to_bundle_version == "0.20.0"
+    assert b'"bundle_version": "0.19.0"' in (workspace / ".aiadra" / "schemas.yaml").read_bytes()
+    # apply wrapper → pin advances to 0.20.0
+    apply_migration_v0_19_0_to_v0_20_0(workspace)
+    pin_after = (workspace / ".aiadra" / "schemas.yaml").read_text(encoding="utf-8")
+    assert '"bundle_version": "0.20.0"' in pin_after
+    assert reg.bundle("0.20.0").bundle_digest in pin_after
+
+
+def test_cmd_migrate_reports_stale_pin_digest_cleanly(tmp_path: Path, capsys):
+    """Codex1 N5 (arc 20260602-3): when a workspace is already pinned to the
+    target version but with a STALE digest, `aiadra migrate` reports it as a
+    clean migrate failure (nonzero exit + actionable message) instead of letting
+    BundleDigestMismatchError escape as an uncaught traceback."""
+    from aiadra_core.cli.commands import cmd_migrate
+    workspace = tmp_path / "ws"
+    (workspace / ".aiadra").mkdir(parents=True)
+    # Pinned to 0.20.0 but with a deliberately STALE digest.
+    (workspace / ".aiadra" / "schemas.yaml").write_bytes(
+        b'"bundle_version": "0.20.0"\n"bundle_digest": "sha256:' + b"0" * 64 + b'"\n'
+    )
+    rc = cmd_migrate([str(workspace), "--to-bundle", "0.20.0"])
+    assert rc == 1
+    assert "stale pin digest" in capsys.readouterr().err

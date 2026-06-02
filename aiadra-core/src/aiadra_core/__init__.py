@@ -3,4 +3,4 @@
 See ADR/0025 for scope, posture, and implementation roadmap.
 """
 
-__version__ = "0.11.1"
+__version__ = "0.11.2"
