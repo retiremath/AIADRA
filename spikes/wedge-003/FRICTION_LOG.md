@@ -5,12 +5,14 @@ Populated PROGRESSIVELY during the implementation arc (20260601-3), not just at 
 10-section structure per scope.
 
 **Status as of 2026-06-01 (arc 20260601-3 R3 close):** 4 Native Engine handlers
-written; toy synthetic kernel + adapter_payload helpers + demo + **23 tests
-written** (13 happy-path + 9 negative-discipline + 1 demo-script smoke);
-demo runs end-to-end (5-step Mode A authoring loop completes with depth_mm
-adjusted 5 → 8 visible in Product Truth as a `feature.parameters[]` record with
-canonical unit `mm`); **378/378 tests passing** (was 355 pre-arc; +23 Wedge-003;
-+0 regressions after 2 aiadra-core test adaptations per §1 below).
+written; toy synthetic kernel + adapter_payload helpers + demo + **23
+Wedge-003-specific tests written** (13 happy-path in
+`test_wedge_003_end_to_end.py` + 10 negative-discipline in
+`test_wedge_003_negative_discipline.py`); demo runs end-to-end (5-step Mode A
+authoring loop completes with depth_mm adjusted 5 → 8 visible in Product Truth
+as a `feature.parameters[]` record with canonical unit `mm`); **378/378 tests
+passing** (was 355 pre-arc; +23 Wedge-003; +0 regressions after 2 aiadra-core
+test adaptations per §1 below).
 
 **R3 absorption (Codex2 B1 + N1)**: B1 added the missing B6 binding-scan
 INTEGRATION test (`test_b6_binding_scan_catches_mechanical_spike_mutation_against_unreleased_bound_revision`)
