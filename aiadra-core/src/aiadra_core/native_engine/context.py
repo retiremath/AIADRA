@@ -147,16 +147,23 @@ class NativeEngineContext:
 
     def event_log_last_event_id(self) -> str | None:
         """Returns the highest event_id known to the workspace (committed +
-        staged in this draft), or None if no events exist. Useful for engines
-        implementing the ADR/0028 D6 cache freshness invariant keying."""
+        staged in this draft), or None if no events exist anywhere. Useful
+        for engines implementing the ADR/0028 D6 cache freshness invariant
+        keying.
+
+        Read at call time, not memoized at construction (per arc 20260601-4
+        Codex2 verification note + arc 20260601-5 Codex1 Q6).
+
+        Corrupt event log entries + missing bundle propagate per arc
+        20260531-8 Phase B Codex2 B1 R3 fail-loud discipline (was: silent
+        default to "evt_0001"; removed in arc 20260601-5)."""
         from ..truth_model.event_log import next_event_id
 
         # `next_event_id` returns the NEXT id; subtract 1 to get the highest
         # known committed event_id; then consider staged events in the draft.
-        try:
-            next_committed = next_event_id(self._workspace, self._bundle.bundle_dir)
-        except Exception:
-            next_committed = "evt_0001"
+        # Empty workspace path returns "evt_0001" cleanly here (no exception);
+        # only corrupt event log / missing bundle propagate.
+        next_committed = next_event_id(self._workspace, self._bundle.bundle_dir)
         next_n = int(next_committed[len("evt_"):])
         last_committed_n = next_n - 1
         staged_ids = [

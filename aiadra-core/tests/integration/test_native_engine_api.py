@@ -139,8 +139,13 @@ def test_native_engine_api_in___all__():
         assert sym in p.__all__
 
 
-def test_aiadra_core_version_bumped_to_0_11_0():
-    assert aiadra_version == "0.11.0"
+def test_aiadra_core_version_bumped_to_0_11_1():
+    """Arc 20260601-5 PATCH bump: removing broad `except Exception:` guard
+    inside `NativeEngineContext.event_log_last_event_id()` is a user-visible
+    edge-behavior change (corrupt event log + missing bundle now propagate
+    per arc 20260531-8 Phase B Codex2 B1 R3 fail-loud discipline; was:
+    silent default to evt_0001). No public API expansion."""
+    assert aiadra_version == "0.11.1"
 
 
 # =============================================================================
@@ -607,6 +612,106 @@ def test_context_make_event_actor_override(tmp_path: Path):
     ctx = _make_context(tmp_path, _bundle_latest(), actor="agent")
     ev = ctx.make_event("test", {}, actor="human")
     assert ev["actor"] == "human"
+
+
+# =============================================================================
+# 8b. event_log_last_event_id() conformance (arc 20260601-5 Action A)
+# =============================================================================
+# Per arc 20260601-4 Codex1 B1 R1 + arc 20260601-5 Codex1 absorption:
+# the helper at native_engine/context.py:148-170 returns the highest event_id
+# known to the workspace (committed + staged in this draft), or None if no
+# events exist anywhere. ADR/0028 D6 names it as a cache-freshness primitive.
+# Tests below lock the four documented semantic cases + one fail-loud
+# regression (was: silent default to evt_0001 on corrupt event log; arc
+# 20260601-5 removed the broad except guard).
+
+
+def test_event_log_last_event_id_returns_none_for_empty_workspace(tmp_path: Path):
+    """Arc 20260601-5 Action A case 1 (per arc-4 Codex1 B1 R1 spec):
+    truly empty workspace (no committed events, no staged events) → None."""
+    ws = tmp_path / "ws"
+    ws.mkdir()  # No init; no events.jsonl exists yet
+    ctx = _make_context(ws, _bundle_latest())
+    assert ctx.event_log_last_event_id() is None
+
+
+def test_event_log_last_event_id_returns_last_committed_when_no_staged(tmp_path: Path):
+    """Arc 20260601-5 Action A case 2: workspace with N committed events +
+    fresh context with no staged events → returns evt_{N:04d}.
+
+    Uses `create_part` (number + name) per arc-5 Codex1 B1 absorption.
+    Note: `_init_workspace` itself commits NO events to events.jsonl
+    (only stages the project pin); the first event appears here as
+    evt_0001 from the part_created commit. Verified against
+    transaction/operations.py::init_workspace (no event_log writes)."""
+    ws = _init_workspace(tmp_path)  # commits NO events
+    propose(ws, kind="create_part", params={
+        "number": "P-000001",
+        "name": "Test part",
+    }).commit()  # commits evt_0001 (part_created)
+    ctx = _make_context(ws, _bundle_latest())  # no staged events in this draft
+    assert ctx.event_log_last_event_id() == "evt_0001"
+
+
+def test_event_log_last_event_id_returns_highest_staged_in_composed_draft(tmp_path: Path):
+    """Arc 20260601-5 Action A case 3: workspace with 1 committed event +
+    draft staging K engine events (evt_0002, evt_0003, evt_0004) → helper
+    returns evt_0004, NOT evt_0001. Proves proposed-workspace semantics
+    per ADR/0028 D6 (committed + staged max), not committed-only-at-
+    construction."""
+    ws = _init_workspace(tmp_path)  # commits NO events
+    propose(ws, kind="create_part", params={
+        "number": "P-000001",
+        "name": "Test part",
+    }).commit()  # commits evt_0001 (part_created)
+    ctx = _make_context(ws, _bundle_latest())
+    # Stage 3 engine events via emit_event (mirrors nearby valid-ish
+    # part_changed payload shape per arc-5 Codex1 N2 absorption)
+    ev1 = ctx.emit_event("part_changed", {"object_uuid": "u1", "feature_delta": {"added": []}})
+    ev2 = ctx.emit_event("part_changed", {"object_uuid": "u2", "feature_delta": {"added": []}})
+    ev3 = ctx.emit_event("part_changed", {"object_uuid": "u3", "feature_delta": {"added": []}})
+    assert ev1["event_id"] == "evt_0002"
+    assert ev2["event_id"] == "evt_0003"
+    assert ev3["event_id"] == "evt_0004"
+    assert ctx.event_log_last_event_id() == "evt_0004"
+
+
+def test_event_log_last_event_id_reads_current_draft_state_not_snapshot(tmp_path: Path):
+    """Arc 20260601-5 Action A case 4 (edge case per Claude2 absorption +
+    Codex1 Q6): helper reads CURRENT draft.events at call time, not a
+    snapshot at context construction. Test by calling before + after
+    staging one event in the same context."""
+    ws = _init_workspace(tmp_path)  # commits NO events
+    propose(ws, kind="create_part", params={
+        "number": "P-000001",
+        "name": "Test part",
+    }).commit()  # commits evt_0001 (part_created)
+    ctx = _make_context(ws, _bundle_latest())
+    assert ctx.event_log_last_event_id() == "evt_0001"  # only committed
+    ctx.emit_event("part_changed", {"object_uuid": "u1", "feature_delta": {"added": []}})
+    assert ctx.event_log_last_event_id() == "evt_0002"  # updated read
+
+
+def test_event_log_last_event_id_propagates_corrupt_event_log_failure(tmp_path: Path):
+    """Arc 20260601-5 Action A regression (per Codex2 arc-4 non-blocking
+    note + arc-5 Codex1 N1): the broad `except Exception:` guard at
+    context.py:156-159 silently defaulted to evt_0001 on
+    SchemaValidationError; per arc 20260531-8 Phase B Codex2 B1 R3 fail-
+    loud discipline, corrupt event log MUST propagate so engines + AI
+    agents know substrate is bad, not silently treat as empty.
+
+    Arc 20260601-5 removed the broad guard; this test locks the new
+    behavior."""
+    from aiadra_core.validation.schema import SchemaValidationError
+
+    ws = _init_workspace(tmp_path)  # creates valid events.jsonl with evt_0001
+    # Append a line missing required event-envelope fields (event_type,
+    # schema_version, etc.). Per the base event schema this will reject.
+    bad_line = '{"event_id": "evt_9999"}\n'
+    (ws / "events.jsonl").open("a", encoding="utf-8").write(bad_line)
+    ctx = _make_context(ws, _bundle_latest())
+    with pytest.raises(SchemaValidationError):
+        ctx.event_log_last_event_id()
 
 
 # =============================================================================
