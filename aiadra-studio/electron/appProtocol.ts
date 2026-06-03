@@ -15,10 +15,19 @@ export type ResolvedAsset = { ok: true; relPath: string } | { ok: false; status:
 /**
  * Validate an `app://bundle/...` request URL and return a confined, forward-slash
  * relative path under the renderer root — or an HTTP-ish status to reject with.
- * Rejects: non-`app:` scheme, non-`bundle` host, malformed URLs, encoded/literal
- * `..` traversal, backslashes, NUL bytes, and drive-letter/absolute injection.
+ *
+ * Rejects: non-`app:` scheme, non-`bundle` host, malformed URLs, backslashes, NUL
+ * bytes, drive-letter/absolute injection, and **percent-encoded `..` traversal**
+ * (scanned on the raw URL, since `new URL` would otherwise decode + normalize
+ * `%2e` away). **Literal** `..` is left to URL normalization — it collapses within
+ * the origin and cannot escape — and `main.ts` adds a realpath/symlink-escape
+ * guard as the final backstop. Codex2 N1 (arc 20260603-2).
  */
 export function resolveAppAssetRelPath(requestUrl: string): ResolvedAsset {
+  // Strict raw-URL pre-scan: reject percent-encoded dots before the URL parser can
+  // decode + normalize them into an innocuous-looking path.
+  if (requestUrl.toLowerCase().includes('%2e')) return { ok: false, status: 403 }
+
   let u: URL
   try {
     u = new URL(requestUrl)

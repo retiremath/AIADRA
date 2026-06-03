@@ -27,25 +27,21 @@ describe('resolveAppAssetRelPath — app:// confinement (Codex1 B1)', () => {
     expect(resolveAppAssetRelPath('app://evil/index.html')).toEqual({ ok: false, status: 404 })
   })
 
-  it('keeps every .. traversal attempt confined (no escape from the root)', () => {
-    // URL normalization collapses literal AND percent-encoded `..` within the
-    // origin; the helper's explicit `..` segment check + main.ts's realpath guard
-    // are defense-in-depth. The invariant under test: the result is either
-    // rejected, or a confined relative path that contains no `..` and is not absolute.
-    const attempts = [
-      'app://bundle/../secret',
-      'app://bundle/assets/../../secret',
-      'app://bundle/%2e%2e/secret',
-      'app://bundle/assets/%2e%2e/%2e%2e/secret',
-      'app://bundle/a/b/../../../secret',
-    ]
-    for (const url of attempts) {
+  it('strictly rejects percent-encoded .. traversal (raw pre-scan, Codex2 N1)', () => {
+    expect(resolveAppAssetRelPath('app://bundle/%2e%2e/secret')).toEqual({ ok: false, status: 403 })
+    expect(resolveAppAssetRelPath('app://bundle/assets/%2e%2e/%2e%2e/secret')).toEqual({ ok: false, status: 403 })
+    expect(resolveAppAssetRelPath('app://bundle/%2E%2E/secret')).toEqual({ ok: false, status: 403 })
+  })
+
+  it('neutralizes literal .. via URL normalization (stays confined, never escapes)', () => {
+    // Literal `..` collapses within the origin; the result is a confined path that
+    // contains no `..` and is not absolute (main.ts realpath-confines it further).
+    for (const url of ['app://bundle/../secret', 'app://bundle/assets/../../secret', 'app://bundle/a/b/../../../secret']) {
       const r = resolveAppAssetRelPath(url)
+      expect(r.ok).toBe(true)
       if (r.ok) {
         expect(r.relPath).not.toContain('..')
         expect(r.relPath.startsWith('/')).toBe(false)
-      } else {
-        expect([400, 403, 404]).toContain(r.status)
       }
     }
   })
