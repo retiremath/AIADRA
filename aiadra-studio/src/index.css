@@ -112,6 +112,20 @@ body { background: var(--bg); overflow: hidden; }
   color: var(--text-h);
 }
 
+.engine { margin-bottom: 4px; }
+.btn {
+  margin: 4px 0;
+  padding: 5px 10px;
+  font: inherit;
+  color: var(--text-h);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.ok { color: #7fd1a3; }
+
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .pad { padding: 2px 0; }

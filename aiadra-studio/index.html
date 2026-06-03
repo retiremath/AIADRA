@@ -2,9 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- B1 (Codex1): restrictive renderer CSP. Dev-relaxed for Vite HMR
+         ('unsafe-inline'/'unsafe-eval' + ws:); production tightening (drop
+         unsafe-eval, hashed scripts) is a packaging-milestone task. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>aiadra-studio</title>
+    <title>AIADRA Studio</title>
   </head>
   <body>
     <div id="root"></div>
