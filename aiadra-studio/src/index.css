@@ -77,6 +77,41 @@ body { background: var(--bg); overflow: hidden; }
   pointer-events: none;
 }
 
+.ctx-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 184px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.ctx-menu li {
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: default;
+  white-space: nowrap;
+}
+.ctx-menu li:not(.sep):not(.disabled):hover { background: var(--accent); color: #fff; }
+.ctx-menu li.on::before { content: '✓ '; color: var(--accent); }
+.ctx-menu li.on:hover::before { color: #fff; }
+.ctx-menu li.sep { height: 1px; margin: 4px 2px; padding: 0; background: var(--border); }
+.ctx-menu li.disabled { color: var(--muted); font-size: 12px; }
+
+.sel-badge {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  padding: 3px 8px;
+  background: rgba(107, 155, 209, 0.18);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .pad { padding: 2px 0; }

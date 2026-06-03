@@ -25,6 +25,8 @@ npm run build
 ## Status / roadmap
 
 - ✅ Vite + React + TS + three.js shell; lit/edged viewport; Creo-style layout; first pixels.
+- ✅ CAD navigation: middle = rotate · shift+middle = pan · ctrl+middle & scroll = zoom · left = select · right = context menu; near-zero inertia.
+- ⏳ Deferred (later): an **orthographic-camera option** for a perfectly flat pan — the perspective camera parallaxes slightly when panning (acceptable for now per Petre).
 - ▢ Milestone 1: Electron shell + secure bridge skeleton + STEP/STL import lane + orbit/pan/zoom/fit + shaded+edges + model-tree stub.
 - ▢ Milestone 2: topological selection model + AIADRA Workspace lane.
 - ▢ Milestone 3: measurement + section planes + Product-Truth data panel wired.

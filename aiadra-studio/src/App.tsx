@@ -29,7 +29,7 @@ export default function App() {
         </aside>
         <main className="viewport">
           <Viewport />
-          <div className="hud muted small">drag = orbit · scroll = zoom · right-drag = pan</div>
+          <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
       </div>
     </div>
