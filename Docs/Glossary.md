@@ -1,8 +1,8 @@
 ---
 name: aiadra-glossary
 status: draft
-version: 0.25
-last_updated: 2026-05-31
+version: 0.26
+last_updated: 2026-06-03
 ---
 
 # AIADRA Glossary
@@ -50,7 +50,7 @@ AIADRA inherits Windchill's Commonspace / Vault / Workspace separation, realized
 
 **Workspace** — A developer's local environment: the Git clone + working tree + live Native Engine sessions / Data Adapter processes currently active. Per-developer, high-bandwidth, where work-in-progress and AI activity live. The Workspace is the natural operating context for AI agents (Manifesto Principle 13).
 
-**Workspace Browser** — The UI through which a human (and AI) inspects and manipulates the Workspace. Primary Workspace Browser is VSCode + the AIADRA extension; AIADRA Native Engines (`aiadra-mechanical`, `aiadra-electrical`, ...) act as domain-specific sub-browsers that present authoring surfaces over the same Workspace state.
+**Workspace Browser** — The UI through which a human (and AI) inspects and manipulates the Workspace. **Primary Workspace Browser is AIADRA Studio** — a standalone desktop authoring app (Creo-style 3D viewport + Windchill-style Product-Truth data panel) per [ADR/0032](ADR/0032-aiadra-studio-scope.md). **VSCode + the AIADRA extension remains a secondary developer/agent integration surface** (code, docs, reviews, agent workflows). AIADRA Native Engines (`aiadra-mechanical`, `aiadra-electrical`, ...) present domain-specific authoring surfaces over the same Workspace state, which Studio drives via the Ring 2 protocol. (Amended from VSCode-primary per ADR/0032, arc 20260602-5; v0.25 → v0.26.)
 
 ---
 
