@@ -10,7 +10,7 @@ declare global {
     aiadra?: {
       ping(): Promise<Envelope<{ pong: boolean }>>
       coreVersion(): Promise<Envelope<{ version: string }>>
-      chooseWorkspace(): Promise<Envelope<{ workspaceId: string; name: string; path: string }>>
+      chooseWorkspace(): Promise<Envelope<{ workspaceId: string; name: string }>>
       inspect(workspaceId: string, objectRef: string): Promise<Envelope<{ object: unknown }>>
     }
   }

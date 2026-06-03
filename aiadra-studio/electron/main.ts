@@ -66,6 +66,14 @@ function startBridge(): void {
   bridge.on('exit', (code) => {
     process.stderr.write(`[main] bridge exited (code ${code})\n`)
     bridge = null
+    // N3 (Codex2): fail outstanding RPCs immediately instead of waiting out the
+    // 15 s timeout, so the UI sees a clear disconnected state the moment the
+    // bridge dies.
+    for (const p of pending.values()) {
+      clearTimeout(p.timer)
+      p.reject(new Error('engine bridge exited'))
+    }
+    pending.clear()
   })
   process.stderr.write(`[main] spawned bridge: ${python} ${script}\n`)
 }
@@ -130,7 +138,10 @@ function registerIpc(): void {
     }
     const workspaceId = randomUUID()
     workspaces.set(workspaceId, canonical)
-    return ok({ workspaceId, name: canonical.split(/[\\/]/).pop() ?? canonical, path: canonical })
+    // N1 (Codex2): the canonical path stays main-side. The renderer contract
+    // carries no filesystem paths (tightens B2) — only the opaque id + a display
+    // name cross the wire.
+    return ok({ workspaceId, name: canonical.split(/[\\/]/).pop() ?? canonical })
   })
 
   ipcMain.handle('aiadra:inspect', (_e, args: unknown) => {
@@ -142,6 +153,21 @@ function registerIpc(): void {
     if (!wsPath) return err('unknown workspaceId — open a workspace first')
     return callBridge('inspect', { workspace_path: wsPath, object_ref: a.objectRef })
   })
+}
+
+// B1 (Codex2 N2): in dev we load ELECTRON_RENDERER_URL (set by electron-vite, not
+// renderer-controlled). Assert it points at a loopback origin so a poisoned
+// environment cannot aim Studio at a remote page. The port is intentionally NOT
+// pinned (Vite may fall back off 5173); the security-relevant invariant is the host.
+function isLoopbackDevUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    const host = u.hostname
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+  } catch {
+    return false
+  }
 }
 
 function createWindow(): void {
@@ -165,9 +191,13 @@ function createWindow(): void {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
   // B1: load ONLY the Vite dev server (dev) or the built local app (prod).
-  if (process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL)
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  if (devUrl && isLoopbackDevUrl(devUrl)) {
+    win.loadURL(devUrl)
   } else {
+    if (devUrl) {
+      process.stderr.write(`[main] refusing non-loopback ELECTRON_RENDERER_URL: ${devUrl}\n`)
+    }
     win.loadFile(join(app.getAppPath(), 'out', 'renderer', 'index.html'))
   }
 
