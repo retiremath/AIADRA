@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config'
 // Worker, WASM, or the DOM, so the node environment is enough.
 export default defineConfig({
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'electron/**/*.test.ts'],
     environment: 'node',
   },
 })

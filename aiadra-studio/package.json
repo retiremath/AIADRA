@@ -11,6 +11,7 @@
     "build:web": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "smoke:step": "node scripts/step-electron-smoke.mjs",
     "preview": "node scripts/dev.mjs preview"
   },
   "dependencies": {

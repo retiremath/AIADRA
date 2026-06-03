@@ -32,7 +32,9 @@ export default defineConfig({
   renderer: {
     root: '.',
     // Relative base so the built renderer + its worker/WASM assets resolve under
-    // Electron's file:// origin (Codex1 B2 — the import worker loads occt's .wasm).
+    // the custom `app://bundle` origin the built app is served from (arc 20260603-2;
+    // not file:// — Chromium blocks fetch(file://), and the import worker fetches
+    // occt's .wasm). Relative URLs resolve against app://bundle/.
     base: './',
     plugins: [react()],
     // The import parse worker (importWorker.ts) is an ES module worker; emit ES so

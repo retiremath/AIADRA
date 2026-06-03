@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
+import { contentTypeFor, resolveAppAssetRelPath } from './appProtocol'
 
 /**
  * AIADRA Studio — Electron main process (ADR/0032 D6; arc 20260602-6).
@@ -20,6 +21,72 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 
 let win: BrowserWindow | null = null
 let bridge: ChildProcessWithoutNullStreams | null = null
+
+// ---- Read-only `app://bundle` asset scheme (Codex1 B1, arc 20260603-2) ----
+// The BUILT renderer is served from a custom `app://bundle` origin (not file://)
+// so the import worker can fetch occt's WASM — Chromium blocks `fetch(file://)`.
+// Privileged standard+secure scheme; registered BEFORE app.ready. No bypassCSP.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+])
+
+// B2: was occt's WASM actually served over app:// during a run? (smoke assertion)
+let wasmServed = false
+// B2: count of `aiadra:*` IPC calls — the smoke asserts an import adds zero.
+let aiadraIpcCalls = 0
+const SMOKE = !!process.env.AIADRA_IMPORT_SMOKE
+let rendererRoot: string | null | undefined
+
+function getRendererRoot(): string | null {
+  if (rendererRoot === undefined) {
+    try {
+      rendererRoot = realpathSync(join(app.getAppPath(), 'out', 'renderer'))
+    } catch {
+      rendererRoot = null // not built (e.g. Vite dev) — the handler is never hit then
+    }
+  }
+  return rendererRoot
+}
+
+/**
+ * Serve ONLY the Studio's own built renderer assets, read-only, under app://bundle.
+ * GET/HEAD only; URL→relative path via the pure confinement helper; then a
+ * realpath/symlink-escape guard; explicit MIME (WASM as application/wasm). Never a
+ * general file server — no workspace/user paths, no shell, no bridge, no IPC.
+ */
+function appAssetResponse(request: Request): Response {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 })
+  const root = getRendererRoot()
+  if (!root) return new Response(null, { status: 404 })
+  const resolved = resolveAppAssetRelPath(request.url)
+  if (!resolved.ok) return new Response(null, { status: resolved.status })
+
+  const candidate = join(root, ...resolved.relPath.split('/'))
+  let realPath: string
+  try {
+    realPath = realpathSync(candidate) // resolves symlinks; throws if missing
+  } catch {
+    return new Response(null, { status: 404 })
+  }
+  if (realPath !== root && !realPath.startsWith(root + sep)) {
+    return new Response(null, { status: 403 }) // symlink escape outside the renderer root
+  }
+
+  let body: Buffer
+  try {
+    body = readFileSync(realPath)
+  } catch {
+    return new Response(null, { status: 404 })
+  }
+  if (resolved.relPath.toLowerCase().endsWith('.wasm')) {
+    wasmServed = true
+    process.stderr.write(`[app] served ${resolved.relPath} via app://\n`)
+  }
+  return new Response(request.method === 'HEAD' ? null : body, {
+    status: 200,
+    headers: { 'content-type': contentTypeFor(resolved.relPath) },
+  })
+}
 
 // ---- JSON-RPC client over the Python bridge's stdio (NDJSON) ----
 type Pending = { resolve: (v: BridgeFrame) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
@@ -117,10 +184,19 @@ async function callBridge(method: string, params: Record<string, unknown>): Prom
 }
 
 function registerIpc(): void {
-  ipcMain.handle('aiadra:ping', () => callBridge('ping', {}))
-  ipcMain.handle('aiadra:coreVersion', () => callBridge('core_version', {}))
+  // B2: every bridge IPC bumps a counter so the smoke can prove the import path
+  // makes zero bridge calls (delta over the import window).
+  ipcMain.handle('aiadra:ping', () => {
+    aiadraIpcCalls++
+    return callBridge('ping', {})
+  })
+  ipcMain.handle('aiadra:coreVersion', () => {
+    aiadraIpcCalls++
+    return callBridge('core_version', {})
+  })
 
   ipcMain.handle('aiadra:chooseWorkspace', async () => {
+    aiadraIpcCalls++
     if (!win) return err('no window')
     const res = await dialog.showOpenDialog(win, {
       title: 'Open AIADRA Workspace',
@@ -145,6 +221,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('aiadra:inspect', (_e, args: unknown) => {
+    aiadraIpcCalls++
     const a = args as { workspaceId?: unknown; objectRef?: unknown } | null
     if (!a || typeof a.workspaceId !== 'string' || typeof a.objectRef !== 'string') {
       return err('inspect requires { workspaceId, objectRef }')
@@ -176,6 +253,7 @@ function createWindow(): void {
     height: 860,
     backgroundColor: '#16171d',
     title: 'AIADRA Studio',
+    show: !SMOKE, // headless window for the built-Electron smoke
     webPreferences: {
       preload: join(app.getAppPath(), 'out', 'preload', 'index.cjs'),
       contextIsolation: true, // B1
@@ -190,7 +268,9 @@ function createWindow(): void {
   win.webContents.on('will-navigate', (e) => e.preventDefault())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
-  // B1: load ONLY the Vite dev server (dev) or the built local app (prod).
+  // B1: load ONLY the Vite dev server (dev) or the built local app over the
+  // read-only app://bundle origin (prod). Never file:// (occt WASM fetch needs a
+  // fetchable origin); never a renderer-controlled URL.
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl && isLoopbackDevUrl(devUrl)) {
     win.loadURL(devUrl)
@@ -198,15 +278,62 @@ function createWindow(): void {
     if (devUrl) {
       process.stderr.write(`[main] refusing non-loopback ELECTRON_RENDERER_URL: ${devUrl}\n`)
     }
-    win.loadFile(join(app.getAppPath(), 'out', 'renderer', 'index.html'))
+    win.loadURL(`app://bundle/index.html${SMOKE ? '?smoke=1' : ''}`)
   }
+
+  if (SMOKE) runStepSmoke(win)
 
   win.on('closed', () => {
     win = null
   })
 }
 
+// B2 (Codex1): the built-Electron STEP smoke. Drives the renderer's smoke hook,
+// which runs a bundled sample STEP through the REAL controller/worker/occt path
+// (occt fetches its WASM over app://). Asserts the actual missing path, not just
+// that bytes can be parsed: app:// origin + handler served the WASM + non-zero
+// geometry + zero window.aiadra bridge calls. Exits 0 on pass, 1 on fail.
+function runStepSmoke(w: BrowserWindow): void {
+  w.webContents.once('did-finish-load', async () => {
+    const fail = (msg: string) => {
+      process.stderr.write(`[smoke] STEP FAIL: ${msg}\n`)
+      bridge?.kill()
+      app.exit(1)
+    }
+    try {
+      const url = w.webContents.getURL()
+      if (!url.startsWith('app://bundle')) return fail(`renderer origin is ${url}, expected app://bundle`)
+      // Let the EnginePanel's on-mount coreVersion() call settle, then snapshot the
+      // bridge-IPC counter so the delta reflects ONLY the import (must be zero).
+      await new Promise((r) => setTimeout(r, 600))
+      wasmServed = false
+      const bridgeBefore = aiadraIpcCalls
+      // Poll for the hook (registered under ?smoke=1), then run it. No raw fixture
+      // interpolation — the hook fetches the sample over app:// itself.
+      const result = (await w.webContents.executeJavaScript(
+        '(async () => { for (let i = 0; i < 100 && !window.__aiadraStepSmoke; i++) { await new Promise((r) => setTimeout(r, 50)) } return window.__aiadraStepSmoke ? window.__aiadraStepSmoke() : null })()',
+      )) as { origin?: string; triangles?: number; meshCount?: number } | null
+      const bridgeDelta = aiadraIpcCalls - bridgeBefore
+      if (!result) return fail('renderer smoke hook (window.__aiadraStepSmoke) never registered')
+      if (result.origin !== 'app://bundle') return fail(`location.origin=${result.origin}`)
+      if (!wasmServed) return fail('app:// handler did not serve occt WASM during import')
+      if (!(result.meshCount! > 0) || !(result.triangles! > 0)) {
+        return fail(`empty geometry (meshes=${result.meshCount}, triangles=${result.triangles})`)
+      }
+      if (bridgeDelta !== 0) return fail(`import made ${bridgeDelta} aiadra:* IPC calls (expected 0)`)
+      process.stderr.write(
+        `[smoke] STEP ok: ${result.meshCount} meshes, ${result.triangles} triangles, origin ${result.origin}, WASM served via app://, ${bridgeDelta} bridge calls during import\n`,
+      )
+      bridge?.kill()
+      app.exit(0)
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e))
+    }
+  })
+}
+
 app.whenReady().then(() => {
+  protocol.handle('app', appAssetResponse) // B1: serve app://bundle from the default session
   startBridge()
   registerIpc()
   createWindow()

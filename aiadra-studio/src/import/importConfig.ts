@@ -1,16 +1,13 @@
 /**
- * STEP import ships in 1b ONLY if it passes the built-Electron `file://` WASM
- * smoke (Codex1 B2). This is the single toggle: STL is always enabled.
- *
- * DEFERRED (arc 20260603-1): set to `false`. The occt WASM parse pipeline is
- * proven (`scripts/step-smoke.cjs`), but the file://-safe byte delivery into the
- * built worker is not solved — the `?inline` route is blocked by a Vite
- * worker-bundling limitation and the `?url` route would `fetch(file://)` (blocked
- * by Chromium). Resolving that without weakening the sandbox/CSP is the follow-up
- * arc's job (see `occtStep.ts` for the candidate fixes). Flip back to `true` once
- * the follow-up lands a built-Electron STEP smoke.
+ * STEP import is ENABLED (arc 20260603-2). The built renderer is served over a
+ * read-only `app://bundle` origin (`electron/main.ts` + `electron/appProtocol.ts`)
+ * so occt-import-js can fetch its WASM — Chromium blocks `fetch(file://)`. This is
+ * gated on the built-Electron smoke `scripts/step-electron-smoke.mjs`, which proves
+ * STEP parses + renders in the built `app://` app (asserts the app:// origin, the
+ * handler served the WASM, the real controller/worker path, non-zero geometry, and
+ * zero `window.aiadra` bridge calls). STL was always enabled.
  */
-export const STEP_ENABLED = false
+export const STEP_ENABLED = true
 
 /** `accept` attribute for the file input, derived from the STEP gate. */
 export const ACCEPT_EXTENSIONS = STEP_ENABLED ? '.stl,.step,.stp' : '.stl'
