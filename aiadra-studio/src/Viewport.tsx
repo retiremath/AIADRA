@@ -1,6 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import type { ImportedMesh } from './import/normalize'
+
+/** Imperative viewport API the App drives (import lane + view helpers). */
+export type ViewportApi = {
+  fit: () => void
+  reset: () => void
+  setStyle: (s: DrawStyle) => void
+  /** Add reference-only imported geometry as one group keyed by `id` (ADR/0032 D5). */
+  addImported: (id: string, meshes: ImportedMesh[]) => void
+  /** Remove an imported group and dispose all its GPU resources (Codex1 B1). */
+  removeImported: (id: string) => void
+}
 
 /**
  * AIADRA Studio viewport — bootstrap spike.
@@ -19,13 +31,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 type Menu = { x: number; y: number } | null
 type DrawStyle = 'shaded' | 'wireframe' | 'shaded-edges'
 
-export default function Viewport() {
+export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefObject<ViewportApi | null> } = {}) {
   const mountRef = useRef<HTMLDivElement>(null)
-  const apiRef = useRef<{
-    fit: () => void
-    reset: () => void
-    setStyle: (s: DrawStyle) => void
-  } | null>(null)
+  const localApi = useRef<ViewportApi | null>(null)
+  const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
   const [style, setStyle] = useState<DrawStyle>('shaded-edges')
@@ -104,6 +113,19 @@ export default function Viewport() {
     )
     mesh.add(edges)
 
+    // ---- Imported (reference-only) geometry: one THREE.Group per import id (Codex1 N3) ----
+    // Visually distinct from the authored blue part: a neutral desaturated material,
+    // and NO topology/selection (ADR/0032 D5 lane 1 — reference only).
+    const importGroups = new Map<string, THREE.Group>()
+    let currentStyle: DrawStyle = 'shaded-edges'
+
+    const applyStyleToImport = (group: THREE.Group, s: DrawStyle) => {
+      group.traverse((o) => {
+        const im = o as THREE.Mesh
+        if (im.isMesh) (im.material as THREE.MeshStandardMaterial).wireframe = s === 'wireframe'
+      })
+    }
+
     // ---- Left-click selection (placeholder: select the part; topology lands later) ----
     const raycaster = new THREE.Raycaster()
     const ndc = new THREE.Vector2()
@@ -139,6 +161,8 @@ export default function Viewport() {
     // ---- View helpers ----
     const fit = () => {
       const box = new THREE.Box3().setFromObject(mesh)
+      for (const g of importGroups.values()) box.expandByObject(g)
+      if (box.isEmpty()) return
       const sphere = box.getBoundingSphere(new THREE.Sphere())
       const dir = camera.position.clone().sub(controls.target).normalize()
       const dist = sphere.radius / Math.sin((camera.fov * Math.PI) / 180 / 2)
@@ -156,10 +180,62 @@ export default function Viewport() {
       controls.update()
     }
     const setStyle = (s: DrawStyle) => {
+      currentStyle = s
       mat.wireframe = s === 'wireframe'
       edges.visible = s === 'shaded-edges'
+      for (const g of importGroups.values()) applyStyleToImport(g, s)
     }
-    apiRef.current = { fit, reset, setStyle }
+
+    const disposeGroup = (group: THREE.Group) => {
+      group.traverse((o) => {
+        const im = o as THREE.Mesh
+        if (im.isMesh) {
+          im.geometry.dispose()
+          const mats = Array.isArray(im.material) ? im.material : [im.material]
+          mats.forEach((m) => m.dispose())
+        }
+      })
+    }
+
+    const addImported = (id: string, meshes: ImportedMesh[]) => {
+      const existing = importGroups.get(id)
+      if (existing) {
+        scene.remove(existing)
+        disposeGroup(existing)
+      }
+      const group = new THREE.Group()
+      group.name = `import:${id}`
+      for (const m of meshes) {
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(m.position, 3))
+        if (m.normal) g.setAttribute('normal', new THREE.BufferAttribute(m.normal, 3))
+        if (m.index) g.setIndex(new THREE.BufferAttribute(m.index, 1))
+        if (!m.normal) g.computeVertexNormals()
+        const im = new THREE.Mesh(
+          g,
+          new THREE.MeshStandardMaterial({
+            color: 0x9aa0a6, // neutral grey — NOT the authored blue
+            metalness: 0.1,
+            roughness: 0.8,
+            wireframe: currentStyle === 'wireframe',
+          }),
+        )
+        group.add(im)
+      }
+      scene.add(group)
+      importGroups.set(id, group)
+      fit()
+    }
+
+    const removeImported = (id: string) => {
+      const group = importGroups.get(id)
+      if (!group) return
+      scene.remove(group)
+      disposeGroup(group)
+      importGroups.delete(id)
+    }
+
+    apiRef.current = { fit, reset, setStyle, addImported, removeImported }
 
     const onResize = () => {
       camera.aspect = w() / h()
@@ -187,6 +263,8 @@ export default function Viewport() {
       renderer.dispose()
       geo.dispose()
       mat.dispose()
+      for (const g of importGroups.values()) disposeGroup(g)
+      importGroups.clear()
       apiRef.current = null
       if (canvas.parentNode === mount) mount.removeChild(canvas)
     }

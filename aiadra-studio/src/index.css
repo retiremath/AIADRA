@@ -129,3 +129,36 @@ body { background: var(--bg); overflow: hidden; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .pad { padding: 2px 0; }
+.err { color: #e08a8a; }
+
+/* ---- Reference import lane (ADR/0032 D5 lane 1) ---- */
+.import-panel { margin-bottom: 4px; }
+.import-list { margin-top: 6px; }
+.import-row { padding: 6px 4px; border-radius: 4px; }
+.import-row + .import-row { border-top: 1px solid var(--border); }
+.import-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.import-name {
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-badge {
+  display: inline-block;
+  margin: 3px 0;
+  padding: 1px 6px;
+  color: #d8c08a;
+  background: rgba(216, 192, 138, 0.12);
+  border: 1px solid rgba(216, 192, 138, 0.4);
+  border-radius: 3px;
+}
+.link-btn {
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover { color: var(--accent); }

@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <!-- B1 (Codex1): restrictive renderer CSP. Dev-relaxed for Vite HMR
          ('unsafe-inline'/'unsafe-eval' + ws:); production tightening (drop
-         unsafe-eval, hashed scripts) is a packaging-milestone task. -->
+         unsafe-eval, hashed scripts) is a packaging-milestone task.
+         D1b.9 (arc 20260603-1): the import worker compiles single-threaded
+         occt WASM, so the tightened production CSP MUST keep 'wasm-unsafe-eval'
+         in script-src and 'self' blob: in worker-src — and must NOT add
+         cross-origin-isolation (COOP/COEP): occt-import-js is non-threaded, no
+         SharedArrayBuffer (Codex1 N6). -->
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'"

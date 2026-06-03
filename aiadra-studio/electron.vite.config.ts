@@ -31,7 +31,13 @@ export default defineConfig({
   },
   renderer: {
     root: '.',
+    // Relative base so the built renderer + its worker/WASM assets resolve under
+    // Electron's file:// origin (Codex1 B2 — the import worker loads occt's .wasm).
+    base: './',
     plugins: [react()],
+    // The import parse worker (importWorker.ts) is an ES module worker; emit ES so
+    // its `import` of three/STLLoader + occt-import-js survives the build.
+    worker: { format: 'es' },
     build: {
       outDir: 'out/renderer',
       rollupOptions: { input: { index: resolve(__dirname, 'index.html') } },
