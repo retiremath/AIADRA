@@ -1,6 +1,7 @@
 import { type MutableRefObject, useEffect, useRef, useState } from 'react'
 import Viewport, { type ViewportApi } from './Viewport'
 import { createImporter, type Importer } from './import/importController'
+import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
 import { ACCEPT_EXTENSIONS, ACCEPT_LABEL, STEP_ENABLED } from './import/importConfig'
 
@@ -77,10 +78,23 @@ function triangleCount(meshes: { position: Float32Array; index?: Uint32Array }[]
 function ImportPanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const importerRef = useRef<Importer | null>(null)
+  const sessionRef = useRef<ImportSession | null>(null)
   const seq = useRef(0)
   const [items, setItems] = useState<ImportItem[]>([])
 
   useEffect(() => () => importerRef.current?.dispose(), [])
+
+  // The session governs add/remove so a row removed while still loading cannot
+  // orphan geometry (Codex2 B3). `api.current` is read at call time (null-safe).
+  const session = (): ImportSession => {
+    if (!sessionRef.current) {
+      sessionRef.current = createImportSession({
+        addImported: (id, m) => api.current?.addImported(id, m),
+        removeImported: (id) => api.current?.removeImported(id),
+      })
+    }
+    return sessionRef.current
+  }
 
   const patch = (id: string, next: Partial<ImportItem>) =>
     setItems((xs) => xs.map((it) => (it.id === id ? { ...it, ...next } : it)))
@@ -98,19 +112,23 @@ function ImportPanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
     }
 
     const id = `imp_${++seq.current}`
+    session().begin(id)
     setItems((xs) => [...xs, { id, name: file.name, status: 'loading' }])
     try {
       if (!importerRef.current) importerRef.current = createImporter({ workerFactory: spawnImportWorker })
       const meshes = await importerRef.current.import(file)
-      api.current?.addImported(id, meshes)
-      patch(id, { status: 'ready', detail: `${triangleCount(meshes).toLocaleString()} triangles` })
+      if (session().complete(id, meshes)) {
+        patch(id, { status: 'ready', detail: `${triangleCount(meshes).toLocaleString()} triangles` })
+      }
+      // else: removed while loading — the row is already gone, the result dropped.
     } catch (err) {
+      session().settleError(id)
       patch(id, { status: 'error', detail: err instanceof Error ? err.message : String(err) })
     }
   }
 
   const remove = (id: string) => {
-    api.current?.removeImported(id)
+    session().remove(id) // tombstones an in-flight parse + drops any added group
     setItems((xs) => xs.filter((it) => it.id !== id))
   }
 

@@ -17,6 +17,7 @@
  */
 
 import { DEFAULT_CAPS, ImportError, type ImportCaps, type ImportedMesh, normalizeMeshes } from './normalize'
+import { STEP_ENABLED } from './importConfig'
 import type { ImportFormat, RawMesh, WorkerResponse } from './messages'
 
 /** Reject files larger than this before reading them (1b cap). */
@@ -49,7 +50,12 @@ export interface Importer {
 export function detectFormat(filename: string): ImportFormat {
   const lower = filename.toLowerCase()
   if (lower.endsWith('.stl')) return 'stl'
-  if (lower.endsWith('.step') || lower.endsWith('.stp')) return 'step'
+  if (lower.endsWith('.step') || lower.endsWith('.stp')) {
+    // Codex2 N1: enforce the STEP gate structurally at the import boundary, not
+    // only in the UI, so the disabled STEP path is unreachable through the controller.
+    if (!STEP_ENABLED) throw new ImportError('STEP import is deferred to a follow-up — STL only for now')
+    return 'step'
+  }
   throw new ImportError(`unsupported file type "${filename}" (expected .stl, .step, or .stp)`)
 }
 
