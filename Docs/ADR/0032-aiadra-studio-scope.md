@@ -74,7 +74,7 @@ Navigation cube (view-orientation gizmo); standard view shortcuts (iso/front/top
 
 ### D11. Repo + naming
 
-`aiadra-studio` (working name, Petre-approved) as **its own git repo** at `d:\VSCode-Work\aiadra-studio` (one-repo-per-project convention; already `git init`-ed + committed). The **decision record (this ADR) + the Glossary amendment stay in `AIADRA/Docs`** (canonical ADR home), since they amend AIADRA posture.
+`aiadra-studio` (working name, Petre-approved) lives as a **subfolder of the AIADRA monorepo** at `AIADRA/aiadra-studio/` — a sibling to `aiadra-core/` and `aiadra-mechanical/` (which are themselves monorepo subfolders, not separate repos). **Amended 2026-06-03 per Petre** from the original "own repo" framing (and Codex1 Q4) for consistency with the existing structure, atomic Studio↔`aiadra-core` changes (the bridge couples them), and a single remote (rides `github.com/retiremath/AIADRA`). The decision record (this ADR) + the Glossary amendment are in `AIADRA/Docs`.
 
 ### D12. Out of scope (v1)
 
