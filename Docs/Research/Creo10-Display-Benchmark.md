@@ -4,24 +4,45 @@
 >
 > **Status:** capture in progress. Items marked **[CAPTURE]** await a Creo 10 demo/export.
 
-## 1. Color palette (from the Creo 10 Options → System Appearance → Global Colors → Graphics)
+## 1. Color palette — CAPTURED ✅ (Creo 10 color export, both themes)
 
-The Options dialog screenshot gave the **default palette by family**. The **exact RGB is pending the Creo color export** (Options → Colors → **Export** produces a config file with precise values).
+Creo 10 ships two coordinated default schemes — **Light (Previous Creo Default)** and **Dark**. This proves the background↔line-colour coupling and validates the theme model ([ADR/0033](../ADR/0033-studio-display-ux-vision.md) D8): geometry flips near-black↔white with the background. Values converted from Creo's 0–100% export to 8-bit hex. Source: `syscol2.txt` (light, `COLOR_SCHEME 6`), `syscol3.txt` (dark, `COLOR_SCHEME 5`) — kept local, not committed.
 
-| Creo color role | Family (from screenshot) | Exact RGB | Our display use |
+### Light theme (`COLOR_SCHEME 6`; flat background — `BLENDED_BACKGROUND no`)
+
+| Creo role | Hex | RGB | Our display use |
 |---|---|---|---|
-| **Background** | very light grey | **[CAPTURE]** | viewport background |
-| **Geometry** | dark navy/blue | **[CAPTURE]** | base model edge / curve colour |
-| **Hidden Line** | mid grey | **[CAPTURE]** | dimmed hidden edges (Hidden Line mode) |
-| **Shaded Edge** | black | **[CAPTURE]** | edge colour over shaded faces (Shading With Edges) |
-| **Edge highlight** | bright blue | **[CAPTURE]** | hovered/selected edge feedback |
-| **Preselection highlight** | orange | **[CAPTURE]** | hover pre-highlight |
-| **Selected** | bright green | **[CAPTURE]** | selected entity |
-| **Secondary selected** | teal | **[CAPTURE]** | secondary selection |
-| **Datum** | dark red/maroon | **[CAPTURE]** | datum features (later) |
-| **Sketch / Curve** | cyan / blue | **[CAPTURE]** | sketch entities (later) |
+| Background | `#F7F9FA` | 247,249,250 | viewport background (near-white, cool) |
+| Geometry | `#222226` | 34,34,38 | base model **edges** (near-black) |
+| Hidden Line | `#C2C2CC` | 194,194,204 | **dimmed hidden edges** (light grey) |
+| Shaded Edge | `#222226` | 34,34,38 | edge colour over shaded faces |
+| Edge highlight | `#FF0000` | 255,0,0 | hovered/selected edge |
+| Preselection highlight | `#90F000` | 144,240,0 | hover pre-highlight (yellow-green) |
+| Selected | `#33CC4D` | 51,204,77 | selected entity (green) |
+| Secondary selected | `#2EE5E5` | 46,229,229 | secondary selection (cyan) |
+| Previewed geometry | `#FF9500` | 255,149,0 | preview (orange) |
+| Primary highlight | `#990000` | 153,0,0 | primary highlight (dark red) |
+| Curve / Letter | `#0000F0` | 0,0,240 | curves / text (blue) |
+| Datum | `#996633` | 153,102,51 | datum (brown) |
 
-> **Highest-value single capture:** the Creo color **Export** file → fills the whole RGB column at once.
+### Dark theme (`COLOR_SCHEME 5`)
+
+| Creo role | Hex | RGB | Our display use |
+|---|---|---|---|
+| Background | `#303536` | 48,53,54 | viewport background (dark grey) |
+| Geometry | `#FFFFFF` | 255,255,255 | base model **edges** (white) |
+| Hidden Line | `#78787D` | 120,120,125 | **dimmed hidden edges** (mid grey) |
+| Shaded Edge | `#000000` | 0,0,0 | edge colour over shaded faces (black) |
+| Edge highlight | `#1E91DC` | 30,145,220 | hovered/selected edge (blue) |
+| Preselection highlight | `#FF640A` | 255,100,10 | hover pre-highlight (orange) |
+| Selected | `#55FF1E` | 85,255,30 | selected entity (green) |
+| Secondary selected | `#78FFDC` | 120,255,220 | secondary selection (light teal) |
+| Previewed geometry | `#FFAF0A` | 255,175,10 | preview (amber) |
+| Primary highlight | `#C83278` | 200,50,120 | primary highlight (magenta) |
+| Curve | `#005FFF` | 0,95,255 | curves (blue) |
+| Datum | `#785055` | 120,80,85 | datum (mauve) |
+
+**Derivable now — the hidden-line spec:** Hidden Line mode = **visible edges in the Geometry colour + hidden edges in the Hidden Line colour** (light-grey `#C2C2CC` on light / mid-grey `#78787D` on dark) — i.e. a **dimmed grey**, NOT a faded geometry colour. Line *style* (solid vs dashed) isn't in the colour file → confirm from a mode screenshot (Creo's default Hidden Line is solid dimmed grey). **Implication for us:** both Light and Dark must be first-class themes in the Appearance system; the dim-hidden colour is a distinct theme entry, not a computed tint.
 
 ## 2. Display modes — the target taxonomy (ADR/0033 D7)
 
@@ -62,9 +83,10 @@ For each mode, capture on **one representative part** (ideally the imported gear
 - **Selection filters:** how Creo filters faces-only / edges-only / vertices-only, and how that's surfaced.
 - **Multi-select** + de-select behaviour.
 
-## 4. Background & environment **[CAPTURE]**
-- Petre's preferred background (he asked for light grey/cream): flat or gradient? If gradient, the two colours.
-- Any floor/grid/shadow in Creo's default, or clean background?
+## 4. Background & environment — partly captured ✅
+- **Light default = flat `#F7F9FA`** (`BLENDED_BACKGROUND no`). A **disabled** gradient is on file (top `#FBFBFC` → bottom `#EEF0F1`) — so Creo supports an optional vertical gradient, off by default. Our stopgap used `#E6E9EC` (a touch darker/greyer) — Creo's `#F7F9FA` is the exact target.
+- **Dark default = flat `#303536`.**
+- **[CAPTURE]** confirm there's no floor/grid/shadow in Creo's default viewport (clean background expected).
 
 ## 5. Navigation & views (interaction shell — ADR/0033 D9, later) **[CAPTURE — lower priority]**
 - Navigation cube / spin-center behaviour; standard view orientations (iso/front/top/…); how view changes are triggered.
