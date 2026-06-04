@@ -44,38 +44,30 @@ Creo 10 ships two coordinated default schemes — **Light (Previous Creo Default
 
 **Derivable now — the hidden-line spec:** Hidden Line mode = **visible edges in the Geometry colour + hidden edges in the Hidden Line colour** (light-grey `#C2C2CC` on light / mid-grey `#78787D` on dark) — i.e. a **dimmed grey**, NOT a faded geometry colour. Line *style* (solid vs dashed) isn't in the colour file → confirm from a mode screenshot (Creo's default Hidden Line is solid dimmed grey). **Implication for us:** both Light and Dark must be first-class themes in the Appearance system; the dim-hidden colour is a distinct theme entry, not a computed tint.
 
-## 2. Display modes — the target taxonomy (ADR/0033 D7)
+## 2. Display modes — CAPTURED ✅ (Creo 10 View → Display Style)
 
-For each mode, capture on **one representative part** (ideally the imported gear/housing, same view/angle, so we can compare directly). Record the specs in our terms; no Creo image needed.
+Creo's exact taxonomy is **six** modes (Ctrl+1..6), with these tooltip definitions:
 
-### 2.1 Shading **[CAPTURE]**
-- Face colour / material feel (matte vs glossy); lighting (single key? ambient?).
-- Any edges/silhouette drawn in *pure* shaded, or faces only?
-- Background.
+| Creo mode | Key | Creo tooltip | Our target |
+|---|---|---|---|
+| Shading With Reflections | Ctrl+1 | shaded + reflections | **deferred** (D7/N4 — needs material/env policy) |
+| Shading With Edges | Ctrl+2 | "Show the model shaded and with edges." | Shaded + edges |
+| Shading | Ctrl+3 | "Show the model shaded." | Shaded |
+| No Hidden | Ctrl+4 | "wireframe display, and do not show hidden lines." | No Hidden *(our stopgap mis-named this "Hidden line")* |
+| Hidden Line | Ctrl+5 | "wireframe display, with the hidden lines shown lighter." | Hidden Line — true dimmed-hidden *(we lacked it)* |
+| Wireframe | Ctrl+6 | "wireframe display." (all edges) | Wireframe — all edges equal *(we lacked the proper version)* |
 
-### 2.2 Shading With Edges **[CAPTURE]**
-- Edge colour (Shaded Edge = black?) + **line weight** (px).
-- Are **curved-surface silhouettes** drawn (the cylinder outline), or only sharp topological edges?
-- Are **smooth tangent edges** (fillet-to-face) drawn?
-- Anti-aliasing / crispness.
+**Captured behaviors (the acceptance bar):**
+- **Hidden Line dimming = "shown lighter":** hidden edges are a **lighter tint of the edge colour, SOLID — not dashed.** (Matches the §1 Hidden Line colour entry; it's a lighter line, not a dash pattern.)
+- **Real visible/hidden classification (HLR):** Wireframe shows **all** edges incl. the true *hidden/back* edges at equal weight; No Hidden **removes** the hidden set; Hidden Line **lightens** it. This is computed visible/hidden classification, not feature-edges-drawn-see-through. → the foundation needs **OCCT HLR** (ADR/0033 D6).
+- **Tangent edges ARE drawn** — in Shading With Edges the fillet/round boundary edges (smooth *tangent* edges) appear. A dihedral-angle heuristic (our stopgap) cannot produce these. → needs **true BREP edges incl. tangent** (ADR/0033 D2/D5).
+- **Curved-surface silhouettes/outlines ARE drawn** in the wireframe modes (rounded outer corners show their outline). → needs **HLR outline edges**, not only topological edges.
+- **Line weight:** thin (~1 px), crisp/anti-aliased; uniform weight (no special heavier "outline" weight in these defaults).
+- **Edge colour is theme/scheme-dependent:** in these captures wireframe edges render **blue** while Shading-With-Edges renders **dark** — so *shaded-edge colour* and *wireframe-edge colour* are likely **distinct theme entries**; the renderer drives edge colour from the active theme per mode (§1 is the configurable source of truth).
+- **Shading (no edges):** smooth shaded faces, no edge lines; silhouette reads implicitly from the shape vs background.
+- **[CAPTURE — minor]** mode-switch latency (instant vs a settle for HLR) + default mode on open.
 
-### 2.3 No Hidden (visible edges only, hidden removed) **[CAPTURE]**
-- Which edges show: all *visible* topological edges + **curved-surface silhouettes**?
-- Edge colour (Geometry navy?) + line weight.
-- This is the mode where Creo's curved silhouette must appear — confirm it does.
-
-### 2.4 Hidden Line (visible solid + hidden **dimmed**) **[CAPTURE]**
-- Visible edges: colour + weight.
-- **Hidden edges: dimmed how?** — grey (Hidden Line colour)? thinner? **dashed or solid**? This is the exact spec Petre asked for ("hidden lines should be dimmed").
-- Are hidden silhouettes also shown dimmed?
-
-### 2.5 Wireframe (all edges) **[CAPTURE]**
-- Does Wireframe show hidden edges at the **same** weight/colour as visible (true see-through), or is that what Hidden Line is for? Clarify the Creo distinction between Wireframe vs Hidden Line.
-- Silhouettes shown?
-
-### 2.6 Cross-mode notes **[CAPTURE]**
-- How mode switching feels (instant? any settle delay for hidden-line?).
-- Default mode on model open.
+**Net for us:** the corrected target set is **Shading · Shading With Edges · No Hidden · Hidden Line · Wireframe** (+ Reflections deferred). Our stopgap's 4 modes were mis-named and lacked true HLR; the foundation must provide HLR (visible/hidden/outline classification) + true BREP edges (incl. tangent).
 
 ## 3. Selection & pre-highlight (drives the topology-identity work, ADR/0033 D5) **[CAPTURE]**
 - **Hover pre-highlight:** hover over an edge, then a face — what highlights (the entity under cursor? the whole part?), what colour (Preselection = orange?), and the style (colour swap? glow/thicken?).
