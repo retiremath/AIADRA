@@ -84,13 +84,16 @@ Creo's exact taxonomy is **six** modes (Ctrl+1..6), with these tooltip definitio
 
 **[CAPTURE — minor]** click-select colour (green/blue) confirmation + multi-select / de-select behaviour.
 
-## 4. Background & environment — partly captured ✅
-- **Light default = flat `#F7F9FA`** (`BLENDED_BACKGROUND no`). A **disabled** gradient is on file (top `#FBFBFC` → bottom `#EEF0F1`) — so Creo supports an optional vertical gradient, off by default. Our stopgap used `#E6E9EC` (a touch darker/greyer) — Creo's `#F7F9FA` is the exact target.
-- **Dark default = flat `#303536`.**
-- **[CAPTURE]** confirm there's no floor/grid/shadow in Creo's default viewport (clean background expected).
+## 4. Background & environment — captured ✅ + Petre's preference
+- **Creo Light default = flat `#F7F9FA`** (`BLENDED_BACKGROUND no`; optional gradient on file `#FBFBFC`→`#EEF0F1`, off by default). **Creo Dark default = flat `#303536`.**
+- **AIADRA default preference (Petre): a LIGHT GREEN background** — distinct from Creo's near-white; easier on the eyes. Exact shade to dial (a soft pale green; ~`#E4EFDF` as a starting point). This becomes the default `Background` entry in the AIADRA Light theme and is user-configurable via the Appearance system (ADR/0033 D8) — so the green is a *default*, not a hard-code.
+- Clean viewport — no floor/grid/shadow in Creo's default (confirmed from the captures); the stopgap's grid is a dev aid, toggle-able.
 
-## 5. Navigation & views (interaction shell — ADR/0033 D9, later) **[CAPTURE — lower priority]**
-- Navigation cube / spin-center behaviour; standard view orientations (iso/front/top/…); how view changes are triggered.
+## 5. Navigation & views (interaction shell — ADR/0033 D9) — REQUIREMENT captured ✅
+- **Navigation cube wanted — FreeCAD's is the reference** (Petre: "FreeCAD has a pretty good one"). Target behaviour: a corner (top-right) 3D orientation gizmo that **rotates in sync with the model**; **click a face / edge / corner → snap to the corresponding standard view** (front / top / right / iso / …); incremental rotate arrows around it; a home/fit affordance. (Creo's view gizmo / spin-centre is a secondary reference; the FreeCAD nav-cube *interaction* is the target. Borrowing a FreeCAD UX pattern is consistent with ADR/0032 D10 + the non-clone guardrail.)
+- Standard view orientations (iso / front / top / right / …) reachable from the cube + keyboard shortcuts.
+- Lands in the **interaction-shell arc** (later in the strand), but pinned as a v1 requirement now.
+- **[CAPTURE — minor]** any other view aids wanted (spin-centre marker, saved-view list).
 
 ## Derived acceptance criteria (the "done" bar the foundation + display-modes arcs inherit)
 
