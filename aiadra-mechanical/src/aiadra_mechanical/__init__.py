@@ -35,3 +35,11 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
     registrar.add_operation("mechanical.adjust_feature_parameter", handle_adjust_feature_parameter)
     registrar.add_operation("mechanical.remove_feature", handle_remove_feature)
+
+    # Read-only display generation (arc 20260609-1; ADR/0035). Separate read
+    # lane — never sees a staging context, never a Transaction.
+    from .display import handle_display_representation
+
+    registrar.add_read_operation(
+        "mechanical.display_representation", handle_display_representation
+    )

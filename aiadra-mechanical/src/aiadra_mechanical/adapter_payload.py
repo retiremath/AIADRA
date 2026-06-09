@@ -2,7 +2,8 @@
 
 Per ADR/0029 D7 sketch primitives + extrude op-data stay OPAQUE to
 aiadra-core (the bundle schema only checks `adapter_payload` IS an object).
-This module pins the v0.0.1 payload format (`adapter_schema_version = 0.1.0`)
+This module pins the payload format (`adapter_schema_version = 0.1.1` since arc
+20260609-1 added engine-minted `skp_` primitive ids — see `build_sketch_payload`)
 and performs **domain/payload validation** — Class-1 failures per ADR/0031
 D6/B2: malformed or out-of-domain inputs raise `TransactionError` (a
 passthrough exception) BEFORE the kernel is touched, so they are never
@@ -32,9 +33,34 @@ _SKETCH_PRIMITIVE_REQUIRED_KEYS = {
 
 
 def build_sketch_payload(primitives: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build (and domain-validate) the adapter_payload for a sketch feature."""
+    """Build (and domain-validate) the adapter_payload for a sketch feature.
+
+    Per arc 20260609-1 Codex1 B2: each primitive is assigned a **stable,
+    engine-minted `skp_NNNN` id** at authoring time. This is the
+    primitive-level role anchor the Display Representation topology-identity
+    scheme (ADR/0035) needs — face/edge display IDs derive from a primitive's
+    `skp_` id, NOT from its position in the list (which is not stable once a
+    sketch carries multiple same-type primitives). The id is engine-opaque to
+    `aiadra-core` (the bundle schema only checks `adapter_payload` IS an
+    object). It IS part of the canonical recipe → it participates in
+    `vault_ref` identity (intentional: the primitive anchor is geometry
+    identity, not incidental metadata). Bumps `adapter_schema_version` 0.1.0
+    → 0.1.1.
+    """
     _validate_sketch_primitives(primitives)
-    return {"primitives": [dict(p) for p in primitives]}
+    out: list[dict[str, Any]] = []
+    for i, p in enumerate(primitives, start=1):
+        prim = dict(p)
+        # Engine-minted stable id; a caller-supplied id is rejected so the
+        # engine remains the sole minter (no spoofed anchors).
+        if "id" in prim:
+            raise TransactionError(
+                f"mechanical.add_sketch_feature: primitive[{i - 1}] must not "
+                f"carry a caller-supplied 'id'; the engine mints skp_ ids"
+            )
+        prim["id"] = f"skp_{i:04d}"
+        out.append(prim)
+    return {"primitives": out}
 
 
 def build_extrude_payload(

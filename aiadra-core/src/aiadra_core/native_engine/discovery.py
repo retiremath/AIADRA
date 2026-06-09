@@ -106,9 +106,10 @@ def native_engine_status() -> dict[str, dict[str, Any]]:
     Returns a dict keyed by engine_id with:
         {
           "status": "loaded" | "failed",
-          "operations": [kind, ...] | [],  # only populated for "loaded"
-          "error": str | None,             # only populated for "failed"
-          "error_cause": str | None,       # only populated when failure has __cause__
+          "operations": [kind, ...] | [],       # mutation ops; only for "loaded"
+          "read_operations": [kind, ...] | [],  # read ops (arc 20260609-1 B1)
+          "error": str | None,                  # only populated for "failed"
+          "error_cause": str | None,            # only populated when failure has __cause__
         }
     """
     loaded, failures = get_native_engines()
@@ -117,6 +118,7 @@ def native_engine_status() -> dict[str, dict[str, Any]]:
         out[engine_id] = {
             "status": "loaded",
             "operations": [kind for kind, _handler in reg.operations],
+            "read_operations": [kind for kind, _handler in reg.read_operations],
             "error": None,
             "error_cause": None,
         }
@@ -126,6 +128,7 @@ def native_engine_status() -> dict[str, dict[str, Any]]:
         out[engine_id] = {
             "status": "failed",
             "operations": [],
+            "read_operations": [],
             "error": f"{type(err).__name__}: {err}",
             "error_cause": repr(err.__cause__) if err.__cause__ else None,
         }

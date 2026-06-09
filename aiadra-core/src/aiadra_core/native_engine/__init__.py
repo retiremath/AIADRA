@@ -12,6 +12,8 @@ Public surface:
   Engine's `register()` function during discovery (ADR/0028 D2).
 - `NativeEngineContext` — stable wrapper around `TransactionDraft` that Native
   Engine handlers receive via dispatch (ADR/0028 D3).
+- `NativeEngineReadContext` — the read-only counterpart (committed reads only,
+  no staging) that READ handlers receive (ADR/0035; arc 20260609-1).
 - `NativeEngineRegistrationError` — raised on D2 invariant violations.
 - `EngineNotAvailableError` — raised by dispatch when a kind's engine is
   missing / failed / duplicate-rejected (ADR/0028 D5 four-case discipline).
@@ -40,12 +42,14 @@ from .exceptions import (
     NativeEngineKernelError,
     NativeEngineRegistrationError,
 )
+from .read_context import NativeEngineReadContext
 from .registrar import NativeEngineRegistrar
 
 __all__ = [
     "ENTRY_POINT_GROUP",
     "EngineNotAvailableError",
     "NativeEngineContext",
+    "NativeEngineReadContext",
     "NativeEngineKernelError",
     "NativeEngineRegistrar",
     "NativeEngineRegistrationError",

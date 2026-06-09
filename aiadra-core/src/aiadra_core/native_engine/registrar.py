@@ -15,7 +15,11 @@ class _EngineRegistration:
     """Frozen result of one engine's registration. Internal — not exposed."""
 
     engine_id: str
-    operations: tuple[tuple[str, Callable], ...]  # (kind, handler) pairs, sorted by kind
+    operations: tuple[tuple[str, Callable], ...]  # mutation (kind, handler), sorted by kind
+    # arc 20260609-1 Codex1 B1: read-only operations are a SEPARATE lane — they
+    # never enter `operations` / `propose_kinds()` / `modify_kinds()` and never
+    # see a staging-capable context.
+    read_operations: tuple[tuple[str, Callable], ...] = ()  # read (kind, handler), sorted by kind
 
 
 class NativeEngineRegistrar:
@@ -33,12 +37,13 @@ class NativeEngineRegistrar:
     subsequent `add_operation()` calls fail.
     """
 
-    __slots__ = ("_engine_id", "_operations", "_frozen")
+    __slots__ = ("_engine_id", "_operations", "_read_operations", "_frozen")
 
     def __init__(self, *, engine_id: str) -> None:
         # Use object.__setattr__ to bypass our own __setattr__ guard during init.
         object.__setattr__(self, "_engine_id", engine_id)
         object.__setattr__(self, "_operations", {})
+        object.__setattr__(self, "_read_operations", {})
         object.__setattr__(self, "_frozen", False)
 
     @property
@@ -65,12 +70,13 @@ class NativeEngineRegistrar:
         )
 
     def add_operation(self, kind: str, handler: Callable) -> None:
-        """Register one Native Engine operation. Per ADR/0028 D2 enforces:
+        """Register one Native Engine MUTATION operation. Per ADR/0028 D2
+        enforces:
             #2 namespace discipline (kind MUST start with f"{engine_id}.")
             #3 no built-in overwrite (kind MUST NOT collide with built-in
                `_PROPOSE_DISPATCH`)
             duplicate-within-engine (kind MUST NOT already be registered by
-               THIS engine)
+               THIS engine, in EITHER the mutation or the read lane)
             #6 handler signature check — ARITY-ONLY per Codex1 N3 absorption
                arc 20260601-1 (accepts any parameter names; checks for exactly
                2 positional-or-keyword parameters)
@@ -78,9 +84,29 @@ class NativeEngineRegistrar:
         Cross-engine collision (#4) + duplicate engine_id (#5) are merge-time
         at discovery, not per-call.
         """
+        self._validate_registration("add_operation", kind, handler)
+        # All checks passed — mutate dict via object.__setattr__ on the slot.
+        # The dict is mutable; we don't reassign the slot, we mutate in place.
+        self._operations[kind] = handler
+
+    def add_read_operation(self, kind: str, handler: Callable) -> None:
+        """Register one Native Engine READ-ONLY operation (arc 20260609-1
+        Codex1 B1). Same ADR/0028 D2 invariants as `add_operation`, but the
+        handler lands in a SEPARATE lane (`read_operations`): it is dispatched
+        through a read-only adapter that hands it a non-staging
+        `NativeEngineReadContext`, never appears in `propose_kinds()` /
+        `modify_kinds()`, and never begins a `TransactionDraft`. Use for
+        operations that only read committed Workspace state (e.g. generating a
+        Display Representation). The same kind cannot be both a mutation and a
+        read op for one engine (total-namespace uniqueness)."""
+        self._validate_registration("add_read_operation", kind, handler)
+        self._read_operations[kind] = handler
+
+    def _validate_registration(self, method: str, kind: str, handler: Callable) -> None:
+        """Shared ADR/0028 D2 registration invariants for both lanes."""
         if self._frozen:
             raise NativeEngineRegistrationError(
-                f"engine {self._engine_id!r} attempted add_operation({kind!r}) "
+                f"engine {self._engine_id!r} attempted {method}({kind!r}) "
                 f"AFTER register() returned; registrar is frozen"
             )
         if not callable(handler):
@@ -102,11 +128,12 @@ class NativeEngineRegistrar:
                 f"engine {self._engine_id!r} attempted to overwrite built-in "
                 f"kind {kind!r} per ADR/0028 D2 invariant #3"
             )
-        # Duplicate-within-engine
-        if kind in self._operations:
+        # Duplicate-within-engine — across BOTH lanes (a kind is mutation XOR read)
+        if kind in self._operations or kind in self._read_operations:
             raise NativeEngineRegistrationError(
                 f"engine {self._engine_id!r} attempted duplicate registration "
-                f"of {kind!r} within the same register() call"
+                f"of {kind!r} within the same register() call (a kind cannot be "
+                f"both a mutation and a read operation)"
             )
         # Invariant #6 handler signature check — arity-only (Codex1 N3 absorption)
         try:
@@ -132,9 +159,6 @@ class NativeEngineRegistrar:
                 f"got {len(positional_params)} per ADR/0028 D2 invariant #6 + "
                 f"Codex1 N3 absorption arc 20260601-1"
             )
-        # All checks passed — mutate dict via object.__setattr__ on the slot.
-        # The dict is mutable; we don't reassign the slot, we mutate in place.
-        self._operations[kind] = handler
 
     def _frozen_view(self) -> _EngineRegistration:
         """Called by `aiadra-core` after `register()` returns. Freezes the
@@ -144,4 +168,5 @@ class NativeEngineRegistrar:
         return _EngineRegistration(
             engine_id=self._engine_id,
             operations=tuple(sorted(self._operations.items())),
+            read_operations=tuple(sorted(self._read_operations.items())),
         )

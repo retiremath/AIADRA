@@ -69,10 +69,27 @@ def m_inspect(params: dict[str, Any]) -> dict[str, Any]:
     return {"object": _to_jsonable(view)}
 
 
+def m_display_representation(params: dict[str, Any]) -> dict[str, Any]:
+    """Engine-produced Display Representation for a canonical Object (ADR/0035;
+    arc 20260609-1). Read-only Ring-2 primitive — writes nothing. `workspace_path`
+    is supplied by main (resolved + validated, Codex1 B2); `object_ref` is a
+    Number or UUID; `tolerance` is optional."""
+    from aiadra_core.protocol import display_representation
+
+    workspace_path = params.get("workspace_path")
+    object_ref = params.get("object_ref")
+    if not workspace_path or not object_ref:
+        raise ValueError("display_representation requires 'workspace_path' and 'object_ref'")
+    tolerance = params.get("tolerance")
+    dr = display_representation(Path(workspace_path), object_ref, tolerance=tolerance)
+    return {"display": dr.to_dict()}
+
+
 METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "ping": m_ping,
     "core_version": m_core_version,
     "inspect": m_inspect,
+    "display_representation": m_display_representation,
 }
 
 

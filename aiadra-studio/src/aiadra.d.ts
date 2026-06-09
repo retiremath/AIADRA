@@ -1,6 +1,8 @@
 // Types for the preload-exposed, allowlisted bridge API (electron/preload.ts).
 // `window.aiadra` is optional: in browser-only dev (`npm run dev:web`, no Electron)
 // it is undefined, so the UI degrades gracefully.
+import type { DisplayRepresentation } from './display/contract'
+
 export {}
 
 type Envelope<T> = { ok: true; result: T } | { ok: false; error: { message: string } }
@@ -12,6 +14,10 @@ declare global {
       coreVersion(): Promise<Envelope<{ version: string }>>
       chooseWorkspace(): Promise<Envelope<{ workspaceId: string; name: string }>>
       inspect(workspaceId: string, objectRef: string): Promise<Envelope<{ object: unknown }>>
+      displayRepresentation(
+        workspaceId: string,
+        objectRef: string,
+      ): Promise<Envelope<{ display: DisplayRepresentation }>>
     }
   }
 }

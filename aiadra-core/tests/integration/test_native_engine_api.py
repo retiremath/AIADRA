@@ -139,13 +139,14 @@ def test_native_engine_api_in___all__():
         assert sym in p.__all__
 
 
-def test_aiadra_core_version_bumped_to_0_11_2():
-    """Arc 20260602-3 PATCH bump: `aiadra migrate` now catches the
-    "already pinned to target but digest stale" path (BundleDigestMismatchError)
-    as a normal migrate failure with an actionable message + nonzero exit,
-    instead of letting it escape as an uncaught traceback (Codex1 N5). A
-    user-visible CLI behavior change; no public API expansion."""
-    assert aiadra_version == "0.11.2"
+def test_aiadra_core_version_bumped_to_0_12_0():
+    """Arc 20260609-1 MINOR bump (Codex2 B2): new public Tier-1 protocol/read
+    surface — `display_representation()` / `read_kinds()` / `DisplayRepresentation`
+    / `DisplayContractError` / `NativeEngineReadContext` /
+    `NativeEngineRegistrar.add_read_operation()` / `native_engine_status()`'s
+    `read_operations` key (ADR/0035). Additive public API → minor bump per the
+    project's prior discipline."""
+    assert aiadra_version == "0.12.0"
 
 
 # =============================================================================

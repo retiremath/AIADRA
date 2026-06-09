@@ -34,7 +34,10 @@ if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
-ADAPTER_SCHEMA_VERSION = "0.1.0"
+# 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives now carry engine-minted
+# stable `skp_NNNN` ids — the primitive-level role anchor for Display
+# Representation topology identity (ADR/0035).
+ADAPTER_SCHEMA_VERSION = "0.1.1"
 
 
 # =============================================================================

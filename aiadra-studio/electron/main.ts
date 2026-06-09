@@ -230,6 +230,20 @@ function registerIpc(): void {
     if (!wsPath) return err('unknown workspaceId — open a workspace first')
     return callBridge('inspect', { workspace_path: wsPath, object_ref: a.objectRef })
   })
+
+  // Read-only Display Representation for a canonical Part (ADR/0035; arc
+  // 20260609-1). Same capability discipline as inspect: only the opaque
+  // workspaceId + object ref cross the wire; main resolves the path.
+  ipcMain.handle('aiadra:displayRepresentation', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { workspaceId?: unknown; objectRef?: unknown } | null
+    if (!a || typeof a.workspaceId !== 'string' || typeof a.objectRef !== 'string') {
+      return err('displayRepresentation requires { workspaceId, objectRef }')
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    return callBridge('display_representation', { workspace_path: wsPath, object_ref: a.objectRef })
+  })
 }
 
 // B1 (Codex2 N2): in dev we load ELECTRON_RENDERER_URL (set by electron-vite, not

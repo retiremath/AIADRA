@@ -1086,6 +1086,205 @@ def native_engine_status() -> dict[str, Any]:
     return _status()
 
 
+# -----------------------------------------------------------------------------
+# Read-only Native Engine operations (arc 20260609-1 Codex1 B1).
+# A SEPARATE lane from propose/modify: no TransactionDraft, no staging context,
+# never in propose_kinds()/modify_kinds(). The only read primitive today is
+# display_representation; the machinery is general.
+# -----------------------------------------------------------------------------
+
+
+def read_kinds() -> tuple[str, ...]:
+    """Introspection: sorted tuple of read-only Native Engine kinds across all
+    loaded engines. DISJOINT from `propose_kinds()` / `modify_kinds()`."""
+    from ..native_engine.discovery import get_native_engines
+
+    loaded, _failures = get_native_engines()
+    kinds: set[str] = set()
+    for reg in loaded.values():
+        for kind, _handler in reg.read_operations:
+            kinds.add(kind)
+    return tuple(sorted(kinds))
+
+
+def _resolve_read_handler(engine_id: str, kind: str) -> Callable:
+    """Resolve an engine read `kind` to its registered read handler. Raises
+    `EngineNotAvailableError` (ADR/0028 D5 four-case discipline) when the engine
+    is missing / failed / lacks the read kind. Never routed through the mutation
+    adapter."""
+    from ..native_engine.discovery import get_native_engines
+    from ..native_engine.exceptions import EngineNotAvailableError
+
+    loaded, failures = get_native_engines()
+    if engine_id in loaded:
+        read_ops = dict(loaded[engine_id].read_operations)
+        if kind in read_ops:
+            return read_ops[kind]
+        raise EngineNotAvailableError(
+            f"engine {engine_id!r} loaded but does not register read kind {kind!r}; "
+            f"engine declares read ops: "
+            f"{sorted(k for k, _ in loaded[engine_id].read_operations)}"
+        )
+    if engine_id in failures:
+        err = EngineNotAvailableError(
+            f"engine {engine_id!r} failed to load: {failures[engine_id]!r}"
+        )
+        err.__cause__ = failures[engine_id]
+        raise err
+    raise EngineNotAvailableError(
+        f"engine {engine_id!r} not installed; try: pip install aiadra-{engine_id}"
+    )
+
+
+def _dispatch_read(
+    engine_id: str,
+    kind: str,
+    workspace: Path,
+    bundle: BundleHandle,
+    params: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    """Run a Native Engine read handler with a read-only context. Mirrors the
+    mutation adapter's failure discipline (passthrough vs wrap-as-kernel-error)
+    but creates NO draft and emits NO audit (there is no Transaction)."""
+    from ..native_engine.exceptions import (
+        EngineNotAvailableError,
+        NativeEngineKernelError,
+        NativeEngineRegistrationError,
+    )
+    from ..native_engine.read_context import NativeEngineReadContext
+    from ..validation.binding import RevisionBindingError
+    from ..validation.bundle_registry import (
+        BundleDigestMismatchError,
+        BundleNotFoundError,
+        SchemaValidationError,
+    )
+
+    passthrough: tuple[type[BaseException], ...] = (
+        TransactionError,
+        SchemaValidationError,
+        RevisionBindingError,
+        EngineNotAvailableError,
+        NativeEngineRegistrationError,
+        BundleDigestMismatchError,
+        BundleNotFoundError,
+        ProjectPinError,
+        ObjectNotFoundError,
+    )
+    handler = _resolve_read_handler(engine_id, kind)
+    context = NativeEngineReadContext(
+        workspace=workspace,
+        bundle=bundle,
+        actor=actor,
+        operation_kind=kind,
+        engine_id=engine_id,
+    )
+    try:
+        result = handler(context, params)
+    except passthrough:
+        raise
+    except Exception as e:  # kernel failure on a plausible read — wrap (no audit)
+        raise NativeEngineKernelError(
+            f"engine {engine_id!r} kernel failure during read {kind!r}: {e!r}",
+            engine_id=engine_id,
+            operation_kind=kind,
+        ) from e
+    if not isinstance(result, dict):
+        raise NativeEngineKernelError(
+            f"engine {engine_id!r} read {kind!r} returned non-dict "
+            f"{type(result).__name__}",
+            engine_id=engine_id,
+            operation_kind=kind,
+        )
+    return result
+
+
+def _resolve_producing_engine(sidecar: dict[str, Any], object_ref: str) -> str:
+    """Determine which Native Engine owns a Part's canonical display geometry
+    (arc 20260609-1 Codex1 B1 engine-resolution close-condition). Resolves the
+    active `authoring_geometry` geometry_ref → its `derived_from_feature_ids` →
+    the `feature[].engine` discriminator. Fails loud on no authoring geometry,
+    no resolvable engine, or multiple candidate engines."""
+    geom_refs = sidecar.get("geometry_ref", []) or []
+    authoring = [g for g in geom_refs if g.get("role") == "authoring_geometry"]
+    if not authoring:
+        raise ObjectNotFoundError(
+            f"{object_ref}: no authoring_geometry to display "
+            f"(Object has no canonical engine geometry yet)"
+        )
+    features = {f.get("id"): f for f in sidecar.get("feature", []) or []}
+    engines: set[str] = set()
+    for g in authoring:
+        for fid in g.get("derived_from_feature_ids", []):
+            feat = features.get(fid)
+            if feat is not None and feat.get("engine"):
+                engines.add(feat["engine"])
+    if not engines:
+        raise ObjectNotFoundError(
+            f"{object_ref}: authoring_geometry present but no feature carries an "
+            f"`engine` discriminator — cannot determine the display producer"
+        )
+    if len(engines) > 1:
+        raise TransactionError(
+            f"{object_ref}: authoring geometry derives from multiple engines "
+            f"{sorted(engines)}; a single Part must have one canonical display "
+            f"producer (mixed-engine Parts are not supported)"
+        )
+    return next(iter(engines))
+
+
+def display_representation(
+    workspace: Path,
+    object_ref: str,
+    *,
+    tolerance: dict[str, float] | None = None,
+):
+    """Read-only Ring-2 primitive: the engine-produced **Display
+    Representation** for one canonical Object (ADR/0035; arc 20260609-1).
+
+    Resolves the Object's producing Native Engine from its authoring geometry,
+    dispatches the engine's `<engine>.display_representation` READ handler
+    through a non-staging read context, and returns a validated
+    `DisplayRepresentation`. Writes nothing; creates no Transaction.
+
+    `tolerance`: optional `{"linear_deflection_mm", "angular_deflection_rad"}`;
+    the engine applies its defaults when omitted.
+
+    Raises:
+        ProjectPinError: pin lookup failed.
+        ObjectNotFoundError: ref does not resolve / Object has no display geometry.
+        EngineNotAvailableError: producing engine missing / failed / lacks the
+            display read handler.
+        NativeEngineKernelError: engine raised while generating the package.
+        DisplayContractError: engine returned a malformed package.
+    """
+    from .display import DisplayRepresentation
+
+    try:
+        bundle = BundleRegistry().bundle_for_pin(workspace)
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+        raise ProjectPinError(str(e)) from e
+
+    bundle_dir = bundle.bundle_dir
+    uuid = _resolve_ref_to_uuid(workspace, bundle_dir, object_ref)
+    if uuid is None:
+        raise ObjectNotFoundError(object_ref)
+
+    sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+    engine_id = _resolve_producing_engine(sidecar, object_ref)
+    kind = f"{engine_id}.display_representation"
+
+    params: dict[str, Any] = {
+        "object_uuid": uuid,
+        "object_number": sidecar.get("object", {}).get("number", ""),
+    }
+    if tolerance is not None:
+        params["tolerance"] = tolerance
+
+    result = _dispatch_read(engine_id, kind, workspace, bundle, params, actor="agent")
+    return DisplayRepresentation.from_engine_dict(result)
+
+
 def propose(
     workspace: Path,
     *,
@@ -1508,6 +1707,13 @@ from ..native_engine import (  # noqa: E402
     NativeEngineRegistrar,
     NativeEngineRegistrationError,
 )
+from ..native_engine.read_context import NativeEngineReadContext  # noqa: E402
+
+# Re-export the Display Representation contract (ADR/0035; arc 20260609-1).
+from .display import (  # noqa: E402
+    DisplayContractError,
+    DisplayRepresentation,
+)
 
 
 # ---------- Module exports ----------
@@ -1528,7 +1734,11 @@ __all__ = [
     "commit",
     "rollback",
     "release",
+    "display_representation",
+    "read_kinds",
     # Type shapes
+    "DisplayRepresentation",
+    "DisplayContractError",
     "ObjectView",
     "ValidationReport",
     "ValidationOutcome",
@@ -1545,6 +1755,7 @@ __all__ = [
     # Native Engine API (arc 20260601-1; ADR/0028 D2 + D3 + D5 + D9 + D16)
     "NativeEngineRegistrar",
     "NativeEngineContext",
+    "NativeEngineReadContext",
     "NativeEngineRegistrationError",
     "EngineNotAvailableError",
     "NativeEngineKernelError",
