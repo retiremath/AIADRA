@@ -43,3 +43,9 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     registrar.add_read_operation(
         "mechanical.display_representation", handle_display_representation
     )
+
+    # Read-only view-dependent HLR (arc 20260609-2; contract v1.1). Same read
+    # lane; consumes the SAME topology records as display (Codex1 B1).
+    from .hlr import handle_display_hlr
+
+    registrar.add_read_operation("mechanical.display_hlr", handle_display_hlr)

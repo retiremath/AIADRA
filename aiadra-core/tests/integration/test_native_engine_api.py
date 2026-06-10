@@ -139,14 +139,14 @@ def test_native_engine_api_in___all__():
         assert sym in p.__all__
 
 
-def test_aiadra_core_version_bumped_to_0_12_0():
-    """Arc 20260609-1 MINOR bump (Codex2 B2): new public Tier-1 protocol/read
-    surface — `display_representation()` / `read_kinds()` / `DisplayRepresentation`
-    / `DisplayContractError` / `NativeEngineReadContext` /
-    `NativeEngineRegistrar.add_read_operation()` / `native_engine_status()`'s
-    `read_operations` key (ADR/0035). Additive public API → minor bump per the
-    project's prior discipline."""
-    assert aiadra_version == "0.12.0"
+def test_aiadra_core_version_bumped_to_0_13_0():
+    """Arc 20260609-2 MINOR bump: new public Tier-1 surface — `display_hlr()`
+    + Display Representation contract v1.1 view-dependent types
+    (`ViewDependentPayload` / `ViewIdentityEcho` / `HlrView` / `HlrSegment` /
+    `HlrSegmentSource`). Additive public API → minor bump per the project's
+    prior discipline (prior: 0.12.0, arc 20260609-1 Codex2 B2 — the read
+    surface ADR/0035)."""
+    assert aiadra_version == "0.13.0"
 
 
 # =============================================================================

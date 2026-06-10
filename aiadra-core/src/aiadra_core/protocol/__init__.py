@@ -1285,6 +1285,75 @@ def display_representation(
     return DisplayRepresentation.from_engine_dict(result)
 
 
+def display_hlr(
+    workspace: Path,
+    object_ref: str,
+    *,
+    views: list[dict[str, Any]],
+    algorithm: str = "exact",
+    tolerance: dict[str, float] | None = None,
+    correlation_min_length_mm: float | None = None,
+):
+    """Read-only Ring-2 primitive: the **view-dependent HLR overlay** for one
+    canonical Object (Display Representation contract v1.1; arc 20260609-2;
+    ADR/0033 D6). The per-camera-settle counterpart to
+    `display_representation` — it ships ONLY the classified hidden-line
+    payload (a `ViewDependentPayload`), never the render buffers, because
+    camera settle is the high-frequency event and topology change the rare
+    one. Writes nothing; creates no Transaction; NEVER computed per-frame.
+
+    `views`: non-empty list of view specs, each
+    `{"view_id": str, "projection": "orthographic", "origin": [x,y,z],
+    "direction": [x,y,z] (unit; the LOOK direction, eye → scene),
+    "up": [x,y,z] (unit, not parallel to direction)}`.
+    `algorithm`: `"exact"` (settled/high-quality) or `"poly"` (fast preview).
+    `correlation_min_length_mm`: optional override of the sliver-discard
+    threshold (Codex1 B4; engine default applies when omitted).
+
+    Studio must attach the returned payload to a held display package only
+    when `identity_echo` matches it in full (Codex1 B3).
+
+    Raises:
+        ProjectPinError: pin lookup failed.
+        ObjectNotFoundError: ref does not resolve / Object has no display geometry.
+        EngineNotAvailableError: producing engine missing / failed / lacks the
+            HLR read handler.
+        TransactionError: invalid view spec / correlation failure (engine-side
+            fail-loud — a material uncorrelatable segment is a bug, not art).
+        NativeEngineKernelError: engine raised while computing HLR.
+        DisplayContractError: engine returned a malformed payload.
+    """
+    from .display import ViewDependentPayload
+
+    try:
+        bundle = BundleRegistry().bundle_for_pin(workspace)
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+        raise ProjectPinError(str(e)) from e
+
+    bundle_dir = bundle.bundle_dir
+    uuid = _resolve_ref_to_uuid(workspace, bundle_dir, object_ref)
+    if uuid is None:
+        raise ObjectNotFoundError(object_ref)
+
+    sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+    engine_id = _resolve_producing_engine(sidecar, object_ref)
+    kind = f"{engine_id}.display_hlr"
+
+    params: dict[str, Any] = {
+        "object_uuid": uuid,
+        "object_number": sidecar.get("object", {}).get("number", ""),
+        "views": views,
+        "algorithm": algorithm,
+    }
+    if tolerance is not None:
+        params["tolerance"] = tolerance
+    if correlation_min_length_mm is not None:
+        params["correlation_min_length_mm"] = correlation_min_length_mm
+
+    result = _dispatch_read(engine_id, kind, workspace, bundle, params, actor="agent")
+    return ViewDependentPayload.from_engine_dict(result)
+
+
 def propose(
     workspace: Path,
     *,
@@ -1709,10 +1778,16 @@ from ..native_engine import (  # noqa: E402
 )
 from ..native_engine.read_context import NativeEngineReadContext  # noqa: E402
 
-# Re-export the Display Representation contract (ADR/0035; arc 20260609-1).
+# Re-export the Display Representation contract (ADR/0035; arc 20260609-1;
+# v1.1 view-dependent HLR types added arc 20260609-2).
 from .display import (  # noqa: E402
     DisplayContractError,
     DisplayRepresentation,
+    HlrSegment,
+    HlrSegmentSource,
+    HlrView,
+    ViewDependentPayload,
+    ViewIdentityEcho,
 )
 
 
@@ -1735,10 +1810,16 @@ __all__ = [
     "rollback",
     "release",
     "display_representation",
+    "display_hlr",
     "read_kinds",
     # Type shapes
     "DisplayRepresentation",
     "DisplayContractError",
+    "ViewDependentPayload",
+    "ViewIdentityEcho",
+    "HlrView",
+    "HlrSegment",
+    "HlrSegmentSource",
     "ObjectView",
     "ValidationReport",
     "ValidationOutcome",

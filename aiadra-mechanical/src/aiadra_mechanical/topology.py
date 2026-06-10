@@ -1,0 +1,457 @@
+"""Shared **topology extraction layer** for `aiadra-mechanical` display reads
+(arc 20260609-2 Codex1 B1; refactored out of `display.py`).
+
+One extraction, two consumers: `display.generate_display_representation()`
+(the base Display Representation package) and `hlr.generate_hlr()` (the
+view-dependent HLR overlay) BOTH consume the records produced here. Identity
+is derived ONCE — recipe-first, geometry-second (ADR/0035 D2) — so HLR
+correlation inherits the foundation invariant instead of cloning it. No
+parallel edge-id derivation exists anywhere (the B1 hard stop).
+
+The records carry the live OCCT handles (face/edge) alongside the canonical
+ids and model-space sampled curves, which is exactly what view-dependent
+correlation needs and what the v1 payload-building code threw away.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from aiadra_core.transaction.boundary import TransactionError
+
+from OCP.TopExp import TopExp
+from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_REVERSED
+from OCP.TopoDS import TopoDS
+from OCP.TopLoc import TopLoc_Location
+from OCP.TopTools import (
+    TopTools_IndexedMapOfShape,
+    TopTools_IndexedDataMapOfShapeListOfShape,
+)
+from OCP.BRep import BRep_Tool
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.BRepAdaptor import BRepAdaptor_Surface, BRepAdaptor_Curve
+from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_C0
+from OCP.GeomLProp import GeomLProp_SLProps
+from OCP.GCPnts import GCPnts_TangentialDeflection
+
+from . import cache, geometry
+
+DEFAULT_LINEAR_DEFLECTION_MM = 0.1
+DEFAULT_ANGULAR_DEFLECTION_RAD = 0.5
+
+# Geometric tolerance for role correlation (mm). Generous vs the kernel
+# confusion tolerance — we are matching face centroids to sketch-edge
+# midpoints, not asserting kernel-grade coincidence.
+_CORRELATE_TOL_MM = 1e-6
+_AXIS_DOT = 0.99  # |n·z| above this ⇒ a cap (normal parallel to the extrude axis)
+
+# A topology-contributing primitive MUST carry an engine-minted anchor of this
+# exact form (arc 20260609-1 Codex2 B1). NO placeholder fallback — a missing or
+# malformed id means a corrupt/legacy payload, and minting a placeholder display
+# id would fake a stable anchor that does not exist.
+_SKP_ID_RE = re.compile(r"^skp_[0-9]{4}$")
+
+
+def require_skp_id(primitive: dict[str, Any], label: str) -> str:
+    pid = primitive.get("id")
+    if not isinstance(pid, str) or not _SKP_ID_RE.match(pid):
+        raise TransactionError(
+            f"mechanical.display: {label} primitive lacks a valid "
+            f"engine-minted id (expected ^skp_NNNN$, got {pid!r}); a corrupt or "
+            f"pre-0.1.1 payload cannot anchor stable display identity — failing "
+            f"loud rather than minting a placeholder id"
+        )
+    return pid
+
+
+# ---------------------------------------------------------------------------
+# Records — the one identity source both display and HLR consume (B1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FaceRecord:
+    face_id: str               # canonical recipe-anchored role id
+    occt_index: int            # 1-based index into `PartTopology.face_map`
+    surface_kind: str          # "plane" | "cylinder" (v0.0.1 surface set)
+    face: Any                  # live TopoDS_Face handle (NEVER identity)
+
+
+@dataclass(frozen=True)
+class EdgeRecord:
+    edge_id: str               # canonical id derived from adjacent face roles
+    kind: str                  # sharp | tangent | seam | boundary | free
+    occt_index: int            # 1-based index into the edge→faces ancestor map
+    edge: Any                  # live TopoDS_Edge handle (NEVER identity)
+    adjacent_face_ids: tuple[str, ...]
+    polyline_mm: tuple[float, ...]  # model-space sampled true curve (flat xyz)
+
+
+@dataclass(frozen=True)
+class PartTopology:
+    """Everything identity-bearing about one evaluated Part, extracted once."""
+
+    shape: Any                 # the evaluated TopoDS_Shape (meshed)
+    face_map: Any              # TopTools_IndexedMapOfShape over FACEs
+    faces: tuple[FaceRecord, ...]
+    edges: tuple[EdgeRecord, ...]
+    topology_signature: str
+    linear_deflection_mm: float
+    angular_deflection_rad: float
+    # identity-echo material (ADR/0035 D1 identity + arc 20260609-2 B3)
+    object_uuid: str = ""
+    object_number: str = ""
+    geometry_ref: str = ""
+    cache_key: str = ""
+
+    def face_id_by_index(self) -> dict[int, str]:
+        return {f.occt_index: f.face_id for f in self.faces}
+
+    def edge_ids(self) -> tuple[str, ...]:
+        return tuple(e.edge_id for e in self.edges)
+
+
+# ---------------------------------------------------------------------------
+# Extraction — the single entry point (B1)
+# ---------------------------------------------------------------------------
+
+
+def extract_part_topology(
+    features: list[dict[str, Any]],
+    *,
+    object_uuid: str = "",
+    object_number: str = "",
+    geometry_ref: str = "",
+    cache_key: str = "",
+    linear_deflection_mm: float = DEFAULT_LINEAR_DEFLECTION_MM,
+    angular_deflection_rad: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
+    cache_material: dict[str, Any] | None = None,
+) -> PartTopology:
+    """Evaluate the recipe, mesh, and derive the canonical identity records.
+
+    `cache_material` (`{"last_event_id": ..., "adapter_schema_version": ...}`)
+    routes the solid through `cache.evaluate_with_cache` (the D8 freshness key)
+    — the read-handler path. Without it (engine-level tests) the recipe is
+    evaluated directly. Either way the SAME records come out (arc 20260609-1
+    Codex2 N4 absorption: display generation reuses the evaluated-solid cache).
+    """
+    if cache_material is not None:
+        shape = cache.evaluate_with_cache(
+            features,
+            last_event_id=cache_material.get("last_event_id"),
+            adapter_schema_version=cache_material["adapter_schema_version"],
+        )
+    else:
+        shape = geometry.evaluate_part(features)
+    if shape is None or shape.IsNull():
+        raise TransactionError(
+            "mechanical.display: Part has no evaluable geometry "
+            "(no sketch/extrude features) — nothing to display"
+        )
+
+    recipe = _extract_recipe_geometry(features)
+
+    BRepMesh_IncrementalMesh(
+        shape, linear_deflection_mm, False, angular_deflection_rad, True
+    )
+
+    face_map = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, face_map)
+    role_by_face_index = _correlate_faces(face_map, recipe)
+
+    faces: list[FaceRecord] = []
+    for i in range(1, face_map.Extent() + 1):
+        face = TopoDS.Face_s(face_map.FindKey(i))
+        stype = BRepAdaptor_Surface(face).GetType()
+        surface_kind = "cylinder" if stype == GeomAbs_Cylinder else "plane"
+        faces.append(FaceRecord(
+            face_id=role_by_face_index[i],
+            occt_index=i,
+            surface_kind=surface_kind,
+            face=face,
+        ))
+
+    edges = _build_edge_records(
+        shape, face_map, role_by_face_index,
+        linear_deflection_mm, angular_deflection_rad,
+    )
+
+    return PartTopology(
+        shape=shape,
+        face_map=face_map,
+        faces=tuple(faces),
+        edges=edges,
+        topology_signature=compute_topology_signature(features),
+        linear_deflection_mm=linear_deflection_mm,
+        angular_deflection_rad=angular_deflection_rad,
+        object_uuid=object_uuid,
+        object_number=object_number,
+        geometry_ref=geometry_ref,
+        cache_key=cache_key,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Topology signature (ADR/0035 D3) — recipe-derived, value-independent
+# ---------------------------------------------------------------------------
+
+
+def compute_topology_signature(features: list[dict[str, Any]]) -> str:
+    """A deterministic hash over the **topology skeleton** — feature types +
+    sketch primitive (id, type) lists — EXCLUDING parameter values (depth,
+    dimensions, positions, direction). Stable across parameter edits; changes
+    when a feature or primitive is added/removed. NOT a stored counter."""
+    skeleton: list[dict[str, Any]] = []
+    for f in features:
+        entry: dict[str, Any] = {"feature": f.get("feature_type")}
+        if f.get("feature_type") == "sketch":
+            prims = f.get("adapter_payload", {}).get("primitives", [])
+            entry["primitives"] = sorted(
+                (p.get("id", ""), p.get("type")) for p in prims
+            )
+        skeleton.append(entry)
+    raw = json.dumps(skeleton, sort_keys=True).encode("utf-8")
+    return "topo_" + hashlib.sha256(raw).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Recipe geometry extraction (the stable anchor source)
+# ---------------------------------------------------------------------------
+
+
+def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pull the stable, recipe-derived anchors used for role correlation:
+    the sketch feature id + rectangle/circle primitive ids & geometry, and the
+    extrude feature id + direction (+ resolved depth)."""
+    sketch = _last(features, "sketch")
+    if sketch is None:
+        raise TransactionError(
+            "mechanical.display: recipe has no sketch feature"
+        )
+    sketch_id = sketch["id"]
+    prims = sketch.get("adapter_payload", {}).get("primitives", [])
+    rectangle = next((p for p in prims if p.get("type") == "rectangle"), None)
+    circle = next((p for p in prims if p.get("type") == "circle"), None)
+    if rectangle is None:
+        raise TransactionError(
+            "mechanical.display: sketch has no rectangle profile"
+        )
+
+    extrude = _last(features, "extrude")
+    direction = "z+"
+    depth = None
+    extrude_id = None
+    if extrude is not None:
+        extrude_id = extrude["id"]
+        direction = extrude.get("adapter_payload", {}).get("direction", "z+")
+        for p in extrude.get("parameters", []):
+            if p.get("name") == "depth_mm":
+                depth = float(p["value"])
+                break
+    return {
+        "sketch_id": sketch_id,
+        "extrude_id": extrude_id,
+        "rectangle": rectangle,
+        "circle": circle,
+        "direction": direction,
+        "depth": depth,
+        "sign": 1.0 if direction == "z+" else -1.0,
+    }
+
+
+def _rect_edges(rect: dict[str, Any]) -> list[tuple[str, float, float]]:
+    """The 4 rectangle edges as (role_suffix, midpoint_x, midpoint_y). The
+    suffix is the stable sketch-edge anchor; the midpoint disambiguates walls
+    even when dimensions are symmetric (a square prism)."""
+    x = float(rect["x_mm"]); y = float(rect["y_mm"])
+    w = float(rect["width_mm"]); h = float(rect["height_mm"])
+    return [
+        ("y_min", x + w / 2, y),          # bottom edge (outward -y)
+        ("x_max", x + w, y + h / 2),       # right edge  (outward +x)
+        ("y_max", x + w / 2, y + h),       # top edge    (outward +y)
+        ("x_min", x, y + h / 2),           # left edge   (outward -x)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Face correlation — recipe role → OCCT face index (the mapper)
+# ---------------------------------------------------------------------------
+
+
+def _correlate_faces(face_map, recipe: dict[str, Any]) -> dict[int, str]:
+    """Assign every OCCT face a recipe-anchored role id. Raises if a face
+    cannot be mapped (fail-loud: a correlation gap is a real bug, not a
+    silent fallback to traversal order)."""
+    sketch_id = recipe["sketch_id"]
+    extrude_id = recipe["extrude_id"]
+    rect = recipe["rectangle"]
+    circle = recipe["circle"]
+    # Codex2 B1 (arc 20260609-1): the display id source MUST be a real
+    # engine-minted anchor, never a placeholder — fail loud before any id mints.
+    rect_skp = require_skp_id(rect, "rectangle")
+    circle_skp = require_skp_id(circle, "circle") if circle else None
+    feat_prefix = extrude_id if extrude_id is not None else sketch_id
+    rect_edges = _rect_edges(rect)
+
+    roles: dict[int, str] = {}
+    used_wall_suffixes: set[str] = set()
+    for i in range(1, face_map.Extent() + 1):
+        face = TopoDS.Face_s(face_map.FindKey(i))
+        surf = BRepAdaptor_Surface(face)
+        stype = surf.GetType()
+        centroid, normal = _face_centroid_normal(face)
+
+        if stype == GeomAbs_Cylinder:
+            roles[i] = f"{feat_prefix}/{circle_skp}:face:hole_wall"
+            continue
+
+        if stype == GeomAbs_Plane and abs(normal[2]) >= _AXIS_DOT:
+            # A cap: distinguish base (sketch plane, z≈0) vs top (swept end).
+            if abs(centroid[2]) <= 1e-6:
+                roles[i] = f"{feat_prefix}:face:cap_base"
+            else:
+                roles[i] = f"{feat_prefix}:face:cap_top"
+            continue
+
+        if stype == GeomAbs_Plane:
+            # A side wall — correlate to the originating sketch edge by the
+            # closest rectangle-edge midpoint (the sketch-edge anchor).
+            suffix = _nearest_wall(centroid, rect_edges)
+            if suffix is None or suffix in used_wall_suffixes:
+                raise TransactionError(
+                    f"mechanical.display: could not uniquely "
+                    f"correlate side face {i} to a rectangle edge "
+                    f"(centroid={centroid}); recipe/topology mismatch"
+                )
+            used_wall_suffixes.add(suffix)
+            roles[i] = f"{feat_prefix}/{rect_skp}:face:wall_{suffix}"
+            continue
+
+        raise TransactionError(
+            f"mechanical.display: unexpected surface type "
+            f"{stype} on face {i}; v0.0.1 supports plane + cylinder only"
+        )
+    return roles
+
+
+def _nearest_wall(centroid, rect_edges) -> str | None:
+    best = None
+    best_d = None
+    for suffix, mx, my in rect_edges:
+        d = math.hypot(centroid[0] - mx, centroid[1] - my)
+        if best_d is None or d < best_d:
+            best_d = d
+            best = suffix
+    return best
+
+
+def _face_centroid_normal(face):
+    """Representative centroid (node average) + outward normal (true surface
+    normal at the first UV node, flipped for a REVERSED face)."""
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(face, loc)
+    trsf = loc.Transformation()
+    if tri is None or tri.NbNodes() == 0:
+        raise TransactionError(
+            "mechanical.display: face has no triangulation"
+        )
+    sx = sy = sz = 0.0
+    n = tri.NbNodes()
+    for k in range(1, n + 1):
+        p = tri.Node(k).Transformed(trsf)
+        sx += p.X(); sy += p.Y(); sz += p.Z()
+    centroid = (sx / n, sy / n, sz / n)
+    normal = surface_normal(face, tri)
+    return centroid, normal
+
+
+def surface_normal(face, tri) -> tuple[float, float, float]:
+    if not tri.HasUVNodes():
+        return (0.0, 0.0, 0.0)
+    surf = BRep_Tool.Surface_s(face)
+    uv = tri.UVNode(1)
+    props = GeomLProp_SLProps(surf, uv.X(), uv.Y(), 1, 1e-6)
+    if not props.IsNormalDefined():
+        return (0.0, 0.0, 0.0)
+    d = props.Normal()
+    nx, ny, nz = d.X(), d.Y(), d.Z()
+    if face.Orientation() == TopAbs_REVERSED:
+        nx, ny, nz = -nx, -ny, -nz
+    return (nx, ny, nz)
+
+
+# ---------------------------------------------------------------------------
+# Edge records — id + kind + handle + model-space curve, derived ONCE (B1)
+# ---------------------------------------------------------------------------
+
+
+def _build_edge_records(
+    shape, face_map, role_by_index,
+    linear_deflection, angular_deflection,
+) -> tuple[EdgeRecord, ...]:
+    edge_faces = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, edge_faces)
+    out: list[EdgeRecord] = []
+    role_pair_seen: dict[str, int] = {}
+    for i in range(1, edge_faces.Extent() + 1):
+        edge = TopoDS.Edge_s(edge_faces.FindKey(i))
+        adj = [TopoDS.Face_s(f) for f in edge_faces.FindFromIndex(i)]
+        adj_roles = [role_by_index[face_map.FindIndex(f)] for f in adj]
+        kind = _edge_kind(edge, adj)
+        edge_id = _edge_id(adj_roles, kind, role_pair_seen)
+        polyline = discretize_edge(edge, linear_deflection, angular_deflection)
+        out.append(EdgeRecord(
+            edge_id=edge_id,
+            kind=kind,
+            occt_index=i,
+            edge=edge,
+            adjacent_face_ids=tuple(sorted(set(adj_roles))),
+            polyline_mm=tuple(polyline),
+        ))
+    return tuple(out)
+
+
+def _edge_kind(edge, adj_faces) -> str:
+    if len(adj_faces) == 2:
+        if adj_faces[0].IsSame(adj_faces[1]):
+            return "seam"
+        cont = BRep_Tool.Continuity_s(edge, adj_faces[0], adj_faces[1])
+        return "sharp" if cont == GeomAbs_C0 else "tangent"
+    if len(adj_faces) == 1:
+        return "seam" if BRep_Tool.IsClosed_s(edge, adj_faces[0]) else "boundary"
+    return "free"
+
+
+def _edge_id(adj_roles, kind, role_pair_seen) -> str:
+    roles = sorted(set(adj_roles))
+    if kind == "seam" and len(roles) == 1:
+        base = f"edge:{roles[0]}~seam"
+    else:
+        base = "edge:" + "~".join(roles)
+    # Defensive disambiguation if a role pair ever shares multiple edges
+    # (richer topology than v0.0.1); keeps ids unique + deterministic.
+    n = role_pair_seen.get(base, 0)
+    role_pair_seen[base] = n + 1
+    return base if n == 0 else f"{base}#{n}"
+
+
+def discretize_edge(edge, linear_deflection, angular_deflection) -> list[float]:
+    curve = BRepAdaptor_Curve(edge)
+    disc = GCPnts_TangentialDeflection(curve, linear_deflection, angular_deflection)
+    pts: list[float] = []
+    for k in range(1, disc.NbPoints() + 1):
+        p = disc.Value(k)
+        pts.extend((p.X(), p.Y(), p.Z()))
+    return pts
+
+
+def _last(features: list[dict[str, Any]], ftype: str) -> dict[str, Any] | None:
+    chosen = None
+    for f in features:
+        if f.get("feature_type") == ftype:
+            chosen = f
+    return chosen

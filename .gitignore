@@ -36,3 +36,8 @@ venv/
 # AIADRA inter-session communication (local-only, not for git)
 Docs/Discussions/
 Docs/Snapshots/
+
+# Proprietary third-party reference material (PTC Creo help + Toolkit docs).
+# RESEARCH MATERIAL ONLY (ADR/0027 posture): local, never committed, never
+# shipped, never embedded in any distributed knowledge base or training set.
+Docs/Creo10BenchmarkDocs/

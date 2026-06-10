@@ -18,7 +18,7 @@ from aiadra_core.protocol.display import DisplayRepresentation, DisplayContractE
 from aiadra_core.transaction.boundary import TransactionError
 
 from aiadra_mechanical.adapter_payload import build_sketch_payload, build_extrude_payload
-from aiadra_mechanical import display
+from aiadra_mechanical import display, topology
 
 from conftest import two_primitives  # type: ignore
 
@@ -91,8 +91,8 @@ def test_box_with_hole_edge_kinds():
 def test_contract_round_trips_through_dto():
     d = _gen(_recipe())
     dr = DisplayRepresentation.from_engine_dict(d)
-    assert dr.display_representation_version == "1.0"
-    assert dr.view_dependent is None
+    assert dr.display_representation_version == "1.1"
+    assert dr.view_dependent is None  # base display never inlines HLR
     assert dr.selection.id_space == "canonical"
     assert dr.counters.face_count == 7
     # every face buffer is internally consistent (3 floats/node, 3 idx/triangle)
@@ -104,9 +104,21 @@ def test_contract_round_trips_through_dto():
         assert max_idx < len(fb.positions) // 3
 
 
-def test_dto_rejects_populated_view_dependent():
+def test_dto_rejects_malformed_view_dependent():
+    """Contract v1.1 (arc 20260609-2): the slot may be populated, but only by
+    a VALID ViewDependentPayload — junk is still rejected loudly."""
     d = _gen(_recipe())
     d["view_dependent"] = {"hlr": "nope"}
+    with pytest.raises(DisplayContractError):
+        DisplayRepresentation.from_engine_dict(d)
+
+
+def test_dto_v1_0_still_rejects_any_populated_view_dependent():
+    """The v1.0 rule survives verbatim (arc 20260609-2 Codex1 Q7): a producer
+    claiming contract 1.0 must ship a null slot, even a well-formed payload."""
+    d = _gen(_recipe())
+    d["display_representation_version"] = "1.0"
+    d["view_dependent"] = {"identity_echo": {}, "views": []}
     with pytest.raises(DisplayContractError, match="view_dependent must be null"):
         DisplayRepresentation.from_engine_dict(d)
 
@@ -219,7 +231,7 @@ def test_tangent_classifier_detects_fillet_smooth_edges():
     for i in range(1, edge_faces.Extent() + 1):
         edge = TopoDS.Edge_s(edge_faces.FindKey(i))
         adj = [TopoDS.Face_s(f) for f in edge_faces.FindFromIndex(i)]
-        k = display._edge_kind(edge, adj)
+        k = topology._edge_kind(edge, adj)  # B1: classification lives in the shared layer
         kinds[k] = kinds.get(k, 0) + 1
     # The fillet meets its two neighbour faces along smooth (G1) tangent edges.
     assert kinds.get("tangent", 0) >= 2, f"expected ≥2 tangent edges, got {kinds}"

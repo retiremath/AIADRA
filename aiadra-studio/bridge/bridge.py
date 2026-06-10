@@ -85,11 +85,40 @@ def m_display_representation(params: dict[str, Any]) -> dict[str, Any]:
     return {"display": dr.to_dict()}
 
 
+def m_display_hlr(params: dict[str, Any]) -> dict[str, Any]:
+    """View-dependent HLR overlay for a canonical Object (Display contract
+    v1.1; arc 20260609-2). Read-only Ring-2 primitive — computed on camera
+    settle, never per-frame; ships ONLY the classified hidden-line payload.
+    Studio must attach it to a held display package only when `identity_echo`
+    matches in full (Codex1 B3). `workspace_path` is supplied by main
+    (resolved + validated, Codex1 B2)."""
+    from aiadra_core.protocol import display_hlr
+
+    workspace_path = params.get("workspace_path")
+    object_ref = params.get("object_ref")
+    views = params.get("views")
+    if not workspace_path or not object_ref:
+        raise ValueError("display_hlr requires 'workspace_path' and 'object_ref'")
+    if not isinstance(views, list) or not views:
+        raise ValueError("display_hlr requires a non-empty 'views' list")
+    kwargs: dict[str, Any] = {
+        "views": views,
+        "algorithm": params.get("algorithm", "exact"),
+    }
+    if params.get("tolerance") is not None:
+        kwargs["tolerance"] = params["tolerance"]
+    if params.get("correlation_min_length_mm") is not None:
+        kwargs["correlation_min_length_mm"] = params["correlation_min_length_mm"]
+    payload = display_hlr(Path(workspace_path), object_ref, **kwargs)
+    return {"view_dependent": payload.to_dict()}
+
+
 METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "ping": m_ping,
     "core_version": m_core_version,
     "inspect": m_inspect,
     "display_representation": m_display_representation,
+    "display_hlr": m_display_hlr,
 }
 
 

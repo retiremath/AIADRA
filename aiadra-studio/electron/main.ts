@@ -244,6 +244,39 @@ function registerIpc(): void {
     if (!wsPath) return err('unknown workspaceId — open a workspace first')
     return callBridge('display_representation', { workspace_path: wsPath, object_ref: a.objectRef })
   })
+
+  // View-dependent HLR overlay (Display contract v1.1; arc 20260609-2).
+  // Computed on camera settle, never per-frame. Same capability discipline:
+  // only the opaque workspaceId + object ref + plain-data view specs cross
+  // the wire; main resolves the path. Views are gated structurally here and
+  // validated semantically by the engine (fail-loud).
+  ipcMain.handle('aiadra:displayHlr', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as {
+      workspaceId?: unknown
+      objectRef?: unknown
+      views?: unknown
+      algorithm?: unknown
+    } | null
+    if (!a || typeof a.workspaceId !== 'string' || typeof a.objectRef !== 'string') {
+      return err('displayHlr requires { workspaceId, objectRef, views }')
+    }
+    if (!Array.isArray(a.views) || a.views.length === 0) {
+      return err('displayHlr requires a non-empty views array')
+    }
+    const algorithm = a.algorithm === undefined ? 'exact' : a.algorithm
+    if (algorithm !== 'exact' && algorithm !== 'poly') {
+      return err("displayHlr algorithm must be 'exact' or 'poly'")
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    return callBridge('display_hlr', {
+      workspace_path: wsPath,
+      object_ref: a.objectRef,
+      views: a.views,
+      algorithm,
+    })
+  })
 }
 
 // B1 (Codex2 N2): in dev we load ELECTRON_RENDERER_URL (set by electron-vite, not

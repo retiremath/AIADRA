@@ -15,4 +15,10 @@ contextBridge.exposeInMainWorld('aiadra', {
     ipcRenderer.invoke('aiadra:inspect', { workspaceId, objectRef }),
   displayRepresentation: (workspaceId: string, objectRef: string) =>
     ipcRenderer.invoke('aiadra:displayRepresentation', { workspaceId, objectRef }),
+  displayHlr: (
+    workspaceId: string,
+    objectRef: string,
+    views: unknown[],
+    algorithm?: 'exact' | 'poly',
+  ) => ipcRenderer.invoke('aiadra:displayHlr', { workspaceId, objectRef, views, algorithm }),
 })
