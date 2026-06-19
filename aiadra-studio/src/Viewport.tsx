@@ -5,6 +5,7 @@ import type { ImportedMesh } from './import/normalize'
 import type { HlrViewRequest } from './aiadra'
 import type { HlrView } from './display/contract'
 import {
+  applyPartTheme,
   buildCanonicalPart,
   disposeCanonicalPart,
   pickDisplayId,
@@ -16,6 +17,7 @@ import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import type { DisplaySource } from './display/displaySource'
 import { DISPLAY_MODES, MODE_LABELS, modeFlags, type DisplayMode } from './display/modes'
+import type { Theme } from './settings/theme'
 
 /** Imperative viewport API the App drives. */
 export type ViewportApi = {
@@ -24,6 +26,8 @@ export type ViewportApi = {
   setMode: (m: DisplayMode) => void
   /** Show/hide the ground grid + axes helper. */
   setGridVisible: (v: boolean) => void
+  /** Live re-theming (arc 20260619-1 / 6a) — restyle every themed surface. */
+  applyTheme: (theme: Theme) => void
   /** Load (or clear) the canonical lane from a display source (arc 20260610-1). */
   setDisplaySource: (source: DisplaySource | null) => Promise<void>
   /** Snap the camera to a pregenerated standard view (fixture lane). */
@@ -35,37 +39,47 @@ export type ViewportApi = {
 }
 
 /**
- * AIADRA Studio viewport (arc 20260610-1 — the canonical lane goes live).
+ * AIADRA Studio viewport (arc 20260610-1 — canonical lane live;
+ * arc 20260619-1 / 6a — theme-driven colors via the settings registry).
  *
  * Navigation (Creo/SolidWorks convention): LEFT = select, RIGHT = menu,
  * MIDDLE = rotate, MIDDLE+SHIFT = pan, MIDDLE+CTRL = zoom, SCROLL = zoom.
  *
  * Camera is ORTHOGRAPHIC, Z-up, rendering engine model coordinates identically
- * (no transform) — the v1.1 HLR projector is orthographic-only, so this is the
- * only projection under which the exact settled overlay registers with the part
- * (Claude1 P3 / Codex1 Q1 concur). Two-phase rendering per ADR/0033 D6:
- * while the camera moves, modes work per-pixel on true model edges + the depth
- * buffer (`modes.ts`); on settle the exact classified HLR overlay swaps in
- * (`settle.ts` + `overlay.ts`, gated by `checkAttachHlr`). The screen-space
- * silhouette post-process and the placeholder box are gone (ADR/0033 D11 —
- * `baf52d2` remains the labeled git-history regression baseline).
+ * (the v1.1 HLR projector is orthographic-only). Two-phase rendering per
+ * ADR/0033 D6: live GPU approximation on true model edges while orbiting; the
+ * exact classified HLR overlay swaps in on settle.
+ *
+ * Appearance: ALL display colors come from the `theme` prop (Codex1 B2) — none
+ * are hard-coded here. `theme` re-applies live via `applyTheme`; `settleMs` /
+ * `defaultMode` / `gridVisibleDefault` are read at mount (startup defaults —
+ * settleMs applies on next mount per Codex1 N4; the live mode/grid toggles are
+ * transient per Codex1 N3).
  */
 
 type Menu = { x: number; y: number } | null
 
-const SETTLE_MS = 200
-const BG_COLOR = 0xe6e9ec // bg+line theme coupling is the step-6 Appearance arc
-const DIM_EDGE_COLOR = 0xb4bac2
-
-export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefObject<ViewportApi | null> } = {}) {
+export default function Viewport({
+  apiRef: externalApi,
+  theme,
+  settleMs = 200,
+  defaultMode = 'shading-edges',
+  gridVisibleDefault = true,
+}: {
+  apiRef?: MutableRefObject<ViewportApi | null>
+  theme: Theme
+  settleMs?: number
+  defaultMode?: DisplayMode
+  gridVisibleDefault?: boolean
+}) {
   const mountRef = useRef<HTMLDivElement>(null)
   const localApi = useRef<ViewportApi | null>(null)
   const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
-  const [mode, setModeState] = useState<DisplayMode>('shading-edges')
+  const [mode, setModeState] = useState<DisplayMode>(defaultMode)
   const [picked, setPicked] = useState<{ kind: string; displayId: string } | null>(null)
-  const [showGrid, setShowGrid] = useState(true)
+  const [showGrid, setShowGrid] = useState(gridVisibleDefault)
   const [snapIds, setSnapIds] = useState<string[]>([])
 
   useEffect(() => {
@@ -73,11 +87,14 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     const w = () => mount.clientWidth
     const h = () => mount.clientHeight
 
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(BG_COLOR)
+    // The live theme — captured at mount, mutated by applyTheme (below). Every
+    // color is read from here; nothing is hard-coded.
+    let liveTheme = theme
 
-    // ---- Orthographic, Z-up (engine space). Frustum half-height is the zoom
-    // authority; OrbitControls dolly drives camera.zoom for ortho cameras. ----
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(liveTheme.viewportBackground)
+
+    // ---- Orthographic, Z-up (engine space). ----
     let frustumHalf = 20
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000)
     camera.up.set(0, 0, 1)
@@ -89,7 +106,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       camera.bottom = -frustumHalf
       camera.updateProjectionMatrix()
     }
-    const HOME_DIR = new THREE.Vector3(-1, -1, -1).normalize() // iso look direction
+    const HOME_DIR = new THREE.Vector3(-1, -1, -1).normalize()
     const HOME_TARGET = new THREE.Vector3(10, 5, 2.5)
     camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
     applyFrustum()
@@ -126,24 +143,28 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     fillLight.position.set(-50, -30, 20)
     scene.add(fillLight)
 
-    // ---- Grid + axes (Z-up: grid rotated into the XY plane). LIGHT grid lines
-    // on the light bg — model edges must visually dominate the grid (the old
-    // dark grid colors were tuned for the retired dark background and rendered
-    // grid lines at edge darkness). depthWrite off so the grid never occludes
-    // edge passes. ----
-    const grid = new THREE.GridHelper(200, 40, 0xb9c0c7, 0xcdd3d9)
-    grid.rotation.x = Math.PI / 2
-    ;(grid.material as THREE.Material).depthWrite = false
+    // ---- Grid + axes (Z-up). Grid colors are themed; rebuilt on theme change
+    // (GridHelper bakes its two colors into vertex colors at construction). ----
+    let gridVisible = gridVisibleDefault
+    let grid: THREE.GridHelper
+    const makeGrid = (): THREE.GridHelper => {
+      const g = new THREE.GridHelper(200, 40, liveTheme.gridMajor, liveTheme.gridMinor)
+      g.rotation.x = Math.PI / 2
+      ;(g.material as THREE.Material).depthWrite = false
+      g.visible = gridVisible
+      return g
+    }
+    grid = makeGrid()
     scene.add(grid)
     const axes = new THREE.AxesHelper(12)
     ;(axes.material as THREE.Material).depthWrite = false
+    axes.visible = gridVisible
     scene.add(axes)
 
-    // The 'paper' face style (unshaded modes): an opaque background-colored
-    // body that occludes the grid — the Creo hidden-line body look. One shared
-    // material; meshes swap between their shaded material and this.
+    // The 'paper' face style (unshaded modes): an opaque background-colored body
+    // that occludes the grid — the Creo hidden-line body look.
     const paperMaterial = new THREE.MeshBasicMaterial({
-      color: BG_COLOR,
+      color: liveTheme.paperBody,
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
@@ -152,14 +173,14 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     // ---- Canonical lane state ----
     let part: CanonicalPart | null = null
     let partGroup: THREE.Group | null = null
-    let dimPass: THREE.LineSegments | null = null // B2: see-through all-edges pass
+    let dimPass: THREE.LineSegments | null = null
     let source: DisplaySource | null = null
     let display: Awaited<ReturnType<DisplaySource['getDisplay']>> | null = null
     let overlayGroup: THREE.Group | null = null
     let heldHlrView: HlrView | null = null
-    let currentMode: DisplayMode = 'shading-edges'
+    let currentMode: DisplayMode = defaultMode
     let currentSnapId: string | null = null
-    let loadToken = 0 // guards a stale setDisplaySource resolution
+    let loadToken = 0
 
     // ---- Imports (reference lane, ADR/0032 D5) ----
     const importGroups = new Map<string, THREE.Group>()
@@ -176,12 +197,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       return { b, d, eg }
     }
 
-    // ---- Mode application (the modes.ts matrix made physical). A settled
-    // overlay REPLACES the canonical base edge passes; reference imports keep
-    // their live approximation always — they never get exact HLR (P8). ----
-
-    // The mesh's shaded material is stashed in userData so paper mode can swap
-    // it out and back without losing it (and without leaking it on dispose).
+    // ---- Mode application (the modes.ts matrix made physical). ----
     const applyFaceStyle = (m: THREE.Mesh) => {
       const f = modeFlags(currentMode)
       const shaded = m.userData.shadedMaterial as THREE.MeshStandardMaterial
@@ -199,13 +215,11 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       applyFaceStyle(m)
       if (bright) {
         bright.visible = f.brightEdgesVisible
-        const bm = bright.material as THREE.LineBasicMaterial
-        bm.depthTest = f.brightEdgesDepthTest
+        ;(bright.material as THREE.LineBasicMaterial).depthTest = f.brightEdgesDepthTest
       }
       if (dim) {
         dim.visible = f.dimEdgesVisible
-        const dm = dim.material as THREE.LineBasicMaterial
-        dm.depthTest = f.dimEdgesDepthTest // B2: false while visible
+        ;(dim.material as THREE.LineBasicMaterial).depthTest = f.dimEdgesDepthTest
       }
     }
 
@@ -251,7 +265,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
         disposeOverlay(overlayGroup)
       }
       heldHlrView = view
-      overlayGroup = buildHlrOverlay(view, currentMode)
+      overlayGroup = buildHlrOverlay(view, currentMode, liveTheme)
       scene.add(overlayGroup)
       applyMode()
     }
@@ -264,7 +278,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
         disposeOverlay(overlayGroup)
         overlayGroup = null
       }
-      overlayGroup = buildHlrOverlay(view, currentMode)
+      overlayGroup = buildHlrOverlay(view, currentMode, liveTheme)
       heldHlrView = view
       scene.add(overlayGroup)
       applyMode()
@@ -273,7 +287,6 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     const currentViewRequest = (): HlrViewRequest | null => {
       if (!source) return null
       if (source.snapViews) {
-        // Fixture lane: HLR exists only at the pregenerated views.
         if (!currentSnapId) return null
         const snap = source.snapViews.find((v) => v.view_id === currentSnapId)
         return snap ? { view_id: snap.view_id, direction: snap.direction, up: snap.up } : null
@@ -281,13 +294,13 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       const dir = controls.target.clone().sub(camera.position).normalize()
       let up: [number, number, number] = [camera.up.x, camera.up.y, camera.up.z]
       if (Math.abs(dir.x * up[0] + dir.y * up[1] + dir.z * up[2]) > 0.999) {
-        up = [0, 1, 0] // up parallel to look direction — engine would reject
+        up = [0, 1, 0]
       }
       return { view_id: 'live', direction: [dir.x, dir.y, dir.z], up }
     }
 
     const machine: SettleMachine = createSettleMachine({
-      settleMs: SETTLE_MS,
+      settleMs,
       schedule: (fn, ms) => {
         const t = window.setTimeout(fn, ms)
         return () => window.clearTimeout(t)
@@ -305,8 +318,6 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
             if (!display) return
             const check = checkAttachHlr(display, payload)
             if (!check.ok) {
-              // The held package is stale (recomputed topology / different cache
-              // state) — drop, reload the display, and let settle re-fire.
               console.warn('[hlr] attach mismatch:', check.mismatches.join(', '), '— reloading display')
               void reloadDisplay()
               return
@@ -317,14 +328,14 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
             }
           })
           .catch((e) => {
-            machine.response(seq) // consume the sequence
+            machine.response(seq)
             console.warn('[hlr] request failed:', e instanceof Error ? e.message : e)
           })
       },
     })
     controls.addEventListener('change', () => machine.cameraMoved())
     controls.addEventListener('start', () => {
-      currentSnapId = null // user interaction leaves any snapped standard view
+      currentSnapId = null
     })
 
     // ---- Canonical part load / clear ----
@@ -333,7 +344,6 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       if (partGroup) {
         scene.remove(partGroup)
         if (part) {
-          // Restore each face's own material before dispose (paper is shared).
           for (const face of part.faces) face.material = face.userData.shadedMaterial
           disposeCanonicalPart(part)
         }
@@ -350,10 +360,8 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
 
     const buildPart = () => {
       if (!display) return
-      part = buildCanonicalPart(display)
+      part = buildCanonicalPart(display, liveTheme)
       partGroup = part.group
-      // Faces get polygon offset so depth-tested edge passes sit cleanly on
-      // them; the shaded material is stashed for the paper-mode swap.
       for (const face of part.faces) {
         const mm = face.material as THREE.MeshStandardMaterial
         mm.polygonOffset = true
@@ -371,7 +379,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       dimGeom.setAttribute('position', new THREE.Float32BufferAttribute(merged, 3))
       dimPass = new THREE.LineSegments(
         dimGeom,
-        new THREE.LineBasicMaterial({ color: DIM_EDGE_COLOR, depthWrite: false }),
+        new THREE.LineBasicMaterial({ color: liveTheme.hiddenEdgeDim, depthWrite: false }),
       )
       dimPass.name = 'canonicalEdgesDim'
       dimPass.renderOrder = 1
@@ -389,7 +397,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       removePart()
       display = fresh
       buildPart()
-      machine.cameraMoved() // schedule a fresh settle for the new package
+      machine.cameraMoved()
     }
 
     const setDisplaySource = async (next: DisplaySource | null) => {
@@ -459,38 +467,41 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       camera.position.copy(center).addScaledVector(dir, -120)
       camera.zoom = 1
       camera.updateProjectionMatrix()
-      controls.update() // fires 'change' → machine.cameraMoved()
+      controls.update()
       fit()
-      currentSnapId = viewId // set AFTER updates: 'start' only fires on user input
+      currentSnapId = viewId
     }
 
     const setMode = (m: DisplayMode) => {
       currentMode = m
       if (m === 'shading') {
-        clearOverlay() // re-applies flags; onSettle skips shading anyway
+        clearOverlay()
         return
       }
       if (heldHlrView) {
-        rebuildOverlayForMode() // restyle the held payload — no re-request
+        rebuildOverlayForMode()
         return
       }
       applyMode()
-      machine.cameraMoved() // give the new mode a settled overlay
+      machine.cameraMoved()
     }
 
     const setGridVisible = (v: boolean) => {
+      gridVisible = v
       grid.visible = v
       axes.visible = v
     }
 
-    // ---- Selection (left click): canonical faces/edges ONLY — the overlay and
-    // the dim pass are never in the raycast target set (Codex1 N3). ----
+    // ---- Selection (left click): canonical faces/edges ONLY. ----
     const raycaster = new THREE.Raycaster()
     raycaster.params.Line = { threshold: 0.3 }
     const ndc = new THREE.Vector2()
     let downX = 0
     let downY = 0
     let selectedFace: THREE.Mesh | null = null
+    const setEmissive = (m: THREE.Mesh, hex: number) => {
+      ;(m.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(hex)
+    }
     const onLeftDown = (e: PointerEvent) => {
       if (e.button === 0) {
         downX = e.clientX
@@ -504,18 +515,15 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       const r = canvas.getBoundingClientRect()
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      // N3: the target set comes from pickTargets — overlay + dim pass excluded.
       const hit = pickDisplayId(raycaster, pickTargets(part))
-      // Highlight lives on the SHADED material (paper is a shared material and
-      // MeshBasicMaterial has no emissive) — visible in the shaded modes.
       if (selectedFace) {
-        ;(selectedFace.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(0x000000)
+        setEmissive(selectedFace, 0x000000)
         selectedFace = null
       }
       if (hit && hit.kind === 'face') {
         const mesh = part.faces.find((f) => f.userData.displayId === hit.displayId) ?? null
         if (mesh) {
-          ;(mesh.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(0x16314e)
+          setEmissive(mesh, liveTheme.selectionHighlight)
           selectedFace = mesh
         }
       }
@@ -536,7 +544,6 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       group.traverse((o) => {
         const obj = o as THREE.Mesh & THREE.LineSegments
         if (obj.isMesh || obj.isLineSegments) {
-          // Never dispose the SHARED paper material — restore the own one first.
           if (obj.userData.shadedMaterial) obj.material = obj.userData.shadedMaterial as THREE.Material
           obj.geometry?.dispose()
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -562,7 +569,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
         const im = new THREE.Mesh(
           g,
           new THREE.MeshStandardMaterial({
-            color: 0x9aa0a6, // neutral grey — NOT the authored blue
+            color: liveTheme.importedFace,
             metalness: 0.1,
             roughness: 0.8,
             polygonOffset: true,
@@ -571,7 +578,7 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
           }),
         )
         im.userData.shadedMaterial = im.material
-        const e = makeEdges(g, IMPORT_EDGE_ANGLE, 0x33373d, DIM_EDGE_COLOR)
+        const e = makeEdges(g, IMPORT_EDGE_ANGLE, liveTheme.importedEdgeBright, liveTheme.importedEdgeDim)
         im.add(e.b)
         im.add(e.d)
         applyModeToMesh(im, e.b, e.d)
@@ -590,11 +597,46 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       importGroups.delete(id)
     }
 
+    // ---- Live re-theming (arc 20260619-1 / 6a; Codex1 B2 — every themed
+    // surface). No rebuild of geometry; only material colors + the grid (whose
+    // colors are baked into vertex colors) are rebuilt. ----
+    const restyleImport = (group: THREE.Group) => {
+      group.traverse((o) => {
+        const m = o as THREE.Mesh
+        if (m.isMesh && m.userData.shadedMaterial) {
+          ;(m.userData.shadedMaterial as THREE.MeshStandardMaterial).color.setHex(liveTheme.importedFace)
+          const bright = m.getObjectByName('edges') as THREE.LineSegments | undefined
+          const dim = m.getObjectByName('edgesDim') as THREE.LineSegments | undefined
+          if (bright) (bright.material as THREE.LineBasicMaterial).color.setHex(liveTheme.importedEdgeBright)
+          if (dim) (dim.material as THREE.LineBasicMaterial).color.setHex(liveTheme.importedEdgeDim)
+        }
+      })
+    }
+
+    const applyTheme = (next: Theme) => {
+      liveTheme = next
+      ;(scene.background as THREE.Color).setHex(next.viewportBackground)
+      paperMaterial.color.setHex(next.paperBody)
+      // Rebuild the grid (GridHelper colors are baked at construction).
+      scene.remove(grid)
+      ;(grid.material as THREE.Material).dispose()
+      grid.geometry.dispose()
+      grid = makeGrid()
+      scene.add(grid)
+      if (part) applyPartTheme(part, next)
+      if (dimPass) (dimPass.material as THREE.LineBasicMaterial).color.setHex(next.hiddenEdgeDim)
+      if (heldHlrView) rebuildOverlayForMode()
+      for (const g of importGroups.values()) restyleImport(g)
+      if (selectedFace) setEmissive(selectedFace, next.selectionHighlight)
+      applyMode()
+    }
+
     apiRef.current = {
       fit,
       reset,
       setMode,
       setGridVisible,
+      applyTheme,
       setDisplaySource,
       snapToView,
       addImported,
@@ -627,12 +669,24 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)
       importGroups.clear()
+      ;(grid.material as THREE.Material).dispose()
+      grid.geometry.dispose()
       paperMaterial.dispose()
       renderer.dispose()
       apiRef.current = null
       if (canvas.parentNode === mount) mount.removeChild(canvas)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Live theme application — re-applies whenever the theme prop changes. The
+  // main effect set apiRef.current at mount and applied the initial theme, so
+  // the first run here is idempotent. settleMs / defaultMode / gridVisibleDefault
+  // intentionally do NOT re-run the scene (startup defaults; Codex1 N3/N4).
+  useEffect(() => {
+    apiRef.current?.applyTheme(theme)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme])
 
   const pickMode = (m: DisplayMode) => {
     setModeState(m)

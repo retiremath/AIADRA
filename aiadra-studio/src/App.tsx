@@ -5,6 +5,11 @@ import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
 import { ACCEPT_EXTENSIONS, ACCEPT_LABEL, STEP_ENABLED } from './import/importConfig'
+import type { DisplayMode } from './display/modes'
+import { SettingsProvider, useRegistry, useSetting, useTheme } from './settings/useSettings'
+import { createSettingsRegistry, type SettingsRegistry } from './settings/registry'
+import { createPersistence, type Persistence } from './settings/persistence'
+import { SETTING_DESCRIPTORS, type SettingDescriptor, type SettingValue } from './settings/descriptors'
 
 /**
  * AIADRA Studio — desktop shell (arc 20260610-1: the canonical display lane is
@@ -213,17 +218,123 @@ function ImportPanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
   )
 }
 
-export default function App() {
-  const viewportApi = useRef<ViewportApi | null>(null)
+// ---- Appearance / Behavior panel (arc 20260619-1 / 6a; ADR/0033 D8) ----
+// The registry's UI binding (the sidebar panel Codex1 N5 preferred). Each
+// descriptor renders by type; changes go through the registry (validate-loud)
+// and re-apply live + persist (debounced). The full toolbar/command chrome is
+// the next slice (6b).
+
+const toHex = (n: number) => '#' + (n & 0xffffff).toString(16).padStart(6, '0')
+const fromHex = (s: string) => parseInt(s.slice(1), 16)
+const rowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  padding: '2px 8px',
+}
+
+function SettingRow({ descriptor }: { descriptor: SettingDescriptor }) {
+  const [value, setValue] = useSetting(descriptor.key)
+  const safeSet = (v: SettingValue) => {
+    try {
+      setValue(v)
+    } catch (e) {
+      console.warn('[settings]', e instanceof Error ? e.message : e)
+    }
+  }
+  const label = descriptor.label + (descriptor.unit ? ` (${descriptor.unit})` : '')
+  return (
+    <label style={rowStyle} className="small" title={descriptor.help}>
+      <span className="muted">{label}</span>
+      {descriptor.type === 'color' && (
+        <input
+          type="color"
+          value={toHex(value as number)}
+          onChange={(e) => safeSet(fromHex(e.target.value))}
+        />
+      )}
+      {descriptor.type === 'number' && (
+        <input
+          type="number"
+          value={value as number}
+          min={descriptor.min}
+          max={descriptor.max}
+          step={descriptor.step}
+          style={{ width: 72 }}
+          onChange={(e) => {
+            const n = Number(e.target.value)
+            if (Number.isFinite(n)) safeSet(n)
+          }}
+        />
+      )}
+      {descriptor.type === 'boolean' && (
+        <input type="checkbox" checked={value as boolean} onChange={(e) => safeSet(e.target.checked)} />
+      )}
+      {descriptor.type === 'enum' && (
+        <select value={value as string} onChange={(e) => safeSet(e.target.value)}>
+          {descriptor.options!.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      )}
+    </label>
+  )
+}
+
+function AppearancePanel() {
+  const registry = useRegistry()
+  const [open, setOpen] = useState(false)
+  const groups: { group: SettingDescriptor['group']; title: string }[] = [
+    { group: 'Theme', title: 'Appearance' },
+    { group: 'Behavior', title: 'Behavior' },
+  ]
+  return (
+    <>
+      <div className="panel-title" style={{ cursor: 'pointer' }} onClick={() => setOpen((o) => !o)}>
+        Appearance {open ? '▾' : '▸'}
+      </div>
+      {open && (
+        <>
+          {groups.map(({ group, title }) => (
+            <div key={group}>
+              <div className="muted small pad">{title}</div>
+              {SETTING_DESCRIPTORS.filter((d) => d.group === group).map((d) => (
+                <SettingRow key={d.key} descriptor={d} />
+              ))}
+            </div>
+          ))}
+          <div className="pad">
+            <button className="btn small" type="button" onClick={() => registry.resetAll()}>
+              Reset to defaults
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+function Workbench({
+  ready,
+  viewportApi,
+}: {
+  ready: boolean
+  viewportApi: MutableRefObject<ViewportApi | null>
+}) {
+  const registry = useRegistry()
+  const theme = useTheme()
   const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
   const [fixtureError, setFixtureError] = useState<string | null>(null)
 
-  // Browser-dev fixture lane (arc 20260610-1 P7): engine-generated canned
-  // display package, loaded ONLY when there is no bridge AND this is a dev
-  // build. The dynamic import keeps the fixture data out of production bundles
-  // (proven by scripts/assert-no-fixtures.mjs — Codex1 N2).
+  // Browser-dev fixture lane (arc 20260610-1 P7): loaded ONLY when there is no
+  // bridge AND this is a dev build, after settings are ready (so the Viewport
+  // is mounted). The dynamic import keeps fixtures out of production bundles
+  // (scripts/assert-no-fixtures.mjs — Codex1 N2).
   useEffect(() => {
-    if (!import.meta.env.DEV || window.aiadra) return
+    if (!ready || !import.meta.env.DEV || window.aiadra) return
     let cancelled = false
     import('./dev/fixtureSource')
       .then(async ({ loadFixtureSource }) => {
@@ -238,19 +349,20 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [ready, viewportApi])
 
   return (
     <div className="studio">
       <header className="topbar">
         <span className="brand">AIADRA&nbsp;Studio</span>
-        <span className="muted small">display modes · arc 20260610-1</span>
+        <span className="muted small">appearance + interaction shell · arc 20260619-1</span>
         {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
       </header>
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel api={viewportApi} />
           <ImportPanel api={viewportApi} />
+          <AppearancePanel />
           <div className="panel-title">Model</div>
           <div className="muted small pad">
             Model tree — placeholder; wires to real Workspace sidecars in the
@@ -263,10 +375,66 @@ export default function App() {
           </div>
         </aside>
         <main className="viewport">
-          <Viewport apiRef={viewportApi} />
+          {ready ? (
+            <Viewport
+              apiRef={viewportApi}
+              theme={theme}
+              settleMs={registry.get('settleMs') as number}
+              defaultMode={registry.get('defaultDisplayMode') as DisplayMode}
+              gridVisibleDefault={registry.get('gridVisibleDefault') as boolean}
+            />
+          ) : (
+            <div className="hud muted small">initializing…</div>
+          )}
           <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
       </div>
     </div>
+  )
+}
+
+export default function App() {
+  const viewportApi = useRef<ViewportApi | null>(null)
+  const registryRef = useRef<SettingsRegistry | null>(null)
+  const persistenceRef = useRef<Persistence | null>(null)
+  const [ready, setReady] = useState(false)
+
+  if (!registryRef.current) {
+    const persistence = createPersistence()
+    persistenceRef.current = persistence
+    // Persist (debounced) on every live change; hydrate does NOT trigger this.
+    registryRef.current = createSettingsRegistry({ onChange: (blob) => persistence.save(blob) })
+  }
+  const registry = registryRef.current
+
+  // Boot: load persisted settings → hydrate → render the viewport with the
+  // resolved values (so persisted theme/settleMs/defaults apply at startup).
+  // A load failure is non-fatal — defaults stand (app prefs never brick boot).
+  useEffect(() => {
+    let cancelled = false
+    persistenceRef.current
+      ?.load()
+      .then((blob) => {
+        if (cancelled) return
+        if (blob) {
+          try {
+            registry.hydrate(blob)
+          } catch (e) {
+            console.error('[settings] hydrate failed, using defaults:', e instanceof Error ? e.message : e)
+          }
+        }
+        setReady(true)
+      })
+      .catch(() => setReady(true))
+    return () => {
+      cancelled = true
+      void persistenceRef.current?.flush()
+    }
+  }, [registry])
+
+  return (
+    <SettingsProvider registry={registry}>
+      <Workbench ready={ready} viewportApi={viewportApi} />
+    </SettingsProvider>
   )
 }

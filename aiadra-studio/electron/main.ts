@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
 import { contentTypeFor, resolveAppAssetRelPath } from './appProtocol'
+// Shared PURE envelope validators (arc 20260619-1 / 6a, Codex1 B1 + Codex2 R2):
+// main owns BOTH the settings file path AND the persisted shape. The renderer is
+// the untrusted side of the IPC boundary even when sandboxed. Load is tolerant
+// (structural; older versions migrate); SAVE is strict (current version only).
+import {
+  validatePersistedSettingsBlob,
+  validatePersistedSettingsForSave,
+} from '../src/settings/persisted'
 
 /**
  * AIADRA Studio — Electron main process (ADR/0032 D6; arc 20260602-6).
@@ -291,6 +299,52 @@ function registerIpc(): void {
       views: a.views,
       algorithm,
     })
+  })
+
+  // ---- App settings (arc 20260619-1 / 6a; ADR/0033 D8) ----
+  // Local user preferences only — NOT Product Truth, NOT routed through the
+  // Python engine bridge. One fixed file under the OS userData dir; main owns
+  // the path. Saves are validated by the shared envelope validator and written
+  // atomically (temp + rename); an invalid blob is rejected without touching
+  // the existing file (Codex1 B1). The renderer never supplies a path.
+  const settingsFile = () => join(app.getPath('userData'), 'settings.json')
+
+  ipcMain.handle('aiadra:loadSettings', () => {
+    aiadraIpcCalls++
+    try {
+      const file = settingsFile()
+      if (!existsSync(file)) return ok({ settings: null })
+      const blob: unknown = JSON.parse(readFileSync(file, 'utf8'))
+      const check = validatePersistedSettingsBlob(blob)
+      if (!check.ok) {
+        console.error('[settings] ignoring invalid settings.json:', check.error)
+        return ok({ settings: null }) // app prefs: fall back to defaults, never brick startup
+      }
+      return ok({ settings: blob })
+    } catch (e) {
+      console.error('[settings] load failed:', e instanceof Error ? e.message : e)
+      return ok({ settings: null })
+    }
+  })
+
+  ipcMain.handle('aiadra:saveSettings', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const blob = (args as { settings?: unknown } | null)?.settings
+    // Strict save validation (Codex2 R2): reject any non-current version BEFORE
+    // writing, so a forward/corrupt blob can never be persisted.
+    const check = validatePersistedSettingsForSave(blob)
+    if (!check.ok) return err(`invalid settings: ${check.error}`)
+    try {
+      const dir = app.getPath('userData')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, 'settings.json')
+      const tmp = join(dir, `settings.json.tmp-${process.pid}`)
+      writeFileSync(tmp, JSON.stringify(blob))
+      renameSync(tmp, file) // atomic replace
+      return ok({})
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e))
+    }
   })
 }
 

@@ -16,12 +16,9 @@
 import * as THREE from 'three'
 import type { HlrView } from './contract'
 import { type DisplayMode, overlaySegmentStyle } from './modes'
+import { DEFAULT_THEME, type Theme } from '../settings/theme'
 
 export const OVERLAY_GROUP_NAME = 'hlr-overlay'
-
-// Stopgap defaults matching the canonical-part edge palette; theming is step 6.
-export const OVERLAY_BRIGHT_COLOR = 0x222226
-export const OVERLAY_DIM_COLOR = 0xb4bac2
 
 /** Render order above faces (0) and base edge passes (1–2). */
 const OVERLAY_RENDER_ORDER = 3
@@ -46,7 +43,11 @@ function lift(view: HlrView, polyline2d: number[]): Float32Array {
   return out
 }
 
-export function buildHlrOverlay(view: HlrView, mode: DisplayMode): THREE.Group {
+export function buildHlrOverlay(
+  view: HlrView,
+  mode: DisplayMode,
+  theme: Theme = DEFAULT_THEME,
+): THREE.Group {
   const group = new THREE.Group()
   group.name = OVERLAY_GROUP_NAME
 
@@ -70,9 +71,10 @@ export function buildHlrOverlay(view: HlrView, mode: DisplayMode): THREE.Group {
     lines.userData = {}
     group.add(lines)
   }
-  // Dim under bright so visible classification reads on top.
-  addPass(dim, OVERLAY_DIM_COLOR)
-  addPass(bright, OVERLAY_BRIGHT_COLOR)
+  // Dim under bright so visible classification reads on top. Colors are
+  // theme-owned (arc 20260619-1 / 6a, Codex1 B2): visible=hlrVisible, hidden=hlrHidden.
+  addPass(dim, theme.hlrHidden)
+  addPass(bright, theme.hlrVisible)
   return group
 }
 

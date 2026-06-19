@@ -12,6 +12,7 @@
  */
 import * as THREE from 'three'
 import type { DisplayRepresentation, EdgePolyline, FaceBuffer } from './contract'
+import { DEFAULT_THEME, type CanonicalEdgeKind, type Theme } from '../settings/theme'
 
 export interface PickResult {
   kind: 'face' | 'edge'
@@ -24,18 +25,15 @@ export interface CanonicalPart {
   edges: THREE.LineSegments[]
 }
 
-const FACE_COLOR = 0xb8c2cc
-// Edge colours are theme-driven later (the Appearance arc); these are spike
-// defaults matching the Creo benchmark families (seam dimmer than sharp).
-const EDGE_COLOR: Record<string, number> = {
-  sharp: 0x222226,
-  tangent: 0x4a4a52,
-  seam: 0x9aa0aa,
-  boundary: 0x222226,
-  free: 0x222226,
+// Face/edge colors are theme-owned (arc 20260619-1 / 6a, Codex1 B2). The theme
+// param defaults to the built-in theme so headless callers/tests need not pass
+// one; the live viewport passes the registry theme and restyles via
+// `applyPartTheme` on change.
+function edgeColor(theme: Theme, kind: string): number {
+  return theme.canonicalEdge[kind as CanonicalEdgeKind] ?? theme.canonicalEdge.boundary
 }
 
-export function buildFaceMesh(face: FaceBuffer): THREE.Mesh {
+export function buildFaceMesh(face: FaceBuffer, theme: Theme = DEFAULT_THEME): THREE.Mesh {
   const geom = new THREE.BufferGeometry()
   geom.setAttribute('position', new THREE.Float32BufferAttribute(face.positions, 3))
   if (face.normals.length === face.positions.length && face.normals.some((n) => n !== 0)) {
@@ -45,7 +43,7 @@ export function buildFaceMesh(face: FaceBuffer): THREE.Mesh {
   }
   geom.setIndex(face.triangles)
   const mat = new THREE.MeshStandardMaterial({
-    color: FACE_COLOR,
+    color: theme.canonicalFace,
     metalness: 0.1,
     roughness: 0.75,
     side: THREE.DoubleSide,
@@ -57,7 +55,7 @@ export function buildFaceMesh(face: FaceBuffer): THREE.Mesh {
   return mesh
 }
 
-export function buildEdgeLine(edge: EdgePolyline): THREE.LineSegments {
+export function buildEdgeLine(edge: EdgePolyline, theme: Theme = DEFAULT_THEME): THREE.LineSegments {
   // A polyline of N points → 2·(N−1) endpoints for LineSegments.
   const pts = edge.polyline
   const seg: number[] = []
@@ -68,14 +66,17 @@ export function buildEdgeLine(edge: EdgePolyline): THREE.LineSegments {
   geom.setAttribute('position', new THREE.Float32BufferAttribute(seg.length ? seg : pts, 3))
   const line = new THREE.LineSegments(
     geom,
-    new THREE.LineBasicMaterial({ color: EDGE_COLOR[edge.kind] ?? 0x222226 }),
+    new THREE.LineBasicMaterial({ color: edgeColor(theme, edge.kind) }),
   )
   line.name = edge.edge_id
   line.userData = { kind: 'edge', displayId: edge.edge_id, edgeId: edge.edge_id, edgeKind: edge.kind }
   return line
 }
 
-export function buildCanonicalPart(dr: DisplayRepresentation): CanonicalPart {
+export function buildCanonicalPart(
+  dr: DisplayRepresentation,
+  theme: Theme = DEFAULT_THEME,
+): CanonicalPart {
   const group = new THREE.Group()
   group.name = dr.identity.object_number || dr.identity.object_uuid
   group.userData = {
@@ -83,11 +84,32 @@ export function buildCanonicalPart(dr: DisplayRepresentation): CanonicalPart {
     geometryRef: dr.identity.geometry_ref,
     cacheKey: dr.identity.cache_key,
   }
-  const faces = dr.render.faces.map(buildFaceMesh)
-  const edges = dr.render.edges.map(buildEdgeLine)
+  const faces = dr.render.faces.map((f) => buildFaceMesh(f, theme))
+  const edges = dr.render.edges.map((e) => buildEdgeLine(e, theme))
   faces.forEach((m) => group.add(m))
   edges.forEach((l) => group.add(l))
   return { group, faces, edges }
+}
+
+/**
+ * Live re-theming of an already-built part (arc 20260619-1 / 6a, Codex1 B2).
+ * Restyles the shaded face material + per-kind bright edge colors in place — no
+ * rebuild. Updates the SHADED material (the one stashed in `userData` when the
+ * viewport swaps to the paper body) so the change survives a paper↔shaded swap.
+ * Paper body, the dim pass, the HLR overlay, grid, and selection are the
+ * viewport's to restyle (it owns those materials).
+ */
+export function applyPartTheme(part: CanonicalPart, theme: Theme): void {
+  for (const mesh of part.faces) {
+    const shaded =
+      (mesh.userData.shadedMaterial as THREE.MeshStandardMaterial | undefined) ??
+      (mesh.material as THREE.MeshStandardMaterial)
+    shaded.color.setHex(theme.canonicalFace)
+  }
+  for (const line of part.edges) {
+    const kind = (line.userData.edgeKind as string) ?? 'sharp'
+    ;(line.material as THREE.LineBasicMaterial).color.setHex(edgeColor(theme, kind))
+  }
 }
 
 /**

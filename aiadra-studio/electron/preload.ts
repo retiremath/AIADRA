@@ -22,4 +22,7 @@ contextBridge.exposeInMainWorld('aiadra', {
     views: unknown[],
     algorithm?: 'exact' | 'poly',
   ) => ipcRenderer.invoke('aiadra:displayHlr', { workspaceId, objectRef, views, algorithm }),
+  // App settings (arc 20260619-1 / 6a) — local userData JSON, main-owned path.
+  loadSettings: () => ipcRenderer.invoke('aiadra:loadSettings'),
+  saveSettings: (settings: unknown) => ipcRenderer.invoke('aiadra:saveSettings', { settings }),
 })

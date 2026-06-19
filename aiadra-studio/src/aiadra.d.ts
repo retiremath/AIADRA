@@ -2,6 +2,7 @@
 // `window.aiadra` is optional: in browser-only dev (`npm run dev:web`, no Electron)
 // it is undefined, so the UI degrades gracefully.
 import type { DisplayRepresentation, ViewDependentPayload } from './display/contract'
+import type { PersistedSettings } from './settings/persisted'
 
 export {}
 
@@ -39,6 +40,9 @@ declare global {
         views: HlrViewRequest[],
         algorithm?: 'exact' | 'poly',
       ): Promise<Envelope<{ view_dependent: ViewDependentPayload }>>
+      // App settings (arc 20260619-1 / 6a) — optional: absent in browser-only dev.
+      loadSettings?(): Promise<Envelope<{ settings: PersistedSettings | null }>>
+      saveSettings?(settings: PersistedSettings): Promise<Envelope<Record<string, never>>>
     }
   }
 }
