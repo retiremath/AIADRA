@@ -69,6 +69,30 @@ def m_inspect(params: dict[str, Any]) -> dict[str, Any]:
     return {"object": _to_jsonable(view)}
 
 
+def m_list_parts(params: dict[str, Any]) -> dict[str, Any]:
+    """List Part Objects in a workspace (arc 20260610-1 Codex1 B1). Delegates to
+    Tier-1 `protocol.query(kind="Part")` — read-only, deterministically ordered
+    by object_number. Returns identity fields ONLY (number / name / uuid); no
+    sidecar bodies, no paths. Gives Studio an object-ref source after
+    `Open Workspace` without hard-coding fixture-shaped numbers."""
+    from aiadra_core.protocol import query
+
+    workspace_path = params.get("workspace_path")
+    if not workspace_path:
+        raise ValueError("list_parts requires 'workspace_path'")
+    views = query(Path(workspace_path), kind="Part")
+    return {
+        "parts": [
+            {
+                "object_number": v.object_number,
+                "name": v.sidecar.get("object", {}).get("name", ""),
+                "object_uuid": v.object_uuid,
+            }
+            for v in views
+        ]
+    }
+
+
 def m_display_representation(params: dict[str, Any]) -> dict[str, Any]:
     """Engine-produced Display Representation for a canonical Object (ADR/0035;
     arc 20260609-1). Read-only Ring-2 primitive — writes nothing. `workspace_path`
@@ -117,6 +141,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "ping": m_ping,
     "core_version": m_core_version,
     "inspect": m_inspect,
+    "list_parts": m_list_parts,
     "display_representation": m_display_representation,
     "display_hlr": m_display_hlr,
 }

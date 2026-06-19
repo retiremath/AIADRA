@@ -2,16 +2,32 @@ import { type MutableRefObject, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { ImportedMesh } from './import/normalize'
+import type { HlrViewRequest } from './aiadra'
+import type { HlrView } from './display/contract'
+import {
+  buildCanonicalPart,
+  disposeCanonicalPart,
+  pickDisplayId,
+  pickTargets,
+  type CanonicalPart,
+} from './display/canonicalPart'
+import { checkAttachHlr } from './display/attachHlr'
+import { buildHlrOverlay, disposeOverlay } from './display/overlay'
+import { createSettleMachine, type SettleMachine } from './display/settle'
+import type { DisplaySource } from './display/displaySource'
+import { DISPLAY_MODES, MODE_LABELS, modeFlags, type DisplayMode } from './display/modes'
 
-/** Imperative viewport API the App drives (import lane + view helpers). */
+/** Imperative viewport API the App drives. */
 export type ViewportApi = {
   fit: () => void
   reset: () => void
-  setStyle: (s: DrawStyle) => void
-  /** Show/hide the authored placeholder part (clear the viewport for imports). */
-  setAuthoredVisible: (v: boolean) => void
+  setMode: (m: DisplayMode) => void
   /** Show/hide the ground grid + axes helper. */
   setGridVisible: (v: boolean) => void
+  /** Load (or clear) the canonical lane from a display source (arc 20260610-1). */
+  setDisplaySource: (source: DisplaySource | null) => Promise<void>
+  /** Snap the camera to a pregenerated standard view (fixture lane). */
+  snapToView: (viewId: string) => void
   /** Add reference-only imported geometry as one group keyed by `id` (ADR/0032 D5). */
   addImported: (id: string, meshes: ImportedMesh[]) => void
   /** Remove an imported group and dispose all its GPU resources (Codex1 B1). */
@@ -19,21 +35,27 @@ export type ViewportApi = {
 }
 
 /**
- * AIADRA Studio viewport.
+ * AIADRA Studio viewport (arc 20260610-1 — the canonical lane goes live).
  *
  * Navigation (Creo/SolidWorks convention): LEFT = select, RIGHT = menu,
  * MIDDLE = rotate, MIDDLE+SHIFT = pan, MIDDLE+CTRL = zoom, SCROLL = zoom.
  *
- * Edges: the model's edges come from `EdgesGeometry` (feature/topological edges,
- * NOT the triangulation). SILHOUETTES (the view-dependent outline of curved
- * surfaces — which are NOT topological edges) come from a depth-discontinuity
- * post-process. Together they give a CAD line look in the +edges / hidden-line
- * modes. (Perfect topological edges incl. smooth tangent edges, and true analytic
- * silhouettes, await the milestone-2 BREP work.)
+ * Camera is ORTHOGRAPHIC, Z-up, rendering engine model coordinates identically
+ * (no transform) — the v1.1 HLR projector is orthographic-only, so this is the
+ * only projection under which the exact settled overlay registers with the part
+ * (Claude1 P3 / Codex1 Q1 concur). Two-phase rendering per ADR/0033 D6:
+ * while the camera moves, modes work per-pixel on true model edges + the depth
+ * buffer (`modes.ts`); on settle the exact classified HLR overlay swaps in
+ * (`settle.ts` + `overlay.ts`, gated by `checkAttachHlr`). The screen-space
+ * silhouette post-process and the placeholder box are gone (ADR/0033 D11 —
+ * `baf52d2` remains the labeled git-history regression baseline).
  */
 
 type Menu = { x: number; y: number } | null
-type DrawStyle = 'shaded' | 'shaded-edges' | 'hidden-line' | 'wireframe'
+
+const SETTLE_MS = 200
+const BG_COLOR = 0xe6e9ec // bg+line theme coupling is the step-6 Appearance arc
+const DIM_EDGE_COLOR = 0xb4bac2
 
 export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefObject<ViewportApi | null> } = {}) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -41,10 +63,10 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
   const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
-  const [style, setStyle] = useState<DrawStyle>('shaded-edges')
-  const [selected, setSelected] = useState(false)
-  const [showAuthored, setShowAuthored] = useState(true)
+  const [mode, setModeState] = useState<DisplayMode>('shading-edges')
+  const [picked, setPicked] = useState<{ kind: string; displayId: string } | null>(null)
   const [showGrid, setShowGrid] = useState(true)
+  const [snapIds, setSnapIds] = useState<string[]>([])
 
   useEffect(() => {
     const mount = mountRef.current!
@@ -52,15 +74,25 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     const h = () => mount.clientHeight
 
     const scene = new THREE.Scene()
-    // Light, easy-on-the-eyes backdrop. NOTE: background + line colours are coupled
-    // (light bg needs dark lines) — a coordinated theme is exactly what the planned
-    // Appearance/Options system will own. These values are a stopgap default.
-    scene.background = new THREE.Color(0xe6e9ec)
+    scene.background = new THREE.Color(BG_COLOR)
 
-    const camera = new THREE.PerspectiveCamera(35, w() / h(), 0.1, 5000)
-    const HOME = new THREE.Vector3(46, 34, 46)
-    const TARGET = new THREE.Vector3(0, 2.5, 0)
-    camera.position.copy(HOME)
+    // ---- Orthographic, Z-up (engine space). Frustum half-height is the zoom
+    // authority; OrbitControls dolly drives camera.zoom for ortho cameras. ----
+    let frustumHalf = 20
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000)
+    camera.up.set(0, 0, 1)
+    const applyFrustum = () => {
+      const aspect = w() / h()
+      camera.left = -frustumHalf * aspect
+      camera.right = frustumHalf * aspect
+      camera.top = frustumHalf
+      camera.bottom = -frustumHalf
+      camera.updateProjectionMatrix()
+    }
+    const HOME_DIR = new THREE.Vector3(-1, -1, -1).normalize() // iso look direction
+    const HOME_TARGET = new THREE.Vector3(10, 5, 2.5)
+    camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
+    applyFrustum()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -70,17 +102,15 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
 
     // ---- Controls (CAD scheme) ----
     const controls = new OrbitControls(camera, canvas)
-    controls.enableDamping = false // near-zero inertia: view stops when the mouse stops
-    controls.screenSpacePanning = true // real pan (translate in screen plane), not orbit
+    controls.enableDamping = false
+    controls.screenSpacePanning = true
     controls.zoomToCursor = true
-    controls.target.copy(TARGET)
+    controls.target.copy(HOME_TARGET)
     controls.mouseButtons = { MIDDLE: THREE.MOUSE.ROTATE } as typeof controls.mouseButtons
 
     const onPointerDownCapture = (e: PointerEvent) => {
       if (e.button === 1) {
-        e.preventDefault() // suppress middle-click autoscroll
-        // OrbitControls flips ROTATE->PAN when a modifier is held: plain = rotate,
-        // shift = pan, ctrl = dolly (zoom).
+        e.preventDefault()
         controls.mouseButtons.MIDDLE = e.ctrlKey ? THREE.MOUSE.DOLLY : THREE.MOUSE.ROTATE
       }
       setMenu(null)
@@ -90,24 +120,51 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     // ---- Lights ----
     scene.add(new THREE.AmbientLight(0xffffff, 0.55))
     const keyLight = new THREE.DirectionalLight(0xffffff, 0.95)
-    keyLight.position.set(40, 70, 30)
+    keyLight.position.set(40, 30, 70)
     scene.add(keyLight)
     const fillLight = new THREE.DirectionalLight(0x88aaff, 0.35)
-    fillLight.position.set(-50, 20, -30)
+    fillLight.position.set(-50, -30, 20)
     scene.add(fillLight)
 
-    // ---- Grid + axes. They stay OUT of the depth buffer (depthWrite:false) so the
-    // silhouette post-process only outlines the parts, never the grid lines. ----
-    const grid = new THREE.GridHelper(200, 40, 0x3a3d44, 0x2a2c31)
+    // ---- Grid + axes (Z-up: grid rotated into the XY plane). LIGHT grid lines
+    // on the light bg — model edges must visually dominate the grid (the old
+    // dark grid colors were tuned for the retired dark background and rendered
+    // grid lines at edge darkness). depthWrite off so the grid never occludes
+    // edge passes. ----
+    const grid = new THREE.GridHelper(200, 40, 0xb9c0c7, 0xcdd3d9)
+    grid.rotation.x = Math.PI / 2
     ;(grid.material as THREE.Material).depthWrite = false
     scene.add(grid)
     const axes = new THREE.AxesHelper(12)
     ;(axes.material as THREE.Material).depthWrite = false
     scene.add(axes)
 
-    // ---- Edges: two passes per part. `bright` = visible edges; `dim` = the
-    // occluded edges shown faintly in hidden-line mode. Edges don't write depth
-    // (faces do), keeping the silhouette depth clean. ----
+    // The 'paper' face style (unshaded modes): an opaque background-colored
+    // body that occludes the grid — the Creo hidden-line body look. One shared
+    // material; meshes swap between their shaded material and this.
+    const paperMaterial = new THREE.MeshBasicMaterial({
+      color: BG_COLOR,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    })
+
+    // ---- Canonical lane state ----
+    let part: CanonicalPart | null = null
+    let partGroup: THREE.Group | null = null
+    let dimPass: THREE.LineSegments | null = null // B2: see-through all-edges pass
+    let source: DisplaySource | null = null
+    let display: Awaited<ReturnType<DisplaySource['getDisplay']>> | null = null
+    let overlayGroup: THREE.Group | null = null
+    let heldHlrView: HlrView | null = null
+    let currentMode: DisplayMode = 'shading-edges'
+    let currentSnapId: string | null = null
+    let loadToken = 0 // guards a stale setDisplaySource resolution
+
+    // ---- Imports (reference lane, ADR/0032 D5) ----
+    const importGroups = new Map<string, THREE.Group>()
+    const IMPORT_EDGE_ANGLE = 30
+
     const makeEdges = (g: THREE.BufferGeometry, thresholdDeg: number, bright: number, dim: number) => {
       const eg = new THREE.EdgesGeometry(g, thresholdDeg)
       const b = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: bright, depthWrite: false }))
@@ -119,130 +176,321 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       return { b, d, eg }
     }
 
-    /**
-     * Apply a CAD draw style to a part (its mesh + bright/dim edge children).
-     * We NEVER use raw `material.wireframe` (that draws the triangulation):
-     *   shaded        faces shaded, no edges
-     *   shaded-edges  faces shaded + visible (bright) edges
-     *   hidden-line   faces invisible but WRITE DEPTH → visible edges bright,
-     *                 occluded edges dim
-     *   wireframe     faces invisible AND non-occluding → all edges bright, see-through
-     * Faces stay `visible` (so the child edge lines render) — hidden via colorWrite.
-     */
-    const styleMesh = (m: THREE.Mesh, bright: THREE.LineSegments, dim: THREE.LineSegments, s: DrawStyle) => {
-      const mm = m.material as THREE.MeshStandardMaterial
-      mm.wireframe = false
-      mm.colorWrite = s === 'shaded' || s === 'shaded-edges'
-      mm.depthWrite = s !== 'wireframe'
-      bright.visible = s !== 'shaded'
-      ;(bright.material as THREE.LineBasicMaterial).depthTest = s !== 'wireframe'
-      dim.visible = s === 'hidden-line'
+    // ---- Mode application (the modes.ts matrix made physical). A settled
+    // overlay REPLACES the canonical base edge passes; reference imports keep
+    // their live approximation always — they never get exact HLR (P8). ----
+
+    // The mesh's shaded material is stashed in userData so paper mode can swap
+    // it out and back without losing it (and without leaking it on dispose).
+    const applyFaceStyle = (m: THREE.Mesh) => {
+      const f = modeFlags(currentMode)
+      const shaded = m.userData.shadedMaterial as THREE.MeshStandardMaterial
+      if (f.faceStyle === 'paper') {
+        m.material = paperMaterial
+        return
+      }
+      m.material = shaded
+      shaded.colorWrite = f.faceStyle === 'shaded'
+      shaded.depthWrite = f.facesDepthWrite
     }
-    const edgesOf = (m: THREE.Mesh) => ({
-      bright: m.getObjectByName('edges') as THREE.LineSegments | undefined,
-      dim: m.getObjectByName('edgesDim') as THREE.LineSegments | undefined,
-    })
-    const applyStyleToImport = (group: THREE.Group, s: DrawStyle) => {
-      group.traverse((o) => {
-        const m = o as THREE.Mesh
-        if (m.isMesh) {
-          const { bright, dim } = edgesOf(m)
-          if (bright && dim) styleMesh(m, bright, dim, s)
+
+    const applyModeToMesh = (m: THREE.Mesh, bright: THREE.LineSegments | null, dim: THREE.LineSegments | null) => {
+      const f = modeFlags(currentMode)
+      applyFaceStyle(m)
+      if (bright) {
+        bright.visible = f.brightEdgesVisible
+        const bm = bright.material as THREE.LineBasicMaterial
+        bm.depthTest = f.brightEdgesDepthTest
+      }
+      if (dim) {
+        dim.visible = f.dimEdgesVisible
+        const dm = dim.material as THREE.LineBasicMaterial
+        dm.depthTest = f.dimEdgesDepthTest // B2: false while visible
+      }
+    }
+
+    const applyMode = () => {
+      if (part && dimPass) {
+        const f = modeFlags(currentMode)
+        const hasOverlay = overlayGroup !== null
+        for (const face of part.faces) applyFaceStyle(face)
+        for (const edge of part.edges) {
+          edge.visible = f.brightEdgesVisible && !hasOverlay
+          ;(edge.material as THREE.LineBasicMaterial).depthTest = f.brightEdgesDepthTest
+          edge.renderOrder = 2
         }
-      })
+        dimPass.visible = f.dimEdgesVisible && !hasOverlay
+        ;(dimPass.material as THREE.LineBasicMaterial).depthTest = f.dimEdgesDepthTest
+      }
+      for (const g of importGroups.values()) {
+        g.traverse((o) => {
+          const m = o as THREE.Mesh
+          if (m.isMesh && m.userData.shadedMaterial) {
+            const bright = m.getObjectByName('edges') as THREE.LineSegments | undefined
+            const dim = m.getObjectByName('edgesDim') as THREE.LineSegments | undefined
+            applyModeToMesh(m, bright ?? null, dim ?? null)
+          }
+        })
+      }
     }
 
-    // ---- The authored bracket: 20 x 5 x 10 mm (placeholder until the Workspace lane) ----
-    const geo = new THREE.BoxGeometry(20, 5, 10)
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x6b9bd1,
-      metalness: 0.15,
-      roughness: 0.55,
-      polygonOffset: true, // let edges sit on faces without z-fight
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
-    })
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.y = 2.5
-    scene.add(mesh)
-    const authoredEdges = makeEdges(geo, 1, 0x1f3a5c, 0xb4bac2) // dark edges for the light bg; faint dim
-    mesh.add(authoredEdges.b)
-    mesh.add(authoredEdges.d)
+    // ---- Settled HLR overlay (P4/P5) ----
+    const clearOverlay = () => {
+      if (overlayGroup) {
+        scene.remove(overlayGroup)
+        disposeOverlay(overlayGroup)
+        overlayGroup = null
+      }
+      heldHlrView = null
+      applyMode()
+    }
 
-    // ---- Imported (reference-only) geometry: one THREE.Group per import id (Codex1 N3) ----
-    const importGroups = new Map<string, THREE.Group>()
-    let currentStyle: DrawStyle = 'shaded-edges'
-    // Feature-edge threshold for imports: drop tessellation facets on curved faces,
-    // keep sharp model edges.
-    const IMPORT_EDGE_ANGLE = 30
+    const attachOverlay = (view: HlrView) => {
+      if (overlayGroup) {
+        scene.remove(overlayGroup)
+        disposeOverlay(overlayGroup)
+      }
+      heldHlrView = view
+      overlayGroup = buildHlrOverlay(view, currentMode)
+      scene.add(overlayGroup)
+      applyMode()
+    }
 
-    // ---- Silhouette post-process: render the scene to a target with a depth
-    // texture, then a fullscreen pass draws a line wherever depth jumps (object
-    // outline + curved-surface silhouettes + part-over-part contours). ----
-    const dbSize = renderer.getDrawingBufferSize(new THREE.Vector2())
-    const depthTexture = new THREE.DepthTexture(dbSize.x, dbSize.y)
-    const sceneTarget = new THREE.WebGLRenderTarget(dbSize.x, dbSize.y, { depthTexture, depthBuffer: true })
-    const edgePass = new THREE.ShaderMaterial({
-      depthTest: false,
-      depthWrite: false,
-      uniforms: {
-        tDiffuse: { value: sceneTarget.texture },
-        tDepth: { value: depthTexture },
-        uTexel: { value: new THREE.Vector2(1 / dbSize.x, 1 / dbSize.y) },
-        uNear: { value: camera.near },
-        uFar: { value: camera.far },
-        uEdgeColor: { value: new THREE.Color(0x12151a) },
-        uThreshold: { value: 0.12 },
-        uStrength: { value: 1.0 },
-        uEnabled: { value: 1.0 },
+    const rebuildOverlayForMode = () => {
+      if (!heldHlrView) return
+      const view = heldHlrView
+      if (overlayGroup) {
+        scene.remove(overlayGroup)
+        disposeOverlay(overlayGroup)
+        overlayGroup = null
+      }
+      overlayGroup = buildHlrOverlay(view, currentMode)
+      heldHlrView = view
+      scene.add(overlayGroup)
+      applyMode()
+    }
+
+    const currentViewRequest = (): HlrViewRequest | null => {
+      if (!source) return null
+      if (source.snapViews) {
+        // Fixture lane: HLR exists only at the pregenerated views.
+        if (!currentSnapId) return null
+        const snap = source.snapViews.find((v) => v.view_id === currentSnapId)
+        return snap ? { view_id: snap.view_id, direction: snap.direction, up: snap.up } : null
+      }
+      const dir = controls.target.clone().sub(camera.position).normalize()
+      let up: [number, number, number] = [camera.up.x, camera.up.y, camera.up.z]
+      if (Math.abs(dir.x * up[0] + dir.y * up[1] + dir.z * up[2]) > 0.999) {
+        up = [0, 1, 0] // up parallel to look direction — engine would reject
+      }
+      return { view_id: 'live', direction: [dir.x, dir.y, dir.z], up }
+    }
+
+    const machine: SettleMachine = createSettleMachine({
+      settleMs: SETTLE_MS,
+      schedule: (fn, ms) => {
+        const t = window.setTimeout(fn, ms)
+        return () => window.clearTimeout(t)
       },
-      vertexShader: /* glsl */ `
-        varying vec2 vUv;
-        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
-      `,
-      fragmentShader: /* glsl */ `
-        precision highp float;
-        varying vec2 vUv;
-        uniform sampler2D tDiffuse;
-        uniform sampler2D tDepth;
-        uniform vec2 uTexel;
-        uniform float uNear;
-        uniform float uFar;
-        uniform vec3 uEdgeColor;
-        uniform float uThreshold;
-        uniform float uStrength;
-        uniform float uEnabled;
-        float lin(float d) {
-          float z = d * 2.0 - 1.0;
-          return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
-        }
-        void main() {
-          vec3 col = texture2D(tDiffuse, vUv).rgb;
-          if (uEnabled < 0.5) { gl_FragColor = vec4(col, 1.0); return; }
-          float c = lin(texture2D(tDepth, vUv).x);
-          float l = lin(texture2D(tDepth, vUv - vec2(uTexel.x, 0.0)).x);
-          float r = lin(texture2D(tDepth, vUv + vec2(uTexel.x, 0.0)).x);
-          float u = lin(texture2D(tDepth, vUv + vec2(0.0, uTexel.y)).x);
-          float dn = lin(texture2D(tDepth, vUv - vec2(0.0, uTexel.y)).x);
-          float diff = max(max(abs(c - l), abs(c - r)), max(abs(c - u), abs(c - dn)));
-          float t = uThreshold * c;
-          float edge = smoothstep(t, t * 2.0 + 0.0001, diff);
-          gl_FragColor = vec4(mix(col, uEdgeColor, edge * uStrength), 1.0);
-        }
-      `,
+      onClear: clearOverlay,
+      onSettle: (seq) => {
+        if (!source || !display || currentMode === 'shading') return
+        const view = currentViewRequest()
+        if (!view) return
+        const t0 = performance.now()
+        source
+          .getHlr(view)
+          .then((payload) => {
+            if (machine.response(seq) !== 'accept') return
+            if (!display) return
+            const check = checkAttachHlr(display, payload)
+            if (!check.ok) {
+              // The held package is stale (recomputed topology / different cache
+              // state) — drop, reload the display, and let settle re-fire.
+              console.warn('[hlr] attach mismatch:', check.mismatches.join(', '), '— reloading display')
+              void reloadDisplay()
+              return
+            }
+            if (payload.views.length > 0) {
+              attachOverlay(payload.views[0])
+              console.debug(`[hlr] settled overlay attached in ${Math.round(performance.now() - t0)} ms`)
+            }
+          })
+          .catch((e) => {
+            machine.response(seq) // consume the sequence
+            console.warn('[hlr] request failed:', e instanceof Error ? e.message : e)
+          })
+      },
     })
-    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), edgePass)
-    const quadScene = new THREE.Scene()
-    quadScene.add(quad)
-    const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+    controls.addEventListener('change', () => machine.cameraMoved())
+    controls.addEventListener('start', () => {
+      currentSnapId = null // user interaction leaves any snapped standard view
+    })
 
-    styleMesh(mesh, authoredEdges.b, authoredEdges.d, currentStyle) // initial state
+    // ---- Canonical part load / clear ----
+    const removePart = () => {
+      clearOverlay()
+      if (partGroup) {
+        scene.remove(partGroup)
+        if (part) {
+          // Restore each face's own material before dispose (paper is shared).
+          for (const face of part.faces) face.material = face.userData.shadedMaterial
+          disposeCanonicalPart(part)
+        }
+        if (dimPass) {
+          dimPass.geometry.dispose()
+          ;(dimPass.material as THREE.Material).dispose()
+        }
+        part = null
+        partGroup = null
+        dimPass = null
+        display = null
+      }
+    }
 
-    // ---- Left-click selection (placeholder: select the authored part) ----
+    const buildPart = () => {
+      if (!display) return
+      part = buildCanonicalPart(display)
+      partGroup = part.group
+      // Faces get polygon offset so depth-tested edge passes sit cleanly on
+      // them; the shaded material is stashed for the paper-mode swap.
+      for (const face of part.faces) {
+        const mm = face.material as THREE.MeshStandardMaterial
+        mm.polygonOffset = true
+        mm.polygonOffsetFactor = 1
+        mm.polygonOffsetUnits = 1
+        face.userData.shadedMaterial = mm
+      }
+      // B2: one merged see-through dim pass over ALL true model edges.
+      const merged: number[] = []
+      for (const edge of part.edges) {
+        const pos = edge.geometry.getAttribute('position')
+        for (let i = 0; i < pos.count; i++) merged.push(pos.getX(i), pos.getY(i), pos.getZ(i))
+      }
+      const dimGeom = new THREE.BufferGeometry()
+      dimGeom.setAttribute('position', new THREE.Float32BufferAttribute(merged, 3))
+      dimPass = new THREE.LineSegments(
+        dimGeom,
+        new THREE.LineBasicMaterial({ color: DIM_EDGE_COLOR, depthWrite: false }),
+      )
+      dimPass.name = 'canonicalEdgesDim'
+      dimPass.renderOrder = 1
+      dimPass.userData = {} // render assist — no identity, never pickable
+      partGroup.add(dimPass)
+      scene.add(partGroup)
+      applyMode()
+    }
+
+    const reloadDisplay = async () => {
+      if (!source) return
+      const token = ++loadToken
+      const fresh = await source.getDisplay()
+      if (token !== loadToken) return
+      removePart()
+      display = fresh
+      buildPart()
+      machine.cameraMoved() // schedule a fresh settle for the new package
+    }
+
+    const setDisplaySource = async (next: DisplaySource | null) => {
+      const token = ++loadToken
+      if (!next) {
+        source = null
+        removePart()
+        setSnapIds([])
+        return
+      }
+      const fresh = await next.getDisplay()
+      if (token !== loadToken) return
+      removePart()
+      source = next
+      display = fresh
+      buildPart()
+      setSnapIds(next.snapViews?.map((v) => v.view_id) ?? [])
+      fit()
+      if (next.snapViews && next.snapViews.length > 0) {
+        snapToView(next.snapViews[0].view_id)
+      } else {
+        machine.cameraMoved()
+      }
+    }
+
+    // ---- View helpers ----
+    const sceneBox = () => {
+      const box = new THREE.Box3()
+      if (partGroup) box.expandByObject(partGroup)
+      for (const g of importGroups.values()) box.expandByObject(g)
+      return box
+    }
+
+    const fit = () => {
+      const box = sceneBox()
+      if (box.isEmpty()) return
+      const sphere = box.getBoundingSphere(new THREE.Sphere())
+      const dir = camera.position.clone().sub(controls.target).normalize()
+      frustumHalf = sphere.radius * 1.15
+      camera.zoom = 1
+      const dist = sphere.radius * 4
+      controls.target.copy(sphere.center)
+      camera.position.copy(sphere.center).addScaledVector(dir, dist)
+      camera.near = 0.01
+      camera.far = dist + sphere.radius * 8
+      applyFrustum()
+      controls.update()
+    }
+
+    const reset = () => {
+      controls.target.copy(HOME_TARGET)
+      camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
+      camera.zoom = 1
+      camera.updateProjectionMatrix()
+      controls.update()
+      fit()
+    }
+
+    const snapToView = (viewId: string) => {
+      const snap = source?.snapViews?.find((v) => v.view_id === viewId)
+      if (!snap) return
+      const box = sceneBox()
+      const center = box.isEmpty() ? HOME_TARGET.clone() : box.getBoundingSphere(new THREE.Sphere()).center
+      const dir = new THREE.Vector3(...snap.direction).normalize()
+      camera.up.set(...snap.up)
+      controls.target.copy(center)
+      camera.position.copy(center).addScaledVector(dir, -120)
+      camera.zoom = 1
+      camera.updateProjectionMatrix()
+      controls.update() // fires 'change' → machine.cameraMoved()
+      fit()
+      currentSnapId = viewId // set AFTER updates: 'start' only fires on user input
+    }
+
+    const setMode = (m: DisplayMode) => {
+      currentMode = m
+      if (m === 'shading') {
+        clearOverlay() // re-applies flags; onSettle skips shading anyway
+        return
+      }
+      if (heldHlrView) {
+        rebuildOverlayForMode() // restyle the held payload — no re-request
+        return
+      }
+      applyMode()
+      machine.cameraMoved() // give the new mode a settled overlay
+    }
+
+    const setGridVisible = (v: boolean) => {
+      grid.visible = v
+      axes.visible = v
+    }
+
+    // ---- Selection (left click): canonical faces/edges ONLY — the overlay and
+    // the dim pass are never in the raycast target set (Codex1 N3). ----
     const raycaster = new THREE.Raycaster()
+    raycaster.params.Line = { threshold: 0.3 }
     const ndc = new THREE.Vector2()
     let downX = 0
     let downY = 0
+    let selectedFace: THREE.Mesh | null = null
     const onLeftDown = (e: PointerEvent) => {
       if (e.button === 0) {
         downX = e.clientX
@@ -251,13 +499,27 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     }
     const onLeftUp = (e: PointerEvent) => {
       if (e.button !== 0) return
-      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return // was a drag
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return
+      if (!part) return
       const r = canvas.getBoundingClientRect()
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      const hit = mesh.visible && raycaster.intersectObject(mesh, false).length > 0
-      mat.emissive.setHex(hit ? 0x16314e : 0x000000)
-      setSelected(hit)
+      // N3: the target set comes from pickTargets — overlay + dim pass excluded.
+      const hit = pickDisplayId(raycaster, pickTargets(part))
+      // Highlight lives on the SHADED material (paper is a shared material and
+      // MeshBasicMaterial has no emissive) — visible in the shaded modes.
+      if (selectedFace) {
+        ;(selectedFace.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(0x000000)
+        selectedFace = null
+      }
+      if (hit && hit.kind === 'face') {
+        const mesh = part.faces.find((f) => f.userData.displayId === hit.displayId) ?? null
+        if (mesh) {
+          ;(mesh.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(0x16314e)
+          selectedFace = mesh
+        }
+      }
+      setPicked(hit)
     }
     canvas.addEventListener('pointerdown', onLeftDown)
     canvas.addEventListener('pointerup', onLeftUp)
@@ -269,49 +531,13 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     }
     canvas.addEventListener('contextmenu', onContextMenu)
 
-    // ---- View helpers ----
-    const fit = () => {
-      const box = new THREE.Box3()
-      if (mesh.visible) box.expandByObject(mesh)
-      for (const g of importGroups.values()) box.expandByObject(g)
-      if (box.isEmpty()) return
-      const sphere = box.getBoundingSphere(new THREE.Sphere())
-      const dir = camera.position.clone().sub(controls.target).normalize()
-      const dist = sphere.radius / Math.sin((camera.fov * Math.PI) / 180 / 2)
-      controls.target.copy(sphere.center)
-      camera.position.copy(sphere.center).addScaledVector(dir, dist * 1.15)
-      camera.near = dist / 100
-      camera.far = dist * 100
-      camera.updateProjectionMatrix()
-      controls.update()
-    }
-    const reset = () => {
-      camera.position.copy(HOME)
-      controls.target.copy(TARGET)
-      camera.updateProjectionMatrix()
-      controls.update()
-    }
-    const setStyle = (s: DrawStyle) => {
-      currentStyle = s
-      styleMesh(mesh, authoredEdges.b, authoredEdges.d, s)
-      for (const g of importGroups.values()) applyStyleToImport(g, s)
-      // Silhouette overlay only in the edge-bearing modes; light line on the dark
-      // hidden-line backdrop, dark line over the shaded surface.
-      edgePass.uniforms.uEnabled.value = s === 'shaded-edges' || s === 'hidden-line' ? 1 : 0
-      edgePass.uniforms.uEdgeColor.value.set(0x1b1f25) // dark silhouette on the light bg
-    }
-    const setAuthoredVisible = (v: boolean) => {
-      mesh.visible = v
-    }
-    const setGridVisible = (v: boolean) => {
-      grid.visible = v
-      axes.visible = v
-    }
-
+    // ---- Imports ----
     const disposeGroup = (group: THREE.Group) => {
       group.traverse((o) => {
         const obj = o as THREE.Mesh & THREE.LineSegments
         if (obj.isMesh || obj.isLineSegments) {
+          // Never dispose the SHARED paper material — restore the own one first.
+          if (obj.userData.shadedMaterial) obj.material = obj.userData.shadedMaterial as THREE.Material
           obj.geometry?.dispose()
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
           mats.forEach((m) => m?.dispose())
@@ -344,10 +570,11 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
             polygonOffsetUnits: 1,
           }),
         )
-        const e = makeEdges(g, IMPORT_EDGE_ANGLE, 0x33373d, 0xb4bac2)
+        im.userData.shadedMaterial = im.material
+        const e = makeEdges(g, IMPORT_EDGE_ANGLE, 0x33373d, DIM_EDGE_COLOR)
         im.add(e.b)
         im.add(e.d)
-        styleMesh(im, e.b, e.d, currentStyle)
+        applyModeToMesh(im, e.b, e.d)
         group.add(im)
       }
       scene.add(group)
@@ -363,15 +590,20 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
       importGroups.delete(id)
     }
 
-    apiRef.current = { fit, reset, setStyle, setAuthoredVisible, setGridVisible, addImported, removeImported }
+    apiRef.current = {
+      fit,
+      reset,
+      setMode,
+      setGridVisible,
+      setDisplaySource,
+      snapToView,
+      addImported,
+      removeImported,
+    }
 
     const onResize = () => {
-      camera.aspect = w() / h()
-      camera.updateProjectionMatrix()
+      applyFrustum()
       renderer.setSize(w(), h())
-      const s = renderer.getDrawingBufferSize(new THREE.Vector2())
-      sceneTarget.setSize(s.x, s.y)
-      edgePass.uniforms.uTexel.value.set(1 / s.x, 1 / s.y)
     }
     window.addEventListener('resize', onResize)
 
@@ -379,51 +611,52 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
     const animate = () => {
       rafId = requestAnimationFrame(animate)
       controls.update()
-      edgePass.uniforms.uNear.value = camera.near
-      edgePass.uniforms.uFar.value = camera.far
-      // pass 1: scene → target (colour + depth); pass 2: silhouette composite → screen.
-      renderer.setRenderTarget(sceneTarget)
       renderer.render(scene, camera)
-      renderer.setRenderTarget(null)
-      renderer.render(quadScene, quadCam)
     }
     animate()
 
     return () => {
       cancelAnimationFrame(rafId)
+      machine.dispose()
       window.removeEventListener('resize', onResize)
       canvas.removeEventListener('pointerdown', onPointerDownCapture, true)
       canvas.removeEventListener('pointerdown', onLeftDown)
       canvas.removeEventListener('pointerup', onLeftUp)
       canvas.removeEventListener('contextmenu', onContextMenu)
       controls.dispose()
-      renderer.dispose()
-      geo.dispose()
-      mat.dispose()
-      authoredEdges.eg.dispose()
-      authoredEdges.b.material.dispose()
-      authoredEdges.d.material.dispose()
+      removePart()
       for (const g of importGroups.values()) disposeGroup(g)
       importGroups.clear()
-      sceneTarget.dispose()
-      depthTexture.dispose()
-      edgePass.dispose()
-      quad.geometry.dispose()
+      paperMaterial.dispose()
+      renderer.dispose()
       apiRef.current = null
       if (canvas.parentNode === mount) mount.removeChild(canvas)
     }
   }, [])
 
-  const pick = (s: DrawStyle) => {
-    setStyle(s)
-    apiRef.current?.setStyle(s)
+  const pickMode = (m: DisplayMode) => {
+    setModeState(m)
+    apiRef.current?.setMode(m)
     setMenu(null)
   }
 
   return (
     <div className="viewport-canvas">
       <div ref={mountRef} style={{ position: 'absolute', inset: 0 }} />
-      {selected && <div className="sel-badge small">selected: BracketSpike (P-000001)</div>}
+      {snapIds.length > 0 && (
+        <div className="snap-views">
+          {snapIds.map((id) => (
+            <button key={id} className="btn small" type="button" onClick={() => apiRef.current?.snapToView(id)}>
+              {id}
+            </button>
+          ))}
+        </div>
+      )}
+      {picked && (
+        <div className="sel-badge small">
+          selected: {picked.kind} <code>{picked.displayId}</code>
+        </div>
+      )}
       {menu && (
         <ul
           className="ctx-menu"
@@ -432,13 +665,6 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
         >
           <li onClick={() => { apiRef.current?.fit(); setMenu(null) }}>Fit to view</li>
           <li onClick={() => { apiRef.current?.reset(); setMenu(null) }}>Reset view</li>
-          <li className="sep" />
-          <li
-            className={showAuthored ? 'on' : ''}
-            onClick={() => { const v = !showAuthored; setShowAuthored(v); apiRef.current?.setAuthoredVisible(v); setMenu(null) }}
-          >
-            Authored part
-          </li>
           <li
             className={showGrid ? 'on' : ''}
             onClick={() => { const v = !showGrid; setShowGrid(v); apiRef.current?.setGridVisible(v); setMenu(null) }}
@@ -446,10 +672,11 @@ export default function Viewport({ apiRef: externalApi }: { apiRef?: MutableRefO
             Grid
           </li>
           <li className="sep" />
-          <li className={style === 'shaded' ? 'on' : ''} onClick={() => pick('shaded')}>Shaded</li>
-          <li className={style === 'shaded-edges' ? 'on' : ''} onClick={() => pick('shaded-edges')}>Shaded + edges</li>
-          <li className={style === 'hidden-line' ? 'on' : ''} onClick={() => pick('hidden-line')}>Hidden line</li>
-          <li className={style === 'wireframe' ? 'on' : ''} onClick={() => pick('wireframe')}>Wireframe</li>
+          {DISPLAY_MODES.map((m) => (
+            <li key={m} className={mode === m ? 'on' : ''} onClick={() => pickMode(m)}>
+              {MODE_LABELS[m]}
+            </li>
+          ))}
           <li className="sep" />
           <li className="disabled">Operations (with selection) — soon</li>
         </ul>

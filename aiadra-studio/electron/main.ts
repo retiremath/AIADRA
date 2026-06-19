@@ -231,6 +231,21 @@ function registerIpc(): void {
     return callBridge('inspect', { workspace_path: wsPath, object_ref: a.objectRef })
   })
 
+  // List Part Objects in an opened workspace (arc 20260610-1 Codex1 B1) —
+  // the renderer's object-ref source for the canonical display lane until the
+  // real model tree lands. Identity fields only (number/name/uuid); same
+  // capability discipline: only the opaque workspaceId crosses the wire.
+  ipcMain.handle('aiadra:listParts', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { workspaceId?: unknown } | null
+    if (!a || typeof a.workspaceId !== 'string') {
+      return err('listParts requires { workspaceId }')
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    return callBridge('list_parts', { workspace_path: wsPath })
+  })
+
   // Read-only Display Representation for a canonical Part (ADR/0035; arc
   // 20260609-1). Same capability discipline as inspect: only the opaque
   // workspaceId + object ref cross the wire; main resolves the path.

@@ -1,0 +1,275 @@
+{
+ "identity_echo": {
+  "object_uuid": "7eca024c-40c8-402a-88f8-bd7aa84e19c8",
+  "object_number": "P-000001",
+  "geometry_ref": "sha256:30d767e41e92b643d736a297bb7ef75baee43ceb2e15f0bd4adda79349b6c519",
+  "display_representation_version": "1.1",
+  "cache_key": "30d767e41e92b643d736a297bb7ef75baee43ceb2e15f0bd4adda79349b6c519|evt_0003|0.1.1|7.9.3.1.1",
+  "topology_signature": "topo_5fdc3a3a50ed3a27"
+ },
+ "views": [
+  {
+   "view_id": "front",
+   "projector": {
+    "projection": "orthographic",
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "direction": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "up": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "right": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "units": "mm"
+   },
+   "algorithm": "exact",
+   "coordinate_space": "view_plane_2d",
+   "correlation_min_length_mm": 0.01,
+   "segments": [
+    {
+     "polyline_2d": [
+      3.8,
+      6.0,
+      3.8,
+      0.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "outline",
+     "source": {
+      "kind": "outline",
+      "edge_id": null,
+      "face_id": "feat_0002/skp_0002:face:hole_wall",
+      "index": 0
+     }
+    },
+    {
+     "polyline_2d": [
+      23.0,
+      0.0,
+      23.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      23.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      23.0,
+      6.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      3.8,
+      0.0,
+      8.2,
+      0.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0002:face:hole_wall~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      8.2,
+      0.0,
+      3.8,
+      0.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0002:face:hole_wall~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      3.8,
+      6.0,
+      8.2,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0002:face:hole_wall~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      8.2,
+      6.0,
+      3.8,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0002:face:hole_wall~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      8.2,
+      0.0,
+      8.2,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0002:face:hole_wall~seam",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      23.0,
+      0.0,
+      23.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      23.0,
+      0.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      6.0,
+      23.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    }
+   ],
+   "counters": {
+    "visible_segments": 4,
+    "hidden_segments": 10,
+    "outline_segments": 1,
+    "discarded_tolerance_segments": 0,
+    "generation_ms": 4.702000000179396
+   }
+  }
+ ]
+}

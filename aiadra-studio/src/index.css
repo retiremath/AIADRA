@@ -113,6 +113,19 @@ body { background: var(--bg); overflow: hidden; }
 }
 
 .engine { margin-bottom: 4px; }
+.part-row { cursor: pointer; }
+.part-row.on { background: rgba(107, 155, 209, 0.18); color: var(--text-h); }
+
+/* Standard-view snap buttons (fixture lane, arc 20260610-1 P7) */
+.snap-views {
+  position: absolute;
+  right: 12px;
+  top: 10px;
+  display: flex;
+  gap: 6px;
+}
+.snap-views .btn { margin: 0; padding: 3px 8px; }
+
 .btn {
   margin: 4px 0;
   padding: 5px 10px;

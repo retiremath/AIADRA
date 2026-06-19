@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('aiadra', {
   chooseWorkspace: () => ipcRenderer.invoke('aiadra:chooseWorkspace'),
   inspect: (workspaceId: string, objectRef: string) =>
     ipcRenderer.invoke('aiadra:inspect', { workspaceId, objectRef }),
+  listParts: (workspaceId: string) => ipcRenderer.invoke('aiadra:listParts', { workspaceId }),
   displayRepresentation: (workspaceId: string, objectRef: string) =>
     ipcRenderer.invoke('aiadra:displayRepresentation', { workspaceId, objectRef }),
   displayHlr: (

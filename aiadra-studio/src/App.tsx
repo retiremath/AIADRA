@@ -1,21 +1,29 @@
 import { type MutableRefObject, useEffect, useRef, useState } from 'react'
 import Viewport, { type ViewportApi } from './Viewport'
+import { createBridgeSource } from './display/displaySource'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
 import { ACCEPT_EXTENSIONS, ACCEPT_LABEL, STEP_ENABLED } from './import/importConfig'
 
 /**
- * AIADRA Studio — desktop shell (milestone 1b). Creo-style layout: a 3D viewport
- * beside a docked "Windchill" data panel. The Engine panel proves the secure
- * renderer→main→Python bridge round-trip (ADR/0032 D6); the Reference Import
- * panel is the external inspection lane (ADR/0032 D5 lane 1) — drag/pick a STEP/STL
- * file, render it clearly marked "Imported — reference only", never Product Truth.
- * In browser-only dev (`npm run dev:web`) there is no bridge, so it degrades gracefully.
+ * AIADRA Studio — desktop shell (arc 20260610-1: the canonical display lane is
+ * live). Creo-style layout: a 3D viewport beside a docked "Windchill" data
+ * panel. The Engine panel opens a Workspace, lists its Parts (Codex1 B1 —
+ * `listParts` over the allowlisted bridge), and loads one into the viewport via
+ * the Display Representation contract. The Reference Import panel is the
+ * external inspection lane (ADR/0032 D5 lane 1) — never Product Truth.
+ * In browser-only dev (`npm run dev:web`) there is no bridge: the engine panel
+ * degrades gracefully and the viewport loads the engine-generated dev fixture
+ * (clearly badged, dev builds only).
  */
-function EnginePanel() {
+type PartRow = { object_number: string; name: string; object_uuid: string }
+
+function EnginePanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
   const [version, setVersion] = useState<string | null>(null)
   const [ws, setWs] = useState<{ name: string; workspaceId: string } | null>(null)
+  const [parts, setParts] = useState<PartRow[]>([])
+  const [loadedPart, setLoadedPart] = useState<string | null>(null)
   const [note, setNote] = useState('')
 
   useEffect(() => {
@@ -29,14 +37,36 @@ function EnginePanel() {
     })
   }, [])
 
+  const loadPart = async (workspaceId: string, part: PartRow) => {
+    try {
+      await api.current?.setDisplaySource(createBridgeSource(workspaceId, part.object_number))
+      setLoadedPart(part.object_number)
+      setNote('')
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const open = async () => {
     if (!window.aiadra) return
     const r = await window.aiadra.chooseWorkspace()
-    if (r.ok) {
-      setWs({ name: r.result.name, workspaceId: r.result.workspaceId })
-      setNote('')
-    } else if (r.error.message !== 'cancelled') {
-      setNote(r.error.message)
+    if (!r.ok) {
+      if (r.error.message !== 'cancelled') setNote(r.error.message)
+      return
+    }
+    setWs({ name: r.result.name, workspaceId: r.result.workspaceId })
+    setParts([])
+    setLoadedPart(null)
+    setNote('')
+    const list = await window.aiadra.listParts(r.result.workspaceId)
+    if (!list.ok) {
+      setNote(list.error.message)
+      return
+    }
+    setParts(list.result.parts)
+    if (list.result.parts.length === 1) {
+      // Exactly one Part — load it without a pointless extra click.
+      void loadPart(r.result.workspaceId, list.result.parts[0])
     }
   }
 
@@ -56,6 +86,21 @@ function EnginePanel() {
             Open Workspace…
           </button>
           {ws && <div className="small pad muted">workspace: {ws.name}</div>}
+          {ws && version && note && <div className="small pad err">{note}</div>}
+          {parts.length > 0 && (
+            <ul className="tree">
+              {parts.map((p) => (
+                <li
+                  key={p.object_uuid}
+                  className={`part-row ${loadedPart === p.object_number ? 'on' : ''}`}
+                  onClick={() => ws && loadPart(ws.workspaceId, p)}
+                >
+                  {p.name || p.object_number} <span className="muted small">{p.object_number}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {ws && parts.length === 0 && <div className="small pad muted">no Parts in this workspace</div>}
         </>
       )}
     </div>
@@ -170,27 +215,51 @@ function ImportPanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
 
 export default function App() {
   const viewportApi = useRef<ViewportApi | null>(null)
+  const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
+  const [fixtureError, setFixtureError] = useState<string | null>(null)
+
+  // Browser-dev fixture lane (arc 20260610-1 P7): engine-generated canned
+  // display package, loaded ONLY when there is no bridge AND this is a dev
+  // build. The dynamic import keeps the fixture data out of production bundles
+  // (proven by scripts/assert-no-fixtures.mjs — Codex1 N2).
+  useEffect(() => {
+    if (!import.meta.env.DEV || window.aiadra) return
+    let cancelled = false
+    import('./dev/fixtureSource')
+      .then(async ({ loadFixtureSource }) => {
+        const src = await loadFixtureSource()
+        if (!src || cancelled) return
+        await viewportApi.current?.setDisplaySource(src)
+        if (!cancelled) setFixtureBadge(src.badge)
+      })
+      .catch((e) => {
+        if (!cancelled) setFixtureError(e instanceof Error ? e.message : String(e))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <div className="studio">
       <header className="topbar">
         <span className="brand">AIADRA&nbsp;Studio</span>
-        <span className="muted small">milestone 1b · arc 20260603-1</span>
+        <span className="muted small">display modes · arc 20260610-1</span>
+        {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
       </header>
       <div className="workbench">
         <aside className="sidebar">
-          <EnginePanel />
+          <EnginePanel api={viewportApi} />
           <ImportPanel api={viewportApi} />
           <div className="panel-title">Model</div>
-          <ul className="tree">
-            <li>▾ BracketSpike <span className="muted small">P-000001</span></li>
-            <li className="indent">feat_0001 · sketch</li>
-            <li className="indent">feat_0002 · extrude · depth 8 mm</li>
-            <li className="indent">geom_0001 · authoring_geometry</li>
-          </ul>
+          <div className="muted small pad">
+            Model tree — placeholder; wires to real Workspace sidecars in the
+            data-panel strand. Parts load from the Engine panel above.
+          </div>
+          {fixtureError && <div className="small pad err">{fixtureError}</div>}
           <div className="panel-title">Properties</div>
           <div className="muted small pad">
-            Windchill-style Product-Truth panel — placeholder. The model tree wires
-            to real Workspace sidecars in milestone 2.
+            Windchill-style Product-Truth panel — placeholder.
           </div>
         </aside>
         <main className="viewport">

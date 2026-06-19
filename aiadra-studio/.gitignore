@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Local demo workspace for desktop-app testing (engine-generated, never Truth)
+demo-workspace
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

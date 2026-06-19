@@ -24,6 +24,11 @@ declare global {
       coreVersion(): Promise<Envelope<{ version: string }>>
       chooseWorkspace(): Promise<Envelope<{ workspaceId: string; name: string }>>
       inspect(workspaceId: string, objectRef: string): Promise<Envelope<{ object: unknown }>>
+      /** Part identity list for the opened workspace (arc 20260610-1 Codex1 B1)
+       * — the object-ref source for the canonical display lane. */
+      listParts(
+        workspaceId: string,
+      ): Promise<Envelope<{ parts: { object_number: string; name: string; object_uuid: string }[] }>>
       displayRepresentation(
         workspaceId: string,
         objectRef: string,

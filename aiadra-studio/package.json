@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "node scripts/dev.mjs dev",
     "dev:web": "vite",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node scripts/assert-no-fixtures.mjs",
     "build:web": "tsc -b && vite build",
+    "gen:fixtures": "node scripts/gen-dev-fixtures.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "smoke:step": "node scripts/step-electron-smoke.mjs",

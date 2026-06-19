@@ -91,6 +91,16 @@ export function buildCanonicalPart(dr: DisplayRepresentation): CanonicalPart {
 }
 
 /**
+ * The viewport's raycast target set: canonical faces + edges ONLY. The settled
+ * HLR overlay and render-assist passes (e.g. the hidden-line dim pass) are
+ * NEVER pick targets — ephemeral view classification carries no identity
+ * (ADR/0036 Codex1 B5; arc 20260610-1 Codex1 N3).
+ */
+export function pickTargets(part: CanonicalPart): THREE.Object3D[] {
+  return [...part.faces, ...part.edges]
+}
+
+/**
  * The picking layer: resolve a raycast against the part's objects to the
  * engine-minted display id. This is the contract's selection payload made live.
  */
