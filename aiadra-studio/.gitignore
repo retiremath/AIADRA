@@ -15,6 +15,9 @@ dist-ssr
 # Local demo workspace for desktop-app testing (engine-generated, never Truth)
 demo-workspace
 
+# Visual-capture output from `npm run shoot` (regenerable; not source)
+shots
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

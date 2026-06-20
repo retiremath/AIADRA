@@ -1,32 +1,60 @@
 # AIADRA Studio
 
-The standalone desktop authoring application for [AIADRA](..) — the **primary Workspace Browser**. A professional 3D **viewport** (Creo-style) beside a docked **Product-Truth data panel** (Windchill-style), over the AIADRA-native Workspace.
+The standalone Electron desktop authoring app — the primary Workspace Browser
+(Creo-style viewport + Windchill-style Product-Truth panel) over the
+AIADRA-native Workspace. Scope: [ADR/0032](../Docs/ADR/0032-aiadra-studio-scope.md).
+Display & UX strand: [ADR/0033](../Docs/ADR/0033-studio-display-ux-vision.md)
+(realized by [ADR/0035](../Docs/ADR/0035-display-representation-contract-and-topology-identity.md)
++ [ADR/0036](../Docs/ADR/0036-view-dependent-hlr-contract-v1-1.md)).
 
-Scoped by **[ADR/0032](../Docs/ADR/0032-aiadra-studio-scope.md)**. Status: **bootstrap spike → production seed** (Vite/React/three.js shell + first render proven; Electron, WASM-OCCT, and the engine bridge are not yet wired).
+## Running it
 
-## Architecture (per ADR/0032)
+Three lanes. **To just look at the UI, use the browser lane** — it needs nothing else.
 
-- **Shell:** Electron desktop app (over Tauri — Chromium rendering consistency for 3D/WASM).
-- **UI:** React + TypeScript + Vite (stable Vite 6 / Rollup) + three.js.
-- **Geometry:** BREP-first — tessellated from the true BREP via OCCT (adaptive, true normals, analytic edges, LOD), with **face/edge/vertex topology IDs preserved for selection**. STL is a fallback only.
-- **Two geometry lanes:** (1) external STEP/STL import = *reference* (never silently Product Truth); (2) the AIADRA Workspace lane = canonical geometry from the engine.
-- **Engine bridge:** a Studio-owned local **stdio JSON-RPC** process over Tier-1 `aiadra_core.protocol` (the Ring 2 ops: `propose`/`modify`/`inspect`/`explain`). Secure by construction (context isolation, no node integration, allowlisted IPC, off-thread untrusted-geometry parsing). No `aiadra-core` server, no network — local-first ([Manifesto P11](../Docs/Manifesto.md)).
-- **Native format:** the AIADRA **Workspace** (Git repo: Product-Truth sidecars + Vault) is authoritative; a portable bundled document is a future export.
+| Command | What it is | Needs |
+|---|---|---|
+| **`npm run dev:web`** | Plain Vite at **http://localhost:5173** — NO Electron, NO Python bridge, NO workspace. In dev with no bridge it **auto-loads the fixture part**, so you get the whole viewport (toolbar, theme, display modes, selection) to click around. | nothing |
+| `npm run dev` | The full Electron desktop app. The viewport is empty until you **Open Workspace** (it reaches `aiadra-core` through the Python bridge). Launch from a plain terminal, **not** the VSCode integrated one (it sets `ELECTRON_RUN_AS_NODE`). | a real Workspace |
+| `npm run preview` | The production-built Electron app (served from the `app://bundle` origin). | a real Workspace |
 
-## Develop
+The browser lane is for *seeing and clicking* the display UI fast. The Electron
+lanes exercise the real bridge/Workspace path (desktop acceptance).
 
-```bash
-nvm use 20            # Node 20 LTS (this repo needs 18+)
-npm install
-npm run dev           # http://localhost:5173
-npm run build
+Navigation (Creo/SolidWorks): middle = rotate · scroll = zoom · middle+shift =
+pan · middle+ctrl = zoom · left = select · right = menu. The viewport is
+orthographic, Z-up. Keyboard: `F` fit · `R` reset · `G` grid · `1`–`5` modes.
+
+## Visual capture (screenshots)
+
+`npm run shoot` boots the browser dev lane on a random free port, screenshots a
+standard gallery of the display modes (iso × 5 modes + front Hidden-Line + tilt
+No-Hidden), and tears the server down. It doubles as a **smoke** — any page or
+console error fails the run. Output goes to `shots/` (git-ignored).
+
+```sh
+npx playwright install chromium   # first time only — downloads the browser
+npm run shoot                     # → aiadra-studio/shots/*.png
+npm run shoot -- ../some/dir      # custom output directory
 ```
 
-## Status / roadmap
+## Checks
 
-- ✅ Vite + React + TS + three.js shell; lit/edged viewport; Creo-style layout; first pixels.
-- ✅ CAD navigation: middle = rotate · shift+middle = pan · ctrl+middle & scroll = zoom · left = select · right = context menu; near-zero inertia.
-- ⏳ Deferred (later): an **orthographic-camera option** for a perfectly flat pan — the perspective camera parallaxes slightly when panning (acceptable for now per Petre).
-- ▢ Milestone 1: Electron shell + secure bridge skeleton + STEP/STL import lane + orbit/pan/zoom/fit + shaded+edges + model-tree stub.
-- ▢ Milestone 2: topological selection model + AIADRA Workspace lane.
-- ▢ Milestone 3: measurement + section planes + Product-Truth data panel wired.
+```sh
+npm run test     # vitest (pure modules — settings, commands, display, import)
+npx tsc -b       # type check
+npm run build    # electron-vite build + assert-no-fixtures (proves dev fixtures
+                 # never reach the production renderer)
+```
+
+## Layout
+
+- `src/` — the React renderer (sandboxed; reaches `aiadra-core` only via the
+  allowlisted preload bridge). `display/` (canonical render path + HLR overlay +
+  display modes), `settings/` (typed registry + coordinated theme, persisted
+  under Electron userData), `commands/` + `viewstate/` (command taxonomy +
+  shared live view state), `import/` (reference STL/STEP lane, never Product Truth).
+- `electron/` — `main.ts` (security envelope, capability-gated IPC, the
+  `app://bundle` asset scheme, settings file IO) + `preload.ts`.
+- `bridge/` — the Studio-owned Python NDJSON JSON-RPC bridge over Tier-1
+  `aiadra_core.protocol` (no core server — [Manifesto P11](../Docs/Manifesto.md)).
+- `scripts/` — dev / build / capture / fixture-gen tooling.
