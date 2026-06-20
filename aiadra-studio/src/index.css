@@ -175,3 +175,53 @@ body { background: var(--bg); overflow: hidden; }
   text-decoration: underline;
 }
 .link-btn:hover { color: var(--accent); }
+
+/* ---- Command toolbar (arc 20260619-2 / 6b; ADR/0033 D9) ---- */
+.toolbar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.tb-group { display: flex; align-items: center; gap: 2px; }
+.tb-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.tb-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
+.tb-btn.on { color: var(--text-h); background: rgba(107, 155, 209, 0.22); border-color: var(--accent); }
+.tb-btn:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+.tb-segmented { border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+.tb-seg {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+}
+.tb-seg:last-child { border-right: none; }
+.tb-seg:hover:not(:disabled) { background: var(--panel); color: var(--text-h); }
+.tb-seg.on { color: #fff; background: var(--accent); }
+.tb-seg:disabled { color: var(--muted); opacity: 0.5; cursor: default; }

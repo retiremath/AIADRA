@@ -16,17 +16,18 @@ import { checkAttachHlr } from './display/attachHlr'
 import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import type { DisplaySource } from './display/displaySource'
-import { DISPLAY_MODES, MODE_LABELS, modeFlags, type DisplayMode } from './display/modes'
+import { modeFlags, type DisplayMode } from './display/modes'
 import type { Theme } from './settings/theme'
+import { toCommandContext, useViewState, type ViewStateStore } from './viewstate/store'
+import { commandsInGroup } from './commands/registry'
+import type { Command, CommandActions } from './commands/types'
 
-/** Imperative viewport API the App drives. */
+/** Imperative viewport API the App drives. Mode + grid are NOT here anymore —
+ * they flow through the shared view-state store (arc 20260619-2 / 6b). */
 export type ViewportApi = {
   fit: () => void
   reset: () => void
-  setMode: (m: DisplayMode) => void
-  /** Show/hide the ground grid + axes helper. */
-  setGridVisible: (v: boolean) => void
-  /** Live re-theming (arc 20260619-1 / 6a) — restyle every themed surface. */
+  /** Live re-theming (arc 20260619-1 / 6a). */
   applyTheme: (theme: Theme) => void
   /** Load (or clear) the canonical lane from a display source (arc 20260610-1). */
   setDisplaySource: (source: DisplaySource | null) => Promise<void>
@@ -34,27 +35,19 @@ export type ViewportApi = {
   snapToView: (viewId: string) => void
   /** Add reference-only imported geometry as one group keyed by `id` (ADR/0032 D5). */
   addImported: (id: string, meshes: ImportedMesh[]) => void
-  /** Remove an imported group and dispose all its GPU resources (Codex1 B1). */
+  /** Remove an imported group and dispose all its GPU resources. */
   removeImported: (id: string) => void
 }
 
 /**
- * AIADRA Studio viewport (arc 20260610-1 — canonical lane live;
- * arc 20260619-1 / 6a — theme-driven colors via the settings registry).
+ * AIADRA Studio viewport (arc 20260610-1 canonical lane live; 20260619-1 / 6a
+ * theme-driven; 20260619-2 / 6b store-driven mode+grid).
  *
- * Navigation (Creo/SolidWorks convention): LEFT = select, RIGHT = menu,
- * MIDDLE = rotate, MIDDLE+SHIFT = pan, MIDDLE+CTRL = zoom, SCROLL = zoom.
- *
- * Camera is ORTHOGRAPHIC, Z-up, rendering engine model coordinates identically
- * (the v1.1 HLR projector is orthographic-only). Two-phase rendering per
- * ADR/0033 D6: live GPU approximation on true model edges while orbiting; the
- * exact classified HLR overlay swaps in on settle.
- *
- * Appearance: ALL display colors come from the `theme` prop (Codex1 B2) — none
- * are hard-coded here. `theme` re-applies live via `applyTheme`; `settleMs` /
- * `defaultMode` / `gridVisibleDefault` are read at mount (startup defaults —
- * settleMs applies on next mount per Codex1 N4; the live mode/grid toggles are
- * transient per Codex1 N3).
+ * Live display state (mode, grid) lives in the shared `viewStore` (Codex1 N1):
+ * the toolbar / context menu / keyboard write it; the viewport SUBSCRIBES and
+ * applies it imperatively, and REPORTS scene facts (canonical part present?
+ * reference imports present?) back so command enablement stays correct for the
+ * imported-only lane (Codex1 B1). All display colors come from `theme` (6a B2).
  */
 
 type Menu = { x: number; y: number } | null
@@ -63,32 +56,29 @@ export default function Viewport({
   apiRef: externalApi,
   theme,
   settleMs = 200,
-  defaultMode = 'shading-edges',
-  gridVisibleDefault = true,
+  viewStore,
+  commandActions,
 }: {
   apiRef?: MutableRefObject<ViewportApi | null>
   theme: Theme
   settleMs?: number
-  defaultMode?: DisplayMode
-  gridVisibleDefault?: boolean
+  viewStore: ViewStateStore
+  commandActions: CommandActions
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const localApi = useRef<ViewportApi | null>(null)
   const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
-  const [mode, setModeState] = useState<DisplayMode>(defaultMode)
   const [picked, setPicked] = useState<{ kind: string; displayId: string } | null>(null)
-  const [showGrid, setShowGrid] = useState(gridVisibleDefault)
   const [snapIds, setSnapIds] = useState<string[]>([])
+  const ctx = toCommandContext(useViewState(viewStore))
 
   useEffect(() => {
     const mount = mountRef.current!
     const w = () => mount.clientWidth
     const h = () => mount.clientHeight
 
-    // The live theme — captured at mount, mutated by applyTheme (below). Every
-    // color is read from here; nothing is hard-coded.
     let liveTheme = theme
 
     const scene = new THREE.Scene()
@@ -143,9 +133,8 @@ export default function Viewport({
     fillLight.position.set(-50, -30, 20)
     scene.add(fillLight)
 
-    // ---- Grid + axes (Z-up). Grid colors are themed; rebuilt on theme change
-    // (GridHelper bakes its two colors into vertex colors at construction). ----
-    let gridVisible = gridVisibleDefault
+    // ---- Grid + axes (Z-up); grid colors themed, rebuilt on theme change. ----
+    let gridVisible = viewStore.getSnapshot().gridVisible
     let grid: THREE.GridHelper
     const makeGrid = (): THREE.GridHelper => {
       const g = new THREE.GridHelper(200, 40, liveTheme.gridMajor, liveTheme.gridMinor)
@@ -161,8 +150,6 @@ export default function Viewport({
     axes.visible = gridVisible
     scene.add(axes)
 
-    // The 'paper' face style (unshaded modes): an opaque background-colored body
-    // that occludes the grid — the Creo hidden-line body look.
     const paperMaterial = new THREE.MeshBasicMaterial({
       color: liveTheme.paperBody,
       polygonOffset: true,
@@ -178,13 +165,16 @@ export default function Viewport({
     let display: Awaited<ReturnType<DisplaySource['getDisplay']>> | null = null
     let overlayGroup: THREE.Group | null = null
     let heldHlrView: HlrView | null = null
-    let currentMode: DisplayMode = defaultMode
+    let currentMode: DisplayMode = viewStore.getSnapshot().mode
     let currentSnapId: string | null = null
     let loadToken = 0
 
     // ---- Imports (reference lane, ADR/0032 D5) ----
     const importGroups = new Map<string, THREE.Group>()
     const IMPORT_EDGE_ANGLE = 30
+
+    const reportReferenceFacts = () =>
+      viewStore.setSceneFacts({ hasReferenceGeometry: importGroups.size > 0 })
 
     const makeEdges = (g: THREE.BufferGeometry, thresholdDeg: number, bright: number, dim: number) => {
       const eg = new THREE.EdgesGeometry(g, thresholdDeg)
@@ -356,6 +346,7 @@ export default function Viewport({
         dimPass = null
         display = null
       }
+      viewStore.setSceneFacts({ hasCanonicalPart: false })
     }
 
     const buildPart = () => {
@@ -369,7 +360,6 @@ export default function Viewport({
         mm.polygonOffsetUnits = 1
         face.userData.shadedMaterial = mm
       }
-      // B2: one merged see-through dim pass over ALL true model edges.
       const merged: number[] = []
       for (const edge of part.edges) {
         const pos = edge.geometry.getAttribute('position')
@@ -383,10 +373,11 @@ export default function Viewport({
       )
       dimPass.name = 'canonicalEdgesDim'
       dimPass.renderOrder = 1
-      dimPass.userData = {} // render assist — no identity, never pickable
+      dimPass.userData = {}
       partGroup.add(dimPass)
       scene.add(partGroup)
       applyMode()
+      viewStore.setSceneFacts({ hasCanonicalPart: true })
     }
 
     const reloadDisplay = async () => {
@@ -472,7 +463,9 @@ export default function Viewport({
       currentSnapId = viewId
     }
 
-    const setMode = (m: DisplayMode) => {
+    // ---- Store-driven mode + grid (Codex1 N1). The viewport APPLIES; the
+    // toolbar/menu/keyboard WRITE the store. ----
+    const applyModeChange = (m: DisplayMode) => {
       currentMode = m
       if (m === 'shading') {
         clearOverlay()
@@ -486,11 +479,17 @@ export default function Viewport({
       machine.cameraMoved()
     }
 
-    const setGridVisible = (v: boolean) => {
+    const applyGridVisible = (v: boolean) => {
       gridVisible = v
       grid.visible = v
       axes.visible = v
     }
+
+    const unsubStore = viewStore.subscribe(() => {
+      const s = viewStore.getSnapshot()
+      if (s.mode !== currentMode) applyModeChange(s.mode)
+      if (s.gridVisible !== gridVisible) applyGridVisible(s.gridVisible)
+    })
 
     // ---- Selection (left click): canonical faces/edges ONLY. ----
     const raycaster = new THREE.Raycaster()
@@ -586,6 +585,7 @@ export default function Viewport({
       }
       scene.add(group)
       importGroups.set(id, group)
+      reportReferenceFacts()
       fit()
     }
 
@@ -595,11 +595,10 @@ export default function Viewport({
       scene.remove(group)
       disposeGroup(group)
       importGroups.delete(id)
+      reportReferenceFacts()
     }
 
-    // ---- Live re-theming (arc 20260619-1 / 6a; Codex1 B2 — every themed
-    // surface). No rebuild of geometry; only material colors + the grid (whose
-    // colors are baked into vertex colors) are rebuilt. ----
+    // ---- Live re-theming (arc 20260619-1 / 6a; Codex1 B2). ----
     const restyleImport = (group: THREE.Group) => {
       group.traverse((o) => {
         const m = o as THREE.Mesh
@@ -617,7 +616,6 @@ export default function Viewport({
       liveTheme = next
       ;(scene.background as THREE.Color).setHex(next.viewportBackground)
       paperMaterial.color.setHex(next.paperBody)
-      // Rebuild the grid (GridHelper colors are baked at construction).
       scene.remove(grid)
       ;(grid.material as THREE.Material).dispose()
       grid.geometry.dispose()
@@ -634,8 +632,6 @@ export default function Viewport({
     apiRef.current = {
       fit,
       reset,
-      setMode,
-      setGridVisible,
       applyTheme,
       setDisplaySource,
       snapToView,
@@ -659,6 +655,7 @@ export default function Viewport({
 
     return () => {
       cancelAnimationFrame(rafId)
+      unsubStore()
       machine.dispose()
       window.removeEventListener('resize', onResize)
       canvas.removeEventListener('pointerdown', onPointerDownCapture, true)
@@ -679,20 +676,27 @@ export default function Viewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Live theme application — re-applies whenever the theme prop changes. The
-  // main effect set apiRef.current at mount and applied the initial theme, so
-  // the first run here is idempotent. settleMs / defaultMode / gridVisibleDefault
-  // intentionally do NOT re-run the scene (startup defaults; Codex1 N3/N4).
+  // Live theme application (6a) — re-applies whenever the theme prop changes.
   useEffect(() => {
     apiRef.current?.applyTheme(theme)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme])
 
-  const pickMode = (m: DisplayMode) => {
-    setModeState(m)
-    apiRef.current?.setMode(m)
+  // Context menu — rendered from the SAME command taxonomy as the toolbar
+  // (Codex1 N2). One source of truth; no second display-state implementation.
+  const runFromMenu = (c: Command) => {
+    if (c.isEnabled(ctx)) c.run(commandActions, ctx)
     setMenu(null)
   }
+  const menuItem = (c: Command) => (
+    <li
+      key={c.id}
+      className={`${c.isActive?.(ctx) ? 'on' : ''} ${c.isEnabled(ctx) ? '' : 'disabled'}`}
+      onClick={() => runFromMenu(c)}
+    >
+      {c.label}
+    </li>
+  )
 
   return (
     <div className="viewport-canvas">
@@ -717,22 +721,13 @@ export default function Viewport({
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <li onClick={() => { apiRef.current?.fit(); setMenu(null) }}>Fit to view</li>
-          <li onClick={() => { apiRef.current?.reset(); setMenu(null) }}>Reset view</li>
-          <li
-            className={showGrid ? 'on' : ''}
-            onClick={() => { const v = !showGrid; setShowGrid(v); apiRef.current?.setGridVisible(v); setMenu(null) }}
-          >
-            Grid
-          </li>
+          {commandsInGroup('view').map(menuItem)}
           <li className="sep" />
-          {DISPLAY_MODES.map((m) => (
-            <li key={m} className={mode === m ? 'on' : ''} onClick={() => pickMode(m)}>
-              {MODE_LABELS[m]}
-            </li>
-          ))}
+          {commandsInGroup('display').map(menuItem)}
           <li className="sep" />
-          <li className="disabled">Operations (with selection) — soon</li>
+          {commandsInGroup('scene').map(menuItem)}
+          <li className="sep" />
+          {commandsInGroup('operations').map(menuItem)}
         </ul>
       )}
     </div>

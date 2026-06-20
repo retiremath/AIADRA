@@ -1,5 +1,6 @@
-import { type MutableRefObject, useEffect, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 import Viewport, { type ViewportApi } from './Viewport'
+import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
@@ -10,6 +11,9 @@ import { SettingsProvider, useRegistry, useSetting, useTheme } from './settings/
 import { createSettingsRegistry, type SettingsRegistry } from './settings/registry'
 import { createPersistence, type Persistence } from './settings/persistence'
 import { SETTING_DESCRIPTORS, type SettingDescriptor, type SettingValue } from './settings/descriptors'
+import { createViewStateStore, toCommandContext, type ViewStateStore } from './viewstate/store'
+import { dispatchShortcut, normalizeChord } from './commands/registry'
+import type { CommandActions } from './commands/types'
 
 /**
  * AIADRA Studio — desktop shell (arc 20260610-1: the canonical display lane is
@@ -320,14 +324,46 @@ function AppearancePanel() {
 function Workbench({
   ready,
   viewportApi,
+  viewStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
+  viewStore: ViewStateStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
   const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
   const [fixtureError, setFixtureError] = useState<string | null>(null)
+
+  // Command actions (Codex1 N3) — injected into the taxonomy's `run`, never
+  // captured by descriptors. Mode/grid flow through the store (so toolbar, menu,
+  // and keyboard agree); fit/reset are imperative one-shots on the viewport API.
+  const actions: CommandActions = useMemo(
+    () => ({
+      fit: () => viewportApi.current?.fit(),
+      reset: () => viewportApi.current?.reset(),
+      setMode: (m) => viewStore.setMode(m),
+      toggleGrid: () => viewStore.setGridVisible(!viewStore.getSnapshot().gridVisible),
+    }),
+    [viewStore, viewportApi],
+  )
+
+  // Keyboard shortcuts (Codex1 N4) — guarded: no command fires while typing in
+  // an input / select / textarea / contenteditable, or with modifier chords the
+  // browser should own.
+  useEffect(() => {
+    if (!ready) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t?.isContentEditable) return
+      const chord = normalizeChord(e)
+      const ctx = toCommandContext(viewStore.getSnapshot())
+      if (dispatchShortcut(chord, ctx, actions)) e.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [ready, viewStore, actions])
 
   // Browser-dev fixture lane (arc 20260610-1 P7): loaded ONLY when there is no
   // bridge AND this is a dev build, after settings are ready (so the Viewport
@@ -355,7 +391,7 @@ function Workbench({
     <div className="studio">
       <header className="topbar">
         <span className="brand">AIADRA&nbsp;Studio</span>
-        <span className="muted small">appearance + interaction shell · arc 20260619-1</span>
+        <span className="muted small">command toolbar · arc 20260619-2</span>
         {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
       </header>
       <div className="workbench">
@@ -376,13 +412,16 @@ function Workbench({
         </aside>
         <main className="viewport">
           {ready ? (
-            <Viewport
-              apiRef={viewportApi}
-              theme={theme}
-              settleMs={registry.get('settleMs') as number}
-              defaultMode={registry.get('defaultDisplayMode') as DisplayMode}
-              gridVisibleDefault={registry.get('gridVisibleDefault') as boolean}
-            />
+            <>
+              <Toolbar store={viewStore} actions={actions} />
+              <Viewport
+                apiRef={viewportApi}
+                theme={theme}
+                settleMs={registry.get('settleMs') as number}
+                viewStore={viewStore}
+                commandActions={actions}
+              />
+            </>
           ) : (
             <div className="hud muted small">initializing…</div>
           )}
@@ -397,6 +436,7 @@ export default function App() {
   const viewportApi = useRef<ViewportApi | null>(null)
   const registryRef = useRef<SettingsRegistry | null>(null)
   const persistenceRef = useRef<Persistence | null>(null)
+  const viewStoreRef = useRef<ViewStateStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -406,6 +446,19 @@ export default function App() {
     registryRef.current = createSettingsRegistry({ onChange: (blob) => persistence.save(blob) })
   }
   const registry = registryRef.current
+
+  if (!viewStoreRef.current) {
+    // Live view-state store (6b). Seeded from built-in defaults now; re-seeded
+    // from the hydrated registry in the boot effect before `ready` flips, so the
+    // persisted startup mode/grid (6a N3) apply on first viewport mount.
+    viewStoreRef.current = createViewStateStore({
+      mode: registry.get('defaultDisplayMode') as DisplayMode,
+      gridVisible: registry.get('gridVisibleDefault') as boolean,
+      hasCanonicalPart: false,
+      hasReferenceGeometry: false,
+    })
+  }
+  const viewStore = viewStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -423,6 +476,10 @@ export default function App() {
             console.error('[settings] hydrate failed, using defaults:', e instanceof Error ? e.message : e)
           }
         }
+        // Re-seed the view-state store from the (now hydrated) registry so the
+        // persisted startup mode/grid apply on the first viewport mount.
+        viewStore.setMode(registry.get('defaultDisplayMode') as DisplayMode)
+        viewStore.setGridVisible(registry.get('gridVisibleDefault') as boolean)
         setReady(true)
       })
       .catch(() => setReady(true))
@@ -430,11 +487,11 @@ export default function App() {
       cancelled = true
       void persistenceRef.current?.flush()
     }
-  }, [registry])
+  }, [registry, viewStore])
 
   return (
     <SettingsProvider registry={registry}>
-      <Workbench ready={ready} viewportApi={viewportApi} />
+      <Workbench ready={ready} viewportApi={viewportApi} viewStore={viewStore} />
     </SettingsProvider>
   )
 }
