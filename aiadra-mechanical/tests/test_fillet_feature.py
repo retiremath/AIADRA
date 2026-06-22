@@ -307,9 +307,9 @@ def test_missed_blend_hint_fails_loud_not_placeholder(workspace_with_part: Path,
     """Codex2 B2: if a blend hint is ever missed (empty Generated, or a hint face
     not found in the final map), the unclaimed cylinder must FAIL LOUD — never
     mint a fabricated `…/None:face:hole_wall` placeholder (ADR/0035 no-placeholder;
-    ADR/0038 by-construction). Forced by neutering `_claimed_blend_roles`."""
+    ADR/0038 by-construction). Forced by neutering the produced-role claim."""
     feats = _box_with_fillet_recipe()  # a box (no circle primitive) + a fillet blend
-    monkeypatch.setattr(topology, "_claimed_blend_roles", lambda face_map, blend_hints: {})
+    monkeypatch.setattr(topology, "_claimed_produced_roles", lambda face_map, produced_hints: {})
     with pytest.raises(TransactionError, match="unclaimed cylinder"):
         topology.extract_part_topology(feats)
 

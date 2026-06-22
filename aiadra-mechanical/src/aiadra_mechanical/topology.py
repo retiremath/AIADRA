@@ -156,7 +156,7 @@ def extract_part_topology(
 
     face_map, faces, edges = correlate_shape(
         shape, features,
-        blend_hints=result.blend_hints,
+        produced_hints=result.produced_hints,
         linear_deflection_mm=linear_deflection_mm,
         angular_deflection_rad=angular_deflection_rad,
     )
@@ -180,16 +180,16 @@ def correlate_shape(
     shape,
     features: list[dict[str, Any]],
     *,
-    blend_hints: tuple = (),
+    produced_hints: tuple = (),
     linear_deflection_mm: float = DEFAULT_LINEAR_DEFLECTION_MM,
     angular_deflection_rad: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
 ):
     """Mesh + correlate a PREBUILT solid to recipe-anchored face/edge records.
-    Split out of `extract_part_topology` (arc 20260621-2) so the fillet fold can
-    resolve a target edge on the SAME running instance it is about to fillet
-    (ADR/0038 D3). `blend_hints` carry by-construction roles for fillet-produced
-    faces (ADR/0038 D6); they are claimed BEFORE the geometric plane/cylinder
-    rule so a blend cylinder is never mislabeled as a hole wall.
+    Split out of `extract_part_topology` (arc 20260621-2) so a fold can resolve a
+    target edge/face on the SAME running instance it mutates (ADR/0038 D3).
+    `produced_hints` carry by-construction roles for feature-produced faces
+    (fillet blends, hole walls — ADR/0038 D6 + A3); they are claimed BEFORE the
+    geometric plane/cylinder rule so a produced face is never re-guessed.
 
     Returns `(face_map, faces, edges)`.
     """
@@ -199,7 +199,7 @@ def correlate_shape(
     recipe = _extract_recipe_geometry(features)
     face_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_FACE, face_map)
-    claimed = _claimed_blend_roles(face_map, blend_hints)
+    claimed = _claimed_produced_roles(face_map, produced_hints)
     role_by_face_index = _correlate_faces(face_map, recipe, claimed)
 
     faces: list[FaceRecord] = []
@@ -221,24 +221,65 @@ def correlate_shape(
     return face_map, tuple(faces), edges
 
 
-def _claimed_blend_roles(face_map, blend_hints) -> dict[int, str]:
-    """Map face_map index → blend role from the evaluator's construction hints
-    (ADR/0038 D6). A hint face not present in this shape (it belongs to an
-    intermediate fold step, not the final solid) is skipped."""
+def _claimed_produced_roles(face_map, produced_hints) -> dict[int, str]:
+    """Map face_map index → produced role from the evaluator's construction hints
+    (ADR/0038 D6 + the A3 mandatory-claim invariant, Codex1 B2 of arc 20260622-2).
+    The claim is MANDATORY, not best-effort:
+      - a produced role with ZERO faces fails loud;
+      - a hinted face NOT FOUND in the final face_map fails loud (never skipped);
+      - multi-face roles get a DETERMINISTIC `#k` suffix from the sorted face_map
+        index — never raw Modified()/Generated() iteration order.
+    Geometry may later verify a claimed face's surface kind; it may never invent
+    or substitute the role."""
     claimed: dict[int, str] = {}
-    for hint in blend_hints:
-        blend_faces = hint.blend_faces
-        for k, face in enumerate(blend_faces):
+    for hint in produced_hints:
+        faces = hint.faces
+        base = f"{hint.feature_id}:face:{hint.role_base}"
+        if not faces:
+            raise TransactionError(
+                f"mechanical.display: produced role {base!r} has zero faces — the "
+                f"by-construction claim failed (ADR/0038 D6/A3)"
+            )
+        indices: list[int] = []
+        for face in faces:
             idx = face_map.FindIndex(face)
             if idx == 0:
-                continue
-            role = (
-                f"{hint.fillet_feature_id}:face:blend"
-                if len(blend_faces) == 1
-                else f"{hint.fillet_feature_id}:face:blend#{k}"
-            )
-            claimed[idx] = role
+                raise TransactionError(
+                    f"mechanical.display: a produced face for {base!r} is not present "
+                    f"in the final shape — the by-construction claim failed (ADR/0038 "
+                    f"D6/A3); refusing to silently skip it"
+                )
+            indices.append(idx)
+        indices.sort()  # deterministic #k ordering, stable across runs
+        single = len(indices) == 1
+        for k, idx in enumerate(indices):
+            claimed[idx] = base if single else f"{base}#{k}"
     return claimed
+
+
+def resolve_face_on_shape(
+    shape,
+    features: list[dict[str, Any]],
+    face_role: str,
+):
+    """Resolve a persisted face reference (ADR/0038 A1) to EXACTLY ONE live face
+    on `shape`, recipe-first. Zero matches (missing role / topology change) or
+    many matches (ambiguous) → fail loud (Class-1 `TransactionError`); never a
+    nearest-geometry guess (ADR/0038 D4)."""
+    _face_map, faces, _edges = correlate_shape(shape, features)
+    matches = [f for f in faces if f.face_id == face_role]
+    if not matches:
+        raise TransactionError(
+            f"mechanical: face reference {face_role!r} resolves to NO face on the "
+            f"parent topology — a missing role or a topology change. Re-pick the "
+            f"face (ADR/0038 D4)."
+        )
+    if len(matches) > 1:
+        raise TransactionError(
+            f"mechanical: face reference {face_role!r} is AMBIGUOUS — resolves to "
+            f"{len(matches)} faces. Refusing to guess (ADR/0038 D4)."
+        )
+    return matches[0].face
 
 
 def resolve_edge_on_shape(
@@ -289,12 +330,20 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             )
         elif ftype == "fillet":
             # A fillet IS a topology change; retargeting it changes topology too
-            # (ADR/0038 D4) — so the target anchor is part of the skeleton.
+            # (ADR/0038 D4) — so the target ANCHOR is part of the skeleton, but
+            # the radius VALUE is not (ADR/0038 A2).
             tgt = (f.get("adapter_payload") or {}).get("target_edge", {})
             entry["target"] = [
                 sorted(tgt.get("adjacent_face_roles", [])),
                 tgt.get("edge_kind"),
             ]
+        elif ftype == "hole":
+            # ADR/0038 A2 (Codex1 B1, arc 20260622-2): the target_face ROLE is
+            # skeleton (retargeting changes topology); the diameter/centre VALUES
+            # are NOT — moving/resizing a hole within the same face is a parameter
+            # edit, exactly like a sketch circle's position/radius.
+            tgt = (f.get("adapter_payload") or {}).get("target_face", {})
+            entry["target"] = tgt.get("face_role")
         skeleton.append(entry)
     raw = json.dumps(skeleton, sort_keys=True).encode("utf-8")
     return "topo_" + hashlib.sha256(raw).hexdigest()[:16]
@@ -405,9 +454,9 @@ def _correlate_faces(
             if circle_skp is None:
                 raise TransactionError(
                     f"mechanical.display: face {i} is an unclaimed cylinder but the "
-                    f"recipe has no circle primitive — a fillet blend must be claimed "
-                    f"by construction (ADR/0038 D6). Refusing to mint a placeholder "
-                    f"hole_wall role (ADR/0035 no-placeholder)."
+                    f"recipe has no circle primitive — a produced face (fillet blend / "
+                    f"hole wall) must be claimed by construction (ADR/0038 D6/A3). "
+                    f"Refusing to mint a placeholder hole_wall role (ADR/0035 no-placeholder)."
                 )
             roles[i] = f"{feat_prefix}/{circle_skp}:face:hole_wall"
             continue

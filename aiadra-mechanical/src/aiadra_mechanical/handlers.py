@@ -27,18 +27,26 @@ from typing import TYPE_CHECKING, Any
 from aiadra_core.transaction.boundary import TransactionError
 
 from . import cache
-from .adapter_payload import build_extrude_payload, build_fillet_payload, build_sketch_payload
+from .adapter_payload import (
+    build_extrude_payload,
+    build_fillet_payload,
+    build_hole_payload,
+    build_sketch_payload,
+    require_simple_cap_fit,
+)
 from .kernel import compute_recipe_bytes, vault_ref_for_bytes
 
 if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.3 (arc 20260622-2): adds the hole feature + the `target_face` reference
+# (ADR/0038 A1) + the generic produced-role vocabulary (`…:face:hole_wall`; A3).
 # 0.1.2 (arc 20260621-2): adds the fillet feature + the engine-owned recipe-
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.2"
+ADAPTER_SCHEMA_VERSION = "0.1.3"
 
 
 # =============================================================================
@@ -311,7 +319,125 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
 
 
 # =============================================================================
-# Handler 4: adjust_feature_parameter
+# Handler 4: add_hole_feature (ADR/0037 D8; ADR/0038 A1-A3; arc 20260622-2)
+# =============================================================================
+
+
+def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_hole_feature")
+    target_face_id = _require_param(params, "target_face_id", str, "mechanical.add_hole_feature")
+    diameter_mm = _require_param(params, "diameter_mm", (int, float), "mechanical.add_hole_feature")
+    center_x_mm = _require_param(params, "center_x_mm", (int, float), "mechanical.add_hole_feature")
+    center_y_mm = _require_param(params, "center_y_mm", (int, float), "mechanical.add_hole_feature")
+    if diameter_mm <= 0:
+        raise TransactionError(
+            f"mechanical.add_hole_feature: diameter_mm must be positive, got {diameter_mm!r}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+    features = sidecar.get("feature", [])
+    extrude = next(
+        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+    )
+    if extrude is None:
+        raise TransactionError(
+            f"mechanical.add_hole_feature: Part {part_number} has no extruded solid"
+        )
+
+    # ADR/0038 D1/A1: resolve the display `face_id` SELECTOR against a fresh
+    # extraction; persist the structured recipe anchor read from THAT extraction.
+    from . import topology
+
+    topo = topology.extract_part_topology(list(features))
+    match = next((f for f in topo.faces if f.face_id == target_face_id), None)
+    if match is None:
+        raise TransactionError(
+            f"mechanical.add_hole_feature: target_face_id {target_face_id!r} not found on "
+            f"Part {part_number} (available: {sorted(f.face_id for f in topo.faces)})"
+        )
+    # Operation-scope guard (the face analog of fillet's sharp-only B1): v1 places
+    # a hole on a CAP face only (cap_top / cap_base). Class-1, before staging.
+    if not (match.face_id.endswith(":face:cap_top") or match.face_id.endswith(":face:cap_base")):
+        raise TransactionError(
+            f"mechanical.add_hole_feature: v1 places a hole on a cap face only "
+            f"(cap_top / cap_base); target {target_face_id!r} is not a cap. Pick a cap face."
+        )
+
+    # Simple-cap + fit-within-face (Codex1 B3): Class-1 domain, before staging.
+    # The SAME `require_simple_cap_fit` is re-run inside the evaluator fold
+    # (Codex2 B1), so every later parameter-edit / regeneration path enforces it
+    # too — this handler call is the early-error path. `features` here is the
+    # parent prefix (the new hole is not appended yet).
+    require_simple_cap_fit(features, float(center_x_mm), float(center_y_mm), diameter_mm / 2.0)
+
+    feature_id = _next_id(features, prefix="feat_")
+    base = int(_next_id_within_parameters(features, prefix="featp_")[len("featp_"):])
+    params_records = [
+        {"id": f"featp_{base:04d}", "name": "diameter_mm", "value": float(diameter_mm),
+         "datatype": "number", "unit": "mm"},
+        {"id": f"featp_{base + 1:04d}", "name": "center_x_mm", "value": float(center_x_mm),
+         "datatype": "number", "unit": "mm"},
+        {"id": f"featp_{base + 2:04d}", "name": "center_y_mm", "value": float(center_y_mm),
+         "datatype": "number", "unit": "mm"},
+    ]
+    feature_record = {
+        "id": feature_id,
+        "name": f"hole_{feature_id}",
+        "feature_type": "hole",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        "parameters": params_records,
+        "adapter_payload": build_hole_payload(
+            face_role=match.face_id,
+            resolved_against_topology_signature=topo.topology_signature,
+        ),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    _gate_validity(context, sidecar["feature"])  # folds the hole through real OCCT
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    existing_geom = next(
+        (g for g in sidecar.get("geometry_ref", [])
+         if g.get("role") == "authoring_geometry"
+         and extrude["id"] in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    if existing_geom is None:
+        raise TransactionError(
+            f"mechanical.add_hole_feature: no authoring_geometry derived from the extrude "
+            f"on Part {part_number}"
+        )
+    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    updated_geom = copy.deepcopy(existing_geom)
+    updated_geom["vault_ref"] = vault_ref
+    updated_geom["derived_from_feature_ids"] = derived
+    updated_geom["fact_provenance"] = {
+        "category": "computed_result",
+        "derived_from": [f"feature:{fid}" for fid in derived],
+    }
+    for i, g in enumerate(sidecar["geometry_ref"]):
+        if g.get("id") == updated_geom["id"]:
+            sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
+            break
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": (
+            f"add hole feature {feature_id} (Ø{diameter_mm}mm at "
+            f"({center_x_mm},{center_y_mm})) on face {target_face_id}"
+        ),
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"updated": [{"id": updated_geom["id"], "new_record": copy.deepcopy(updated_geom)}]},
+    })
+
+
+# =============================================================================
+# Handler 5: adjust_feature_parameter
 # =============================================================================
 
 
@@ -382,7 +508,7 @@ def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict
 
 
 # =============================================================================
-# Handler 5: remove_feature
+# Handler 6: remove_feature
 # =============================================================================
 
 

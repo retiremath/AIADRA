@@ -27,7 +27,10 @@ from typing import Any
 
 from aiadra_core.transaction.boundary import TransactionError
 
+from OCP.Bnd import Bnd_Box
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
@@ -35,10 +38,14 @@ from OCP.BRepBuilderAPI import (
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
-from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
 from OCP.Precision import Precision
+from OCP.TopAbs import TopAbs_FACE
+from OCP.TopExp import TopExp
 from OCP.TopoDS import TopoDS, TopoDS_Shape
+from OCP.TopTools import TopTools_IndexedMapOfShape
 
 # ADR/0031 D9 — pinned tolerance default (OCCT confusion tolerance). Identity is
 # recipe-hash so this does not affect `vault_ref`; it gates validity only.
@@ -55,15 +62,19 @@ class MechanicalKernelEvaluationError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class BlendHint:
-    """By-construction role authority for fillet-produced topology (ADR/0038 D6,
-    arc 20260621-2). `blend_faces` are the live faces `BRepFilletAPI_MakeFillet`
-    reported it generated from the target edge — the topology layer consumes
-    these as recipe authority for the `…:face:blend` role, NEVER re-guessing the
-    blend from surface geometry (which would collide with hole_wall cylinders)."""
+class ProducedFaceHint:
+    """By-construction role authority for feature-produced topology (ADR/0038 D6
+    + the arc 20260622-2 A3 amendment). `faces` are the live faces the producing
+    OCCT operation reported (a fillet blend via `MakeFillet.Generated(edge)`; a
+    hole wall via `Cut.Modified(cutter_lateral)`). The single topology extractor
+    consumes these as recipe authority for the `feat_N:face:<role_base>` role and
+    enforces the MANDATORY claim invariant — NEVER re-guessing a produced face
+    from surface geometry. `role_base` is feature-kind-owned (`blend`,
+    `hole_wall`, …), not always `blend`."""
 
-    fillet_feature_id: str
-    blend_faces: tuple[Any, ...]          # live TopoDS_Face handles in `.shape`
+    feature_id: str
+    role_base: str
+    faces: tuple[Any, ...]                # live TopoDS_Face handles in `.shape`
 
 
 @dataclass(frozen=True)
@@ -74,7 +85,7 @@ class EvalResult:
     assigned recipe-first, by construction."""
 
     shape: TopoDS_Shape
-    blend_hints: tuple[BlendHint, ...] = field(default_factory=tuple)
+    produced_hints: tuple[ProducedFaceHint, ...] = field(default_factory=tuple)
 
 
 def evaluate_part(features: list[dict[str, Any]]) -> TopoDS_Shape:
@@ -114,88 +125,177 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
 
     _assert_valid(shape, "base solid")
 
-    # Sequential fold (ADR/0038 D3): fold each subsequent feature onto the
-    # running solid. v0.0.1 → v0.1.2 adds the fillet; the loop generalizes.
-    blend_hints: list[BlendHint] = []
-    fillets = [f for f in features if f.get("feature_type") == "fillet"]
-    if fillets:
+    # Sequential fold (ADR/0038 D3): fold each post-base feature onto the running
+    # solid, in recipe order. v0.1.2 added the fillet; v0.1.3 adds the hole. Each
+    # produced feature emits a ProducedFaceHint (A3) for by-construction roles.
+    # (v1 scope: a single produced feature on a plain extrude — resolving a
+    # second produced feature's reference against a shape that already carries
+    # prior produced faces is deferred, and fails loud rather than mislabel.)
+    produced: list[ProducedFaceHint] = []
+    running = shape
+    for idx, feat in enumerate(features):
+        ftype = feat.get("feature_type")
+        if ftype not in ("fillet", "hole"):
+            continue
         if extrude is None:
             raise TransactionError(
-                f"{ENGINE_OP_PREFIX}: a fillet requires an extruded solid to round"
+                f"{ENGINE_OP_PREFIX}: a {ftype} requires an extruded solid"
             )
-        shape, blend_hints = _apply_fillets(shape, features, fillets)
+        prefix = features[:idx]
+        if ftype == "fillet":
+            running, hint = _apply_one_fillet(running, prefix, feat)
+        else:
+            running, hint = _apply_one_hole(running, prefix, feat)
+        produced.append(hint)
 
-    return EvalResult(shape=shape, blend_hints=tuple(blend_hints))
+    return EvalResult(shape=running, produced_hints=tuple(produced))
 
 
-def _apply_fillets(
-    base: TopoDS_Shape,
-    features: list[dict[str, Any]],
-    fillets: list[dict[str, Any]],
-) -> tuple[TopoDS_Shape, list[BlendHint]]:
-    """Fold each fillet onto the running solid. The target edge is resolved on
-    the SAME running instance it is filleted (the spike's same-instance rule),
-    by its persisted recipe-anchored reference (ADR/0038 D2/D3) — never the
-    display id. Resolution is exactly-one-or-fail (Class-1); a plausible-but-
-    unbuildable radius surfaces as Class-2 (Codex1 Q3)."""
+def _check_reference_staleness(prefix, tgt, feature, what: str) -> None:
+    """ADR/0038 D4: the persisted reference resolves against the parent-prefix
+    skeleton it was authored against. A skeleton change (a topology edit, NOT a
+    parameter edit) fails loud."""
+    from . import topology
+
+    stored_sig = tgt.get("resolved_against_topology_signature")
+    current_sig = topology.compute_topology_signature(prefix)
+    if stored_sig != current_sig:
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: {feature.get('feature_type')} {feature.get('id')!r} "
+            f"{what} is STALE — the parent topology skeleton changed since it was "
+            f"authored (resolved_against={stored_sig!r}, current={current_sig!r}). "
+            f"A parameter edit preserves the reference; a topology edit requires re-picking."
+        )
+
+
+def _apply_one_fillet(running, prefix, fillet):
+    """Round one sharp edge (ADR/0038 D2/D3). The edge is resolved on the SAME
+    running instance it is filleted (the spike's same-instance rule)."""
     from . import topology  # lazy: topology imports geometry at module top
 
-    running = base
-    hints: list[BlendHint] = []
-    for fillet in fillets:
-        idx = features.index(fillet)
-        prefix = features[:idx]
-        tgt = (fillet.get("adapter_payload") or {}).get("target_edge")
-        if not isinstance(tgt, dict):
-            raise TransactionError(
-                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} has no target_edge "
-                f"reference in adapter_payload"
-            )
-        roles = tuple(tgt.get("adjacent_face_roles", ()))
-        kind = tgt.get("edge_kind")
+    tgt = (fillet.get("adapter_payload") or {}).get("target_edge")
+    if not isinstance(tgt, dict):
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} has no target_edge reference"
+        )
+    _check_reference_staleness(prefix, tgt, fillet, "target edge")
+    roles = tuple(tgt.get("adjacent_face_roles", ()))
+    kind = tgt.get("edge_kind")
+    edge = topology.resolve_edge_on_shape(running, prefix, roles, kind)
+    radius = _fillet_radius(fillet)
+    try:
+        mk = BRepFilletAPI_MakeFillet(running)
+        mk.Add(radius, edge)
+        filleted = mk.Shape()
+        generated = tuple(TopoDS.Face_s(s) for s in mk.Generated(edge))
+    except (TransactionError, MechanicalKernelEvaluationError):
+        raise
+    except Exception as exc:  # plausible reference, unbuildable radius/blend
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} (radius={radius}) "
+            f"could not be built by OCCT: {exc!r}"
+        ) from exc
+    _assert_valid(filleted, f"fillet {fillet.get('id')!r}")
+    if not generated:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} built a solid but OCCT "
+            f"reported no generated blend face (ADR/0038 D6)"
+        )
+    return filleted, ProducedFaceHint(feature_id=fillet["id"], role_base="blend", faces=generated)
 
-        # Staleness guard (ADR/0038 D4): the reference resolves against the
-        # parent-prefix skeleton it was authored against. A skeleton change
-        # (a topology edit, not a parameter edit) fails loud — re-pick the edge.
-        stored_sig = tgt.get("resolved_against_topology_signature")
-        current_sig = topology.compute_topology_signature(prefix)
-        if stored_sig != current_sig:
-            raise TransactionError(
-                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} target edge is "
-                f"STALE — the parent topology skeleton changed since it was "
-                f"authored (resolved_against={stored_sig!r}, current={current_sig!r}). "
-                f"A parameter edit preserves the reference; a topology edit requires "
-                f"re-picking the edge."
-            )
 
-        edge = topology.resolve_edge_on_shape(running, prefix, roles, kind)
-        radius = _fillet_radius(fillet)
-        try:
-            mk = BRepFilletAPI_MakeFillet(running)
-            mk.Add(radius, edge)
-            filleted = mk.Shape()
-            generated = tuple(TopoDS.Face_s(s) for s in mk.Generated(edge))
-        except (TransactionError, MechanicalKernelEvaluationError):
-            raise
-        except Exception as exc:  # plausible reference, unbuildable radius/blend
-            raise MechanicalKernelEvaluationError(
-                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} (radius={radius}) "
-                f"could not be built by OCCT: {exc!r}"
-            ) from exc
-        _assert_valid(filleted, f"fillet {fillet.get('id')!r}")
-        # Codex2 B2: by-construction blend identity REQUIRES a generated face.
-        # An empty `Generated` means we cannot assign a blend role by
-        # construction — fail loud rather than let an unclaimed cylinder fall
-        # through to a fabricated hole_wall placeholder downstream (ADR/0038 D6).
-        if not generated:
-            raise MechanicalKernelEvaluationError(
-                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} built a solid but OCCT "
-                f"reported no generated blend face — cannot establish by-construction "
-                f"blend identity (ADR/0038 D6)"
-            )
-        hints.append(BlendHint(fillet_feature_id=fillet["id"], blend_faces=generated))
-        running = filleted
-    return running, hints
+def _apply_one_hole(running, prefix, hole):
+    """Cut one circular through-hole on a cap face (ADR/0038 D2/D3 + A1). The
+    face is resolved on the running instance; the wall is captured BY
+    CONSTRUCTION from the boolean cut (A3)."""
+    from . import topology
+
+    tgt = (hole.get("adapter_payload") or {}).get("target_face")
+    if not isinstance(tgt, dict):
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: hole {hole.get('id')!r} has no target_face reference"
+        )
+    _check_reference_staleness(prefix, tgt, hole, "target face")
+    role = tgt.get("face_role")
+    face = topology.resolve_face_on_shape(running, prefix, role)
+    diameter = _hole_param(hole, "diameter_mm", positive=True)
+    cx = _hole_param(hole, "center_x_mm")
+    cy = _hole_param(hole, "center_y_mm")
+    # Codex2 B1: enforce the v1 simple-cap + fit-within-face DOMAIN contract on
+    # EVERY regeneration / parameter-edit path (not only the handler's initial
+    # add), so an edited centre/diameter that breaches the cap fails Class-1
+    # before the kernel — never a side-breaching cut or a Class-2 surprise.
+    from .adapter_payload import require_simple_cap_fit
+
+    require_simple_cap_fit(prefix, cx, cy, diameter / 2.0)
+    holed, wall = _cut_through_hole(running, cx, cy, face, diameter, hole.get("id"))
+    return holed, ProducedFaceHint(feature_id=hole["id"], role_base="hole_wall", faces=wall)
+
+
+def _cut_through_hole(running, cx, cy, face, diameter, hole_id):
+    """Cut a Ø`diameter` through-hole at sketch-XY (`cx`,`cy`) through a cap face.
+    Cap = planar, normal ∥ the extrude axis (Z); the cylinder spans the solid's
+    full Z-extent so the cut is direction-agnostic for cap_top and cap_base. The
+    wall is captured by construction via `Cut.Modified(cylinder_lateral)`."""
+    surf = BRepAdaptor_Surface(face)
+    if surf.GetType() != GeomAbs_Plane:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: hole {hole_id!r} target face is not planar"
+        )
+    n = surf.Plane().Position().Direction()
+    if abs(n.Z()) < 0.999:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: hole {hole_id!r} target face is not a cap "
+            f"(normal not parallel to the extrude axis)"
+        )
+    bbox = Bnd_Box()
+    BRepBndLib.Add_s(running, bbox)
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+    margin = 1.0
+    try:
+        axis = gp_Ax2(gp_Pnt(cx, cy, zmin - margin), gp_Dir(0.0, 0.0, 1.0))
+        cyl = BRepPrimAPI_MakeCylinder(axis, diameter / 2.0, (zmax - zmin) + 2 * margin).Shape()
+        cut = BRepAlgoAPI_Cut(running, cyl)
+        holed = cut.Shape()
+        wall = tuple(TopoDS.Face_s(s) for s in cut.Modified(_cylinder_lateral_face(cyl)))
+    except (TransactionError, MechanicalKernelEvaluationError):
+        raise
+    except Exception as exc:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: hole {hole_id!r} (Ø{diameter}) could not be built by OCCT: {exc!r}"
+        ) from exc
+    _assert_valid(holed, f"hole {hole_id!r}")
+    if not wall:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: hole {hole_id!r} produced no wall face by construction (ADR/0038 D6)"
+        )
+    return holed, wall
+
+
+def _cylinder_lateral_face(cyl):
+    fm = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(cyl, TopAbs_FACE, fm)
+    for i in range(1, fm.Extent() + 1):
+        f = TopoDS.Face_s(fm.FindKey(i))
+        if BRepAdaptor_Surface(f).GetType() == GeomAbs_Cylinder:
+            return f
+    raise MechanicalKernelEvaluationError(
+        f"{ENGINE_OP_PREFIX}: hole cutting cylinder has no lateral face"
+    )
+
+
+def _hole_param(hole: dict[str, Any], name: str, *, positive: bool = False) -> float:
+    for p in hole.get("parameters", []):
+        if p.get("name") == name:
+            v = float(p["value"])
+            if positive and v <= 0:
+                raise TransactionError(
+                    f"{ENGINE_OP_PREFIX}: hole {name} must be positive, got {v!r}"
+                )
+            return v
+    raise TransactionError(
+        f"{ENGINE_OP_PREFIX}: hole feature {hole.get('id')!r} missing a {name!r} parameter record"
+    )
 
 
 def _assert_valid(shape: TopoDS_Shape, label: str) -> None:

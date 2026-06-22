@@ -27,6 +27,7 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     from .handlers import (
         handle_add_extrude_feature,
         handle_add_fillet_feature,
+        handle_add_hole_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
         handle_remove_feature,
@@ -34,8 +35,10 @@ def register(registrar: "NativeEngineRegistrar") -> None:
 
     registrar.add_operation("mechanical.add_sketch_feature", handle_add_sketch_feature)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
-    # First referencing feature — ADR/0037 D8 step 1; ADR/0038 (arc 20260621-2).
+    # First referencing feature (edge) — ADR/0037 D8 step 1; ADR/0038 (arc 20260621-2).
     registrar.add_operation("mechanical.add_fillet_feature", handle_add_fillet_feature)
+    # First FACE reference — ADR/0037 D8; ADR/0038 A1-A3 (arc 20260622-2).
+    registrar.add_operation("mechanical.add_hole_feature", handle_add_hole_feature)
     registrar.add_operation("mechanical.adjust_feature_parameter", handle_adjust_feature_parameter)
     registrar.add_operation("mechanical.remove_feature", handle_remove_feature)
 

@@ -142,6 +142,90 @@ def build_fillet_payload(
     }
 
 
+def build_hole_payload(
+    *, face_role: str, resolved_against_topology_signature: str
+) -> dict[str, Any]:
+    """Build (and domain-validate) the hole `adapter_payload` — the engine-owned,
+    recipe-anchored **`target_face` reference** (ADR/0038 A1). Stores ONLY the
+    face role + the parent-prefix signature; surface-kind/cap-only is an
+    operation-scope guard at the handler, not part of the reference shape
+    (Codex1 N1). `diameter_mm`/`center_x_mm`/`center_y_mm` are NOT here — they are
+    first-class `feature.parameters[]` records (canonical units), and are VALUE
+    parameters excluded from the topology skeleton (ADR/0038 A2)."""
+    if not isinstance(face_role, str) or not face_role:
+        raise TransactionError(
+            f"mechanical.add_hole_feature: face_role must be a non-empty string, got {face_role!r}"
+        )
+    if (
+        not isinstance(resolved_against_topology_signature, str)
+        or not resolved_against_topology_signature.startswith("topo_")
+    ):
+        raise TransactionError(
+            f"mechanical.add_hole_feature: resolved_against_topology_signature must be a "
+            f"'topo_' signature, got {resolved_against_topology_signature!r}"
+        )
+    return {
+        "target_face": {
+            "face_role": face_role,
+            "resolved_against_topology_signature": resolved_against_topology_signature,
+        }
+    }
+
+
+def require_hole_inside_rectangle(
+    rectangle: dict[str, Any], center_x_mm: float, center_y_mm: float, radius_mm: float
+) -> None:
+    """Class-1 fit-within-face check (ADR/0038 A2 / Codex1 B3, arc 20260622-2):
+    the circular footprint must lie entirely inside the cap's outer boundary (the
+    rectangle). A simple cap only (no inner cutouts) is guaranteed by
+    `require_simple_cap_fit`, so the rectangle IS the usable face boundary."""
+    x = float(rectangle["x_mm"]); y = float(rectangle["y_mm"])
+    w = float(rectangle["width_mm"]); h = float(rectangle["height_mm"])
+    if (
+        (center_x_mm - radius_mm) < x
+        or (center_x_mm + radius_mm) > (x + w)
+        or (center_y_mm - radius_mm) < y
+        or (center_y_mm + radius_mm) > (y + h)
+    ):
+        raise TransactionError(
+            f"mechanical.add_hole_feature: hole (centre=({center_x_mm}, {center_y_mm}), "
+            f"radius={radius_mm}) must fit entirely inside the cap rectangle "
+            f"[{x}..{x + w}] x [{y}..{y + h}]"
+        )
+
+
+def require_simple_cap_fit(
+    features: list[dict[str, Any]],
+    center_x_mm: float,
+    center_y_mm: float,
+    radius_mm: float,
+) -> None:
+    """The full v1 hole domain contract (Codex2 B1, arc 20260622-2): a SIMPLE cap
+    (no existing cutout) + the circular footprint fitting inside the rectangle.
+    Called BOTH at the handler (early errors) AND inside the evaluator fold, so
+    EVERY regeneration / parameter-edit path enforces it — a later `diameter_mm`
+    / `center_*_mm` edit that would breach the cap fails Class-1 before the
+    kernel, never as a side-breaching cut or a Class-2 surprise. `features` is the
+    parent prefix (the hole excluded), so a sketch circle or a prior hole feature
+    there means a non-simple cap."""
+    sketch = next((f for f in features if f.get("feature_type") == "sketch"), None)
+    prims = (sketch.get("adapter_payload", {}) if sketch else {}).get("primitives", [])
+    if any(p.get("type") == "circle" for p in prims) or any(
+        f.get("feature_type") == "hole" for f in features
+    ):
+        raise TransactionError(
+            "mechanical.add_hole_feature: v1 supports a simple cap only — the cap "
+            "already has a cutout (a sketch hole or a prior hole feature). "
+            "Unsupported target face for v1."
+        )
+    rectangle = next((p for p in prims if p.get("type") == "rectangle"), None)
+    if rectangle is None:
+        raise TransactionError(
+            "mechanical.add_hole_feature: the sketch has no rectangle profile"
+        )
+    require_hole_inside_rectangle(rectangle, center_x_mm, center_y_mm, radius_mm)
+
+
 def _validate_sketch_primitives(primitives: list[dict[str, Any]]) -> None:
     if not primitives:
         raise TransactionError(
