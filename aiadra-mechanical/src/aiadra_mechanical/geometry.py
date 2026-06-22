@@ -37,7 +37,7 @@ from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeWire,
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
-from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
@@ -135,7 +135,7 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
     running = shape
     for idx, feat in enumerate(features):
         ftype = feat.get("feature_type")
-        if ftype not in ("fillet", "hole"):
+        if ftype not in ("fillet", "chamfer", "hole"):
             continue
         if extrude is None:
             raise TransactionError(
@@ -144,6 +144,8 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
         prefix = features[:idx]
         if ftype == "fillet":
             running, hint = _apply_one_fillet(running, prefix, feat)
+        elif ftype == "chamfer":
+            running, hint = _apply_one_chamfer(running, prefix, feat)
         else:
             running, hint = _apply_one_hole(running, prefix, feat)
         produced.append(hint)
@@ -202,6 +204,58 @@ def _apply_one_fillet(running, prefix, fillet):
             f"reported no generated blend face (ADR/0038 D6)"
         )
     return filleted, ProducedFaceHint(feature_id=fillet["id"], role_base="blend", faces=generated)
+
+
+def _apply_one_chamfer(running, prefix, chamfer):
+    """Bevel one sharp edge (ADR/0038 D2/D3) — the fillet's edge-reference twin.
+    The bevel face is a PLANE (not a cylinder), claimed BY CONSTRUCTION via
+    `MakeChamfer.Generated(edge)` (ADR/0038 A3, the planar produced-face case)."""
+    from . import topology  # lazy: topology imports geometry at module top
+
+    tgt = (chamfer.get("adapter_payload") or {}).get("target_edge")
+    if not isinstance(tgt, dict):
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: chamfer {chamfer.get('id')!r} has no target_edge reference"
+        )
+    _check_reference_staleness(prefix, tgt, chamfer, "target edge")
+    roles = tuple(tgt.get("adjacent_face_roles", ()))
+    kind = tgt.get("edge_kind")
+    edge = topology.resolve_edge_on_shape(running, prefix, roles, kind)
+    distance = _chamfer_distance(chamfer)
+    try:
+        mk = BRepFilletAPI_MakeChamfer(running)
+        mk.Add(distance, edge)
+        chamfered = mk.Shape()
+        generated = tuple(TopoDS.Face_s(s) for s in mk.Generated(edge))
+    except (TransactionError, MechanicalKernelEvaluationError):
+        raise
+    except Exception as exc:  # plausible reference, unbuildable distance/bevel
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: chamfer {chamfer.get('id')!r} (distance={distance}) "
+            f"could not be built by OCCT: {exc!r}"
+        ) from exc
+    _assert_valid(chamfered, f"chamfer {chamfer.get('id')!r}")
+    if not generated:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: chamfer {chamfer.get('id')!r} built a solid but OCCT "
+            f"reported no generated bevel face (ADR/0038 D6/A3)"
+        )
+    return chamfered, ProducedFaceHint(feature_id=chamfer["id"], role_base="chamfer", faces=generated)
+
+
+def _chamfer_distance(chamfer: dict[str, Any]) -> float:
+    for p in chamfer.get("parameters", []):
+        if p.get("name") == "distance_mm":
+            d = float(p["value"])
+            if d <= 0:
+                raise TransactionError(
+                    f"{ENGINE_OP_PREFIX}: chamfer distance_mm must be positive, got {d!r}"
+                )
+            return d
+    raise TransactionError(
+        f"{ENGINE_OP_PREFIX}: chamfer feature {chamfer.get('id')!r} missing a "
+        f"'distance_mm' parameter record"
+    )
 
 
 def _apply_one_hole(running, prefix, hole):

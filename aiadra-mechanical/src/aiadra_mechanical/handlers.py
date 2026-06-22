@@ -28,6 +28,7 @@ from aiadra_core.transaction.boundary import TransactionError
 
 from . import cache
 from .adapter_payload import (
+    build_chamfer_payload,
     build_extrude_payload,
     build_fillet_payload,
     build_hole_payload,
@@ -40,13 +41,15 @@ if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.4 (arc 20260622-3): adds the chamfer feature (the fillet's edge-reference
+# twin; shared `build_edge_reference_payload`; planar `…:face:chamfer` role, A3).
 # 0.1.3 (arc 20260622-2): adds the hole feature + the `target_face` reference
 # (ADR/0038 A1) + the generic produced-role vocabulary (`…:face:hole_wall`; A3).
 # 0.1.2 (arc 20260621-2): adds the fillet feature + the engine-owned recipe-
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.3"
+ADAPTER_SCHEMA_VERSION = "0.1.4"
 
 
 # =============================================================================
@@ -319,7 +322,117 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
 
 
 # =============================================================================
-# Handler 4: add_hole_feature (ADR/0037 D8; ADR/0038 A1-A3; arc 20260622-2)
+# Handler 4: add_chamfer_feature (ADR/0037 D8; ADR/0038; arc 20260622-3)
+# =============================================================================
+
+
+def handle_add_chamfer_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_chamfer_feature")
+    target_edge_id = _require_param(params, "target_edge_id", str, "mechanical.add_chamfer_feature")
+    distance_mm = _require_param(params, "distance_mm", (int, float), "mechanical.add_chamfer_feature")
+    if distance_mm <= 0:
+        raise TransactionError(
+            f"mechanical.add_chamfer_feature: distance_mm must be positive, got {distance_mm!r}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+    features = sidecar.get("feature", [])
+    extrude = next(
+        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+    )
+    if extrude is None:
+        raise TransactionError(
+            f"mechanical.add_chamfer_feature: Part {part_number} has no extruded solid to bevel"
+        )
+
+    # ADR/0038 D1: the display `edge_id` is an INPUT SELECTOR only. Resolve it
+    # against a FRESH extraction; persist the structured recipe anchor from THAT.
+    from . import topology
+
+    topo = topology.extract_part_topology(list(features))
+    match = next((e for e in topo.edges if e.edge_id == target_edge_id), None)
+    if match is None:
+        raise TransactionError(
+            f"mechanical.add_chamfer_feature: target_edge_id {target_edge_id!r} not found on "
+            f"Part {part_number} (available: {sorted(e.edge_id for e in topo.edges)})"
+        )
+    # v1 bevels a SHARP edge only (the same operation-scope guard as fillet).
+    if match.kind != "sharp":
+        raise TransactionError(
+            f"mechanical.add_chamfer_feature: v1 bevels a SHARP edge only; target "
+            f"{target_edge_id!r} is kind {match.kind!r} (tangent / seam / boundary / "
+            f"free are not supported). Pick a sharp model edge."
+        )
+
+    feature_id = _next_id(features, prefix="feat_")
+    distance_param_id = _next_id_within_parameters(features, prefix="featp_")
+    distance_param_record = {
+        "id": distance_param_id,
+        "name": "distance_mm",
+        "value": float(distance_mm),
+        "datatype": "number",
+        "unit": "mm",
+    }
+    feature_record = {
+        "id": feature_id,
+        "name": f"chamfer_{feature_id}",
+        "feature_type": "chamfer",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        "parameters": [distance_param_record],
+        "adapter_payload": build_chamfer_payload(
+            adjacent_face_roles=list(match.adjacent_face_ids),
+            edge_kind=match.kind,
+            resolved_against_topology_signature=topo.topology_signature,
+        ),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    # Folds the chamfer through real OCCT — a too-large distance surfaces here as
+    # a Class-2 kernel rejection (mirrors the fillet's oversize radius).
+    _gate_validity(context, sidecar["feature"])
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    existing_geom = next(
+        (g for g in sidecar.get("geometry_ref", [])
+         if g.get("role") == "authoring_geometry"
+         and extrude["id"] in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    if existing_geom is None:
+        raise TransactionError(
+            f"mechanical.add_chamfer_feature: no authoring_geometry derived from the extrude "
+            f"on Part {part_number}"
+        )
+    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    updated_geom = copy.deepcopy(existing_geom)
+    updated_geom["vault_ref"] = vault_ref
+    updated_geom["derived_from_feature_ids"] = derived
+    updated_geom["fact_provenance"] = {
+        "category": "computed_result",
+        "derived_from": [f"feature:{fid}" for fid in derived],
+    }
+    for i, g in enumerate(sidecar["geometry_ref"]):
+        if g.get("id") == updated_geom["id"]:
+            sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
+            break
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": (
+            f"add chamfer feature {feature_id} (distance={distance_mm}mm) on edge {target_edge_id}"
+        ),
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"updated": [{"id": updated_geom["id"], "new_record": copy.deepcopy(updated_geom)}]},
+    })
+
+
+# =============================================================================
+# Handler 5: add_hole_feature (ADR/0037 D8; ADR/0038 A1-A3; arc 20260622-2)
 # =============================================================================
 
 
@@ -437,7 +550,7 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
 
 
 # =============================================================================
-# Handler 5: adjust_feature_parameter
+# Handler 6: adjust_feature_parameter
 # =============================================================================
 
 
@@ -508,7 +621,7 @@ def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict
 
 
 # =============================================================================
-# Handler 6: remove_feature
+# Handler 7: remove_feature
 # =============================================================================
 
 

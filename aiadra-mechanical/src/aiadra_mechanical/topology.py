@@ -328,10 +328,10 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             entry["primitives"] = sorted(
                 (p.get("id", ""), p.get("type")) for p in prims
             )
-        elif ftype == "fillet":
-            # A fillet IS a topology change; retargeting it changes topology too
-            # (ADR/0038 D4) — so the target ANCHOR is part of the skeleton, but
-            # the radius VALUE is not (ADR/0038 A2).
+        elif ftype in ("fillet", "chamfer"):
+            # An edge-referencing feature IS a topology change; retargeting it
+            # changes topology too (ADR/0038 D4) — so the target ANCHOR is part of
+            # the skeleton, but the radius/distance VALUE is not (ADR/0038 A2).
             tgt = (f.get("adapter_payload") or {}).get("target_edge", {})
             entry["target"] = [
                 sorted(tgt.get("adjacent_face_roles", [])),

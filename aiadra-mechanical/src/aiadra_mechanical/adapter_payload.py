@@ -95,32 +95,34 @@ def build_extrude_payload(
 _EDGE_KINDS = {"sharp", "tangent", "seam", "boundary", "free"}
 
 
-def build_fillet_payload(
+def build_edge_reference_payload(
     *,
+    operation_kind: str,
     adjacent_face_roles: list[str],
     edge_kind: str,
     resolved_against_topology_signature: str,
 ) -> dict[str, Any]:
-    """Build (and domain-validate) the fillet `adapter_payload` — the engine-owned,
-    recipe-anchored **`target_edge` reference** (ADR/0038 D2). The persisted
-    reference is structured recipe roles + edge kind + the parent-prefix topology
-    signature it resolved against — NEVER the read-side Display Representation
-    `edge_id` string (ADR/0038 D1: display ids are input vocabulary, not Truth).
-    `radius_mm` is NOT here — it lives in `feature.parameters[]` as a first-class
-    canonical-unit record, like extrude `depth_mm`.
-    """
+    """Build (and domain-validate) a `target_edge` `adapter_payload` — the
+    engine-owned, recipe-anchored edge reference (ADR/0038 D2) shared by every
+    edge-referencing feature (fillet, chamfer; arc 20260622-3 Codex1 Q1). The
+    persisted reference is structured recipe roles + edge kind + the parent-prefix
+    topology signature it resolved against — NEVER the read-side Display
+    Representation `edge_id` string (ADR/0038 D1). The feature's value parameter
+    (`radius_mm` / `distance_mm`) is NOT here — it lives in `feature.parameters[]`
+    as a first-class canonical-unit record (ADR/0038 A2). `operation_kind` keeps
+    diagnostics operation-specific."""
     if not isinstance(adjacent_face_roles, list) or len(adjacent_face_roles) != 2:
         raise TransactionError(
-            f"mechanical.add_fillet_feature: target_edge needs exactly two adjacent "
+            f"{operation_kind}: target_edge needs exactly two adjacent "
             f"face roles (v1 single sharp edge), got {adjacent_face_roles!r}"
         )
     if not all(isinstance(r, str) and r for r in adjacent_face_roles):
         raise TransactionError(
-            "mechanical.add_fillet_feature: adjacent_face_roles must be non-empty strings"
+            f"{operation_kind}: adjacent_face_roles must be non-empty strings"
         )
     if edge_kind not in _EDGE_KINDS:
         raise TransactionError(
-            f"mechanical.add_fillet_feature: edge_kind must be one of "
+            f"{operation_kind}: edge_kind must be one of "
             f"{sorted(_EDGE_KINDS)}, got {edge_kind!r}"
         )
     if (
@@ -128,7 +130,7 @@ def build_fillet_payload(
         or not resolved_against_topology_signature.startswith("topo_")
     ):
         raise TransactionError(
-            f"mechanical.add_fillet_feature: resolved_against_topology_signature must be a "
+            f"{operation_kind}: resolved_against_topology_signature must be a "
             f"'topo_' signature, got {resolved_against_topology_signature!r}"
         )
     return {
@@ -140,6 +142,31 @@ def build_fillet_payload(
             "resolved_against_topology_signature": resolved_against_topology_signature,
         }
     }
+
+
+def build_fillet_payload(
+    *, adjacent_face_roles: list[str], edge_kind: str, resolved_against_topology_signature: str
+) -> dict[str, Any]:
+    """Fillet's `target_edge` payload (operation-specific diagnostics)."""
+    return build_edge_reference_payload(
+        operation_kind="mechanical.add_fillet_feature",
+        adjacent_face_roles=adjacent_face_roles,
+        edge_kind=edge_kind,
+        resolved_against_topology_signature=resolved_against_topology_signature,
+    )
+
+
+def build_chamfer_payload(
+    *, adjacent_face_roles: list[str], edge_kind: str, resolved_against_topology_signature: str
+) -> dict[str, Any]:
+    """Chamfer's `target_edge` payload — same shape as the fillet's (the edge
+    reference is shared, ADR/0038 D2); operation-specific diagnostics."""
+    return build_edge_reference_payload(
+        operation_kind="mechanical.add_chamfer_feature",
+        adjacent_face_roles=adjacent_face_roles,
+        edge_kind=edge_kind,
+        resolved_against_topology_signature=resolved_against_topology_signature,
+    )
 
 
 def build_hole_payload(
