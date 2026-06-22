@@ -26,6 +26,7 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     """Entry point called by aiadra-core during Native Engine discovery."""
     from .handlers import (
         handle_add_extrude_feature,
+        handle_add_fillet_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
         handle_remove_feature,
@@ -33,6 +34,8 @@ def register(registrar: "NativeEngineRegistrar") -> None:
 
     registrar.add_operation("mechanical.add_sketch_feature", handle_add_sketch_feature)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
+    # First referencing feature — ADR/0037 D8 step 1; ADR/0038 (arc 20260621-2).
+    registrar.add_operation("mechanical.add_fillet_feature", handle_add_fillet_feature)
     registrar.add_operation("mechanical.adjust_feature_parameter", handle_adjust_feature_parameter)
     registrar.add_operation("mechanical.remove_feature", handle_remove_feature)
 

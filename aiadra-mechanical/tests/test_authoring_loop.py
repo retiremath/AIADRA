@@ -13,6 +13,7 @@ from conftest import part_sidecar, two_primitives
 _OPS = {
     "mechanical.add_sketch_feature",
     "mechanical.add_extrude_feature",
+    "mechanical.add_fillet_feature",
     "mechanical.adjust_feature_parameter",
     "mechanical.remove_feature",
 }

@@ -27,17 +27,18 @@ from typing import TYPE_CHECKING, Any
 from aiadra_core.transaction.boundary import TransactionError
 
 from . import cache
-from .adapter_payload import build_extrude_payload, build_sketch_payload
+from .adapter_payload import build_extrude_payload, build_fillet_payload, build_sketch_payload
 from .kernel import compute_recipe_bytes, vault_ref_for_bytes
 
 if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
-# 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives now carry engine-minted
-# stable `skp_NNNN` ids — the primitive-level role anchor for Display
-# Representation topology identity (ADR/0035).
-ADAPTER_SCHEMA_VERSION = "0.1.1"
+# 0.1.2 (arc 20260621-2): adds the fillet feature + the engine-owned recipe-
+# anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
+# 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
+# `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
+ADAPTER_SCHEMA_VERSION = "0.1.2"
 
 
 # =============================================================================
@@ -190,7 +191,127 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
 
 
 # =============================================================================
-# Handler 3: adjust_feature_parameter
+# Handler 3: add_fillet_feature (ADR/0037 D8 step 1; ADR/0038; arc 20260621-2)
+# =============================================================================
+
+
+def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_fillet_feature")
+    target_edge_id = _require_param(params, "target_edge_id", str, "mechanical.add_fillet_feature")
+    radius_mm = _require_param(params, "radius_mm", (int, float), "mechanical.add_fillet_feature")
+    if radius_mm <= 0:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: radius_mm must be positive, got {radius_mm!r}"
+        )
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+    features = sidecar.get("feature", [])
+    extrude = next(
+        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+    )
+    if extrude is None:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: Part {part_number} has no extruded solid to round"
+        )
+
+    # ADR/0038 D1: the display `edge_id` is an INPUT SELECTOR only. Resolve it
+    # against a FRESH parent-prefix extraction and persist the structured recipe
+    # anchor read from THAT extraction — never parse-and-trust the display string
+    # into Product Truth. (The current features ARE the parent prefix; the fillet
+    # is appended after.)
+    from . import topology
+
+    topo = topology.extract_part_topology(list(features))
+    match = next((e for e in topo.edges if e.edge_id == target_edge_id), None)
+    if match is None:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: target_edge_id {target_edge_id!r} not found on "
+            f"Part {part_number} (available: {sorted(e.edge_id for e in topo.edges)})"
+        )
+    # Codex2 B1: the v1 fillet rounds a SHARP edge only. Reject any other edge
+    # kind as Class-1 BEFORE staging — unsupported topology must never reach
+    # Product Truth, and the user gets a clear "unsupported target kind" error
+    # rather than a Class-2 kernel rejection. (The general ADR/0038 reference
+    # shape accepts any kind; the v1 fillet OPERATION constrains to sharp.)
+    if match.kind != "sharp":
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: v1 rounds a SHARP edge only; target "
+            f"{target_edge_id!r} is kind {match.kind!r} (tangent / seam / boundary / "
+            f"free are not supported). Pick a sharp model edge."
+        )
+
+    feature_id = _next_id(features, prefix="feat_")
+    radius_param_id = _next_id_within_parameters(features, prefix="featp_")
+    radius_param_record = {
+        "id": radius_param_id,
+        "name": "radius_mm",
+        "value": float(radius_mm),
+        "datatype": "number",
+        "unit": "mm",
+    }
+    feature_record = {
+        "id": feature_id,
+        "name": f"fillet_{feature_id}",
+        "feature_type": "fillet",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        "parameters": [radius_param_record],
+        "adapter_payload": build_fillet_payload(
+            adjacent_face_roles=list(match.adjacent_face_ids),
+            edge_kind=match.kind,
+            resolved_against_topology_signature=topo.topology_signature,
+        ),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    # Folds the fillet through real OCCT (resolves the persisted reference on the
+    # running solid, applies the round) — a too-large radius surfaces here as a
+    # Class-2 kernel rejection (Codex1 Q3).
+    _gate_validity(context, sidecar["feature"])
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    # The fillet extends the existing authoring_geometry (sketch+extrude) to also
+    # derive from the fillet feature.
+    existing_geom = next(
+        (g for g in sidecar.get("geometry_ref", [])
+         if g.get("role") == "authoring_geometry"
+         and extrude["id"] in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    if existing_geom is None:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: no authoring_geometry derived from the extrude "
+            f"on Part {part_number}"
+        )
+    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    updated_geom = copy.deepcopy(existing_geom)
+    updated_geom["vault_ref"] = vault_ref
+    updated_geom["derived_from_feature_ids"] = derived
+    updated_geom["fact_provenance"] = {
+        "category": "computed_result",
+        "derived_from": [f"feature:{fid}" for fid in derived],
+    }
+    for i, g in enumerate(sidecar["geometry_ref"]):
+        if g.get("id") == updated_geom["id"]:
+            sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
+            break
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": (
+            f"add fillet feature {feature_id} (radius={radius_mm}mm) on edge {target_edge_id}"
+        ),
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"updated": [{"id": updated_geom["id"], "new_record": copy.deepcopy(updated_geom)}]},
+    })
+
+
+# =============================================================================
+# Handler 4: adjust_feature_parameter
 # =============================================================================
 
 
@@ -261,7 +382,7 @@ def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict
 
 
 # =============================================================================
-# Handler 4: remove_feature
+# Handler 5: remove_feature
 # =============================================================================
 
 
@@ -289,6 +410,14 @@ def handle_remove_feature(context: "NativeEngineContext", params: dict[str, Any]
         raise TransactionError(
             f"mechanical.remove_feature: geometry_ref(s) {sorted(missing_geoms)} not present on Part {part_number}"
         )
+
+    # Dependent guard (ADR/0038 D5) is already enforced at the aiadra-core fold
+    # layer (ADR/0029 D12): a remaining feature whose `depends_on_feature_ids`
+    # dangle raises `FoldInconsistencyError` at validate/commit. The fillet
+    # inherits that protection for free by declaring `depends_on_feature_ids:
+    # [extrude]` — removing the parent solid while the fillet remains fails loud.
+    # No redundant handler-level guard (it would preempt the core check + its
+    # cascade-reject test).
 
     sidecar = copy.deepcopy(sidecar)
     sidecar["feature"] = [f for f in sidecar.get("feature", []) if f["id"] not in set(feature_ids)]

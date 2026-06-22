@@ -25,7 +25,10 @@ from . import geometry
 from .kernel import recipe_hash
 
 _OCP_VERSION: str = importlib.metadata.version("cadquery-ocp")
-_SOLID_CACHE: dict[str, Any] = {}
+# Stores the full EvalResult (shape + by-construction blend hints, ADR/0038 D6)
+# so display/HLR extraction reuses the evaluated solid AND its construction
+# provenance from one pass (preserves the arc 20260609-1 N4 cache-reuse).
+_SOLID_CACHE: dict[str, "geometry.EvalResult"] = {}
 
 
 def ocp_version() -> str:
@@ -49,17 +52,31 @@ def evaluate_with_cache(
     adapter_schema_version: str,
 ) -> Any:
     """Validity-gate the recipe through OCCT, reusing a per-process cached solid
-    only when the full D8 freshness key matches. Propagates `TransactionError`
-    (Class-1) and `MechanicalKernelEvaluationError` (Class-2) from
-    `geometry.evaluate_part`."""
+    only when the full D8 freshness key matches. Returns the evaluated SHAPE
+    (the gate's caller wants a solid). Propagates `TransactionError` (Class-1)
+    and `MechanicalKernelEvaluationError` (Class-2)."""
+    return evaluate_with_cache_provenance(
+        features, last_event_id=last_event_id, adapter_schema_version=adapter_schema_version
+    ).shape
+
+
+def evaluate_with_cache_provenance(
+    features: list[dict[str, Any]],
+    *,
+    last_event_id: str | None,
+    adapter_schema_version: str,
+) -> "geometry.EvalResult":
+    """As `evaluate_with_cache`, but returns the full `EvalResult` (shape +
+    by-construction blend hints, ADR/0038 D6) — the topology layer's authority
+    for fillet-produced roles. Same cache + freshness key."""
     key = cache_key(
         features, last_event_id=last_event_id, adapter_schema_version=adapter_schema_version
     )
     if key in _SOLID_CACHE:
         return _SOLID_CACHE[key]
-    shape = geometry.evaluate_part(features)
-    _SOLID_CACHE[key] = shape
-    return shape
+    result = geometry.evaluate_part_with_provenance(features)
+    _SOLID_CACHE[key] = result
+    return result
 
 
 def clear() -> None:

@@ -92,6 +92,56 @@ def build_extrude_payload(
     }
 
 
+_EDGE_KINDS = {"sharp", "tangent", "seam", "boundary", "free"}
+
+
+def build_fillet_payload(
+    *,
+    adjacent_face_roles: list[str],
+    edge_kind: str,
+    resolved_against_topology_signature: str,
+) -> dict[str, Any]:
+    """Build (and domain-validate) the fillet `adapter_payload` — the engine-owned,
+    recipe-anchored **`target_edge` reference** (ADR/0038 D2). The persisted
+    reference is structured recipe roles + edge kind + the parent-prefix topology
+    signature it resolved against — NEVER the read-side Display Representation
+    `edge_id` string (ADR/0038 D1: display ids are input vocabulary, not Truth).
+    `radius_mm` is NOT here — it lives in `feature.parameters[]` as a first-class
+    canonical-unit record, like extrude `depth_mm`.
+    """
+    if not isinstance(adjacent_face_roles, list) or len(adjacent_face_roles) != 2:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: target_edge needs exactly two adjacent "
+            f"face roles (v1 single sharp edge), got {adjacent_face_roles!r}"
+        )
+    if not all(isinstance(r, str) and r for r in adjacent_face_roles):
+        raise TransactionError(
+            "mechanical.add_fillet_feature: adjacent_face_roles must be non-empty strings"
+        )
+    if edge_kind not in _EDGE_KINDS:
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: edge_kind must be one of "
+            f"{sorted(_EDGE_KINDS)}, got {edge_kind!r}"
+        )
+    if (
+        not isinstance(resolved_against_topology_signature, str)
+        or not resolved_against_topology_signature.startswith("topo_")
+    ):
+        raise TransactionError(
+            f"mechanical.add_fillet_feature: resolved_against_topology_signature must be a "
+            f"'topo_' signature, got {resolved_against_topology_signature!r}"
+        )
+    return {
+        "target_edge": {
+            # Codex1 N2 (arc 20260621-2): sort at write time so the stored order
+            # is deterministic + the reference compares stably across regenerate.
+            "adjacent_face_roles": sorted(adjacent_face_roles),
+            "edge_kind": edge_kind,
+            "resolved_against_topology_signature": resolved_against_topology_signature,
+        }
+    }
+
+
 def _validate_sketch_primitives(primitives: list[dict[str, Any]]) -> None:
     if not primitives:
         raise TransactionError(

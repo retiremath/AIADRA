@@ -22,6 +22,7 @@ recipe-hash, tolerance does NOT affect `vault_ref` — it only gates validity.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiadra_core.transaction.boundary import TransactionError
@@ -33,10 +34,11 @@ from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeWire,
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
+from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
 from OCP.Precision import Precision
-from OCP.TopoDS import TopoDS_Shape
+from OCP.TopoDS import TopoDS, TopoDS_Shape
 
 # ADR/0031 D9 — pinned tolerance default (OCCT confusion tolerance). Identity is
 # recipe-hash so this does not affect `vault_ref`; it gates validity only.
@@ -52,17 +54,47 @@ class MechanicalKernelEvaluationError(RuntimeError):
     The engine never constructs `NativeEngineKernelError` itself."""
 
 
-def evaluate_part(features: list[dict[str, Any]]) -> TopoDS_Shape:
-    """Evaluate the current feature recipe to a validated OCCT shape.
+@dataclass(frozen=True)
+class BlendHint:
+    """By-construction role authority for fillet-produced topology (ADR/0038 D6,
+    arc 20260621-2). `blend_faces` are the live faces `BRepFilletAPI_MakeFillet`
+    reported it generated from the target edge — the topology layer consumes
+    these as recipe authority for the `…:face:blend` role, NEVER re-guessing the
+    blend from surface geometry (which would collide with hole_wall cylinders)."""
 
-    Returns the evaluated shape (cache-only; not persisted). Raises
-    `TransactionError` for Class-1 domain failures and
-    `MechanicalKernelEvaluationError` for Class-2 kernel failures.
-    """
+    fillet_feature_id: str
+    blend_faces: tuple[Any, ...]          # live TopoDS_Face handles in `.shape`
+
+
+@dataclass(frozen=True)
+class EvalResult:
+    """The evaluated solid plus the construction provenance the topology layer
+    needs (ADR/0038 D6). `evaluate_part` returns `.shape` for the validity gate;
+    `extract_part_topology` consumes the whole result so display/HLR identity is
+    assigned recipe-first, by construction."""
+
+    shape: TopoDS_Shape
+    blend_hints: tuple[BlendHint, ...] = field(default_factory=tuple)
+
+
+def evaluate_part(features: list[dict[str, Any]]) -> TopoDS_Shape:
+    """Evaluate the current feature recipe to a validated OCCT shape (the
+    validity gate). Returns the shape only; raises `TransactionError` (Class-1
+    domain) / `MechanicalKernelEvaluationError` (Class-2 kernel)."""
+    return _evaluate(features).shape
+
+
+def evaluate_part_with_provenance(features: list[dict[str, Any]]) -> EvalResult:
+    """As `evaluate_part`, but also returns the by-construction `blend_hints`
+    (ADR/0038 D6) — the topology layer's authority for fillet-produced roles."""
+    return _evaluate(features)
+
+
+def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
     sketch = _last_feature_of_type(features, "sketch")
     if sketch is None:
         # Nothing geometric to evaluate yet (e.g. an empty Part). No-op gate.
-        return TopoDS_Shape()
+        return EvalResult(shape=TopoDS_Shape())
     primitives = sketch.get("adapter_payload", {}).get("primitives", [])
     rectangle, circle = _split_primitives(primitives)
 
@@ -80,16 +112,117 @@ def evaluate_part(features: list[dict[str, Any]]) -> TopoDS_Shape:
             f"{ENGINE_OP_PREFIX}: OCCT evaluation raised {exc!r}"
         ) from exc
 
+    _assert_valid(shape, "base solid")
+
+    # Sequential fold (ADR/0038 D3): fold each subsequent feature onto the
+    # running solid. v0.0.1 → v0.1.2 adds the fillet; the loop generalizes.
+    blend_hints: list[BlendHint] = []
+    fillets = [f for f in features if f.get("feature_type") == "fillet"]
+    if fillets:
+        if extrude is None:
+            raise TransactionError(
+                f"{ENGINE_OP_PREFIX}: a fillet requires an extruded solid to round"
+            )
+        shape, blend_hints = _apply_fillets(shape, features, fillets)
+
+    return EvalResult(shape=shape, blend_hints=tuple(blend_hints))
+
+
+def _apply_fillets(
+    base: TopoDS_Shape,
+    features: list[dict[str, Any]],
+    fillets: list[dict[str, Any]],
+) -> tuple[TopoDS_Shape, list[BlendHint]]:
+    """Fold each fillet onto the running solid. The target edge is resolved on
+    the SAME running instance it is filleted (the spike's same-instance rule),
+    by its persisted recipe-anchored reference (ADR/0038 D2/D3) — never the
+    display id. Resolution is exactly-one-or-fail (Class-1); a plausible-but-
+    unbuildable radius surfaces as Class-2 (Codex1 Q3)."""
+    from . import topology  # lazy: topology imports geometry at module top
+
+    running = base
+    hints: list[BlendHint] = []
+    for fillet in fillets:
+        idx = features.index(fillet)
+        prefix = features[:idx]
+        tgt = (fillet.get("adapter_payload") or {}).get("target_edge")
+        if not isinstance(tgt, dict):
+            raise TransactionError(
+                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} has no target_edge "
+                f"reference in adapter_payload"
+            )
+        roles = tuple(tgt.get("adjacent_face_roles", ()))
+        kind = tgt.get("edge_kind")
+
+        # Staleness guard (ADR/0038 D4): the reference resolves against the
+        # parent-prefix skeleton it was authored against. A skeleton change
+        # (a topology edit, not a parameter edit) fails loud — re-pick the edge.
+        stored_sig = tgt.get("resolved_against_topology_signature")
+        current_sig = topology.compute_topology_signature(prefix)
+        if stored_sig != current_sig:
+            raise TransactionError(
+                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} target edge is "
+                f"STALE — the parent topology skeleton changed since it was "
+                f"authored (resolved_against={stored_sig!r}, current={current_sig!r}). "
+                f"A parameter edit preserves the reference; a topology edit requires "
+                f"re-picking the edge."
+            )
+
+        edge = topology.resolve_edge_on_shape(running, prefix, roles, kind)
+        radius = _fillet_radius(fillet)
+        try:
+            mk = BRepFilletAPI_MakeFillet(running)
+            mk.Add(radius, edge)
+            filleted = mk.Shape()
+            generated = tuple(TopoDS.Face_s(s) for s in mk.Generated(edge))
+        except (TransactionError, MechanicalKernelEvaluationError):
+            raise
+        except Exception as exc:  # plausible reference, unbuildable radius/blend
+            raise MechanicalKernelEvaluationError(
+                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} (radius={radius}) "
+                f"could not be built by OCCT: {exc!r}"
+            ) from exc
+        _assert_valid(filleted, f"fillet {fillet.get('id')!r}")
+        # Codex2 B2: by-construction blend identity REQUIRES a generated face.
+        # An empty `Generated` means we cannot assign a blend role by
+        # construction — fail loud rather than let an unclaimed cylinder fall
+        # through to a fabricated hole_wall placeholder downstream (ADR/0038 D6).
+        if not generated:
+            raise MechanicalKernelEvaluationError(
+                f"{ENGINE_OP_PREFIX}: fillet {fillet.get('id')!r} built a solid but OCCT "
+                f"reported no generated blend face — cannot establish by-construction "
+                f"blend identity (ADR/0038 D6)"
+            )
+        hints.append(BlendHint(fillet_feature_id=fillet["id"], blend_faces=generated))
+        running = filleted
+    return running, hints
+
+
+def _assert_valid(shape: TopoDS_Shape, label: str) -> None:
     if shape is None or shape.IsNull():
         raise MechanicalKernelEvaluationError(
-            f"{ENGINE_OP_PREFIX}: OCCT evaluation produced a null shape"
+            f"{ENGINE_OP_PREFIX}: OCCT evaluation produced a null shape ({label})"
         )
     if not BRepCheck_Analyzer(shape).IsValid():
         raise MechanicalKernelEvaluationError(
             f"{ENGINE_OP_PREFIX}: OCCT evaluation produced an invalid shape "
-            f"(BRepCheck_Analyzer rejected it)"
+            f"({label}; BRepCheck_Analyzer rejected it)"
         )
-    return shape
+
+
+def _fillet_radius(fillet: dict[str, Any]) -> float:
+    for p in fillet.get("parameters", []):
+        if p.get("name") == "radius_mm":
+            r = float(p["value"])
+            if r <= 0:
+                raise TransactionError(
+                    f"{ENGINE_OP_PREFIX}: fillet radius_mm must be positive, got {r!r}"
+                )
+            return r
+    raise TransactionError(
+        f"{ENGINE_OP_PREFIX}: fillet feature {fillet.get('id')!r} missing a "
+        f"'radius_mm' parameter record"
+    )
 
 
 # ---------------------------------------------------------------------------

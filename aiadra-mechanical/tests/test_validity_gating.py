@@ -71,7 +71,9 @@ def test_class2_engine_local_kernel_error_is_wrapped_by_adapter(workspace_with_p
     def boom(_features):
         raise MechanicalKernelEvaluationError("synthetic OCCT failure")
 
-    monkeypatch.setattr(geometry, "evaluate_part", boom)
+    # The validity gate now evaluates via `evaluate_part_with_provenance`
+    # (arc 20260621-2: the cache carries EvalResult for the fillet blend hints).
+    monkeypatch.setattr(geometry, "evaluate_part_with_provenance", boom)
     with pytest.raises(NativeEngineKernelError) as exc:
         propose(workspace_with_part, kind="mechanical.add_sketch_feature", params={
             "part_number": "P-000001", "primitives": two_primitives()})
@@ -88,7 +90,9 @@ def test_class2_raw_kernel_exception_is_wrapped(workspace_with_part: Path, monke
     def boom(_features):
         raise ZeroDivisionError("synthetic raw kernel crash")
 
-    monkeypatch.setattr(geometry, "evaluate_part", boom)
+    # The validity gate now evaluates via `evaluate_part_with_provenance`
+    # (arc 20260621-2: the cache carries EvalResult for the fillet blend hints).
+    monkeypatch.setattr(geometry, "evaluate_part_with_provenance", boom)
     with pytest.raises(NativeEngineKernelError) as exc:
         propose(workspace_with_part, kind="mechanical.add_sketch_feature", params={
             "part_number": "P-000001", "primitives": two_primitives()})

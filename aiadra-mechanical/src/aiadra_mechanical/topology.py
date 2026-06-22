@@ -140,28 +140,67 @@ def extract_part_topology(
     Codex2 N4 absorption: display generation reuses the evaluated-solid cache).
     """
     if cache_material is not None:
-        shape = cache.evaluate_with_cache(
+        result = cache.evaluate_with_cache_provenance(
             features,
             last_event_id=cache_material.get("last_event_id"),
             adapter_schema_version=cache_material["adapter_schema_version"],
         )
     else:
-        shape = geometry.evaluate_part(features)
+        result = geometry.evaluate_part_with_provenance(features)
+    shape = result.shape
     if shape is None or shape.IsNull():
         raise TransactionError(
             "mechanical.display: Part has no evaluable geometry "
             "(no sketch/extrude features) — nothing to display"
         )
 
-    recipe = _extract_recipe_geometry(features)
+    face_map, faces, edges = correlate_shape(
+        shape, features,
+        blend_hints=result.blend_hints,
+        linear_deflection_mm=linear_deflection_mm,
+        angular_deflection_rad=angular_deflection_rad,
+    )
 
+    return PartTopology(
+        shape=shape,
+        face_map=face_map,
+        faces=faces,
+        edges=edges,
+        topology_signature=compute_topology_signature(features),
+        linear_deflection_mm=linear_deflection_mm,
+        angular_deflection_rad=angular_deflection_rad,
+        object_uuid=object_uuid,
+        object_number=object_number,
+        geometry_ref=geometry_ref,
+        cache_key=cache_key,
+    )
+
+
+def correlate_shape(
+    shape,
+    features: list[dict[str, Any]],
+    *,
+    blend_hints: tuple = (),
+    linear_deflection_mm: float = DEFAULT_LINEAR_DEFLECTION_MM,
+    angular_deflection_rad: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
+):
+    """Mesh + correlate a PREBUILT solid to recipe-anchored face/edge records.
+    Split out of `extract_part_topology` (arc 20260621-2) so the fillet fold can
+    resolve a target edge on the SAME running instance it is about to fillet
+    (ADR/0038 D3). `blend_hints` carry by-construction roles for fillet-produced
+    faces (ADR/0038 D6); they are claimed BEFORE the geometric plane/cylinder
+    rule so a blend cylinder is never mislabeled as a hole wall.
+
+    Returns `(face_map, faces, edges)`.
+    """
     BRepMesh_IncrementalMesh(
         shape, linear_deflection_mm, False, angular_deflection_rad, True
     )
-
+    recipe = _extract_recipe_geometry(features)
     face_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_FACE, face_map)
-    role_by_face_index = _correlate_faces(face_map, recipe)
+    claimed = _claimed_blend_roles(face_map, blend_hints)
+    role_by_face_index = _correlate_faces(face_map, recipe, claimed)
 
     faces: list[FaceRecord] = []
     for i in range(1, face_map.Extent() + 1):
@@ -179,20 +218,54 @@ def extract_part_topology(
         shape, face_map, role_by_face_index,
         linear_deflection_mm, angular_deflection_rad,
     )
+    return face_map, tuple(faces), edges
 
-    return PartTopology(
-        shape=shape,
-        face_map=face_map,
-        faces=tuple(faces),
-        edges=edges,
-        topology_signature=compute_topology_signature(features),
-        linear_deflection_mm=linear_deflection_mm,
-        angular_deflection_rad=angular_deflection_rad,
-        object_uuid=object_uuid,
-        object_number=object_number,
-        geometry_ref=geometry_ref,
-        cache_key=cache_key,
-    )
+
+def _claimed_blend_roles(face_map, blend_hints) -> dict[int, str]:
+    """Map face_map index → blend role from the evaluator's construction hints
+    (ADR/0038 D6). A hint face not present in this shape (it belongs to an
+    intermediate fold step, not the final solid) is skipped."""
+    claimed: dict[int, str] = {}
+    for hint in blend_hints:
+        blend_faces = hint.blend_faces
+        for k, face in enumerate(blend_faces):
+            idx = face_map.FindIndex(face)
+            if idx == 0:
+                continue
+            role = (
+                f"{hint.fillet_feature_id}:face:blend"
+                if len(blend_faces) == 1
+                else f"{hint.fillet_feature_id}:face:blend#{k}"
+            )
+            claimed[idx] = role
+    return claimed
+
+
+def resolve_edge_on_shape(
+    shape,
+    features: list[dict[str, Any]],
+    adjacent_face_roles,
+    edge_kind: str,
+):
+    """Resolve a persisted edge reference (ADR/0038 D2/D3) to EXACTLY ONE live
+    edge on `shape`, recipe-first. Zero matches (missing role / topology change)
+    or many matches (ambiguous) → fail loud (Class-1 `TransactionError`); never
+    a nearest-geometry guess (ADR/0038 D4)."""
+    _face_map, _faces, edges = correlate_shape(shape, features)
+    want = tuple(sorted(adjacent_face_roles))
+    matches = [e for e in edges if e.adjacent_face_ids == want and e.kind == edge_kind]
+    if not matches:
+        raise TransactionError(
+            f"mechanical: edge reference {want} (kind={edge_kind!r}) resolves to NO "
+            f"edge on the parent topology — a missing role or a topology change. "
+            f"Re-pick the edge (ADR/0038 D4)."
+        )
+    if len(matches) > 1:
+        raise TransactionError(
+            f"mechanical: edge reference {want} (kind={edge_kind!r}) is AMBIGUOUS — "
+            f"resolves to {len(matches)} edges. Refusing to guess (ADR/0038 D4)."
+        )
+    return matches[0].edge
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +280,21 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
     when a feature or primitive is added/removed. NOT a stored counter."""
     skeleton: list[dict[str, Any]] = []
     for f in features:
-        entry: dict[str, Any] = {"feature": f.get("feature_type")}
-        if f.get("feature_type") == "sketch":
+        ftype = f.get("feature_type")
+        entry: dict[str, Any] = {"feature": ftype}
+        if ftype == "sketch":
             prims = f.get("adapter_payload", {}).get("primitives", [])
             entry["primitives"] = sorted(
                 (p.get("id", ""), p.get("type")) for p in prims
             )
+        elif ftype == "fillet":
+            # A fillet IS a topology change; retargeting it changes topology too
+            # (ADR/0038 D4) — so the target anchor is part of the skeleton.
+            tgt = (f.get("adapter_payload") or {}).get("target_edge", {})
+            entry["target"] = [
+                sorted(tgt.get("adjacent_face_roles", [])),
+                tgt.get("edge_kind"),
+            ]
         skeleton.append(entry)
     raw = json.dumps(skeleton, sort_keys=True).encode("utf-8")
     return "topo_" + hashlib.sha256(raw).hexdigest()[:16]
@@ -282,10 +364,15 @@ def _rect_edges(rect: dict[str, Any]) -> list[tuple[str, float, float]]:
 # ---------------------------------------------------------------------------
 
 
-def _correlate_faces(face_map, recipe: dict[str, Any]) -> dict[int, str]:
-    """Assign every OCCT face a recipe-anchored role id. Raises if a face
-    cannot be mapped (fail-loud: a correlation gap is a real bug, not a
-    silent fallback to traversal order)."""
+def _correlate_faces(
+    face_map, recipe: dict[str, Any], claimed: dict[int, str] | None = None
+) -> dict[int, str]:
+    """Assign every OCCT face a recipe-anchored role id. Faces `claimed` by
+    construction (fillet blends, ADR/0038 D6) take their hinted role and skip
+    the geometric rule — so a blend cylinder is never mislabeled as a hole wall.
+    Raises if an unclaimed face cannot be mapped (fail-loud: a correlation gap is
+    a real bug, not a silent fallback to traversal order)."""
+    claimed = claimed or {}
     sketch_id = recipe["sketch_id"]
     extrude_id = recipe["extrude_id"]
     rect = recipe["rectangle"]
@@ -300,12 +387,28 @@ def _correlate_faces(face_map, recipe: dict[str, Any]) -> dict[int, str]:
     roles: dict[int, str] = {}
     used_wall_suffixes: set[str] = set()
     for i in range(1, face_map.Extent() + 1):
+        if i in claimed:
+            roles[i] = claimed[i]  # by-construction blend role (ADR/0038 D6)
+            continue
         face = TopoDS.Face_s(face_map.FindKey(i))
         surf = BRepAdaptor_Surface(face)
         stype = surf.GetType()
         centroid, normal = _face_centroid_normal(face)
 
         if stype == GeomAbs_Cylinder:
+            # Codex2 B2: an UNCLAIMED cylinder is a hole wall ONLY if the recipe
+            # actually has a circle primitive. With no circle, the only cylinder
+            # source is a fillet blend — which must have been CLAIMED by
+            # construction (ADR/0038 D6) above. Reaching here means a missed
+            # blend hint; fail loud rather than mint a placeholder
+            # `…/None:face:hole_wall` anchor (ADR/0035 no-placeholder).
+            if circle_skp is None:
+                raise TransactionError(
+                    f"mechanical.display: face {i} is an unclaimed cylinder but the "
+                    f"recipe has no circle primitive — a fillet blend must be claimed "
+                    f"by construction (ADR/0038 D6). Refusing to mint a placeholder "
+                    f"hole_wall role (ADR/0035 no-placeholder)."
+                )
             roles[i] = f"{feat_prefix}/{circle_skp}:face:hole_wall"
             continue
 

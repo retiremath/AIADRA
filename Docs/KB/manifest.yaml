@@ -1,0 +1,42 @@
+# AIADRA Knowledge Base — compatibility manifest (ADR/0037 D5).
+#
+# The KB is in-repo, git-tracked, plain-markdown-first, and RAG-consumed by ANY
+# BYO-AI model — cloud frontier, local open-weights, or deterministic script
+# (ADR/0026 §0). There is NO hosted KB service and NO AIADRA-operated embedding
+# endpoint (Manifesto P11). Embedding/vector indexes are generated LOCAL
+# artifacts, never source authority — git-ignored unless a future ADR changes
+# the posture. The KB grows as a BY-PRODUCT of building features (ADR/0037 D8),
+# never as documentation debt.
+#
+# Versioning is per-capability via this manifest, NOT lockstep with aiadra-core:
+# engine feature semantics version with their engine (adapter schema), Ring 2
+# command semantics version with core.
+
+kb_version: "0.1.0"   # first KB content — the fillet feature (arc 20260621-2)
+
+compatible:
+  aiadra_core: ">=0.13.0,<0.14.0"
+  aiadra_mechanical_adapter_schema_version: ">=0.1.2,<0.2.0"
+
+source_refs:
+  adrs: ["ADR/0037", "ADR/0038", "ADR/0035", "ADR/0031", "ADR/0029"]
+  schema_bundle: "v0.28.0"
+  tests: ["aiadra-mechanical/tests/test_fillet_feature.py"]
+
+contents:
+  feature_semantics:
+    - features/fillet.md
+  golden_recipes:
+    - golden-recipes/fillet-box.md
+  traces:
+    - traces/fillet-negative-repair.md
+
+retrieval_tags: [mechanical, feature, fillet, round, reference-identity, regeneration, paradigm]
+
+firewall:
+  # ADR/0037 D3 — original-content discipline (clean-room-style). Every shippable
+  # KB artifact cites AIADRA artifacts (ADRs / schema / engine handlers / tests /
+  # golden recipes) as its authority; NO proprietary documentation is ever in the
+  # producing context of a shippable artifact, and none is mirrored in structure
+  # or expression. Each artifact carries a `source_context` attestation (D7).
+  original_content_discipline: true
