@@ -22,6 +22,7 @@ recipe-hash, tolerance does NOT affect `vault_ref` — it only gates validity.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,9 +39,9 @@ from OCP.BRepBuilderAPI import (
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
-from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
 from OCP.Precision import Precision
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp
@@ -107,15 +108,28 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
         # Nothing geometric to evaluate yet (e.g. an empty Part). No-op gate.
         return EvalResult(shape=TopoDS_Shape())
     primitives = sketch.get("adapter_payload", {}).get("primitives", [])
-    rectangle, circle = _split_primitives(primitives)
 
     extrude = _last_feature_of_type(features, "extrude")
+    revolve = _last_feature_of_type(features, "revolve")
+    # Codex1 B3 (evaluator side): extrude XOR revolve — a single base-creation
+    # authority. A stored/corrupt recipe with both fails loud rather than letting
+    # "last base wins" make recipe identity disagree with feature history.
+    if extrude is not None and revolve is not None:
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: a Part has BOTH an extrude and a revolve base feature; "
+            f"v1 supports exactly one base creation per Part"
+        )
     try:
-        if extrude is None:
-            shape: TopoDS_Shape = _build_sketch_face(rectangle, circle)
+        if revolve is not None:
+            rectangle = require_simple_revolve_profile(primitives)  # Codex1 B2
+            shape: TopoDS_Shape = _build_revolved_solid(rectangle, _revolve_axis(revolve))
         else:
-            depth_mm, direction = _extract_extrude(extrude)
-            shape = _build_extruded_solid(rectangle, circle, depth_mm, direction)
+            rectangle, circle = _split_primitives(primitives)
+            if extrude is None:
+                shape = _build_sketch_face(rectangle, circle)
+            else:
+                depth_mm, direction = _extract_extrude(extrude)
+                shape = _build_extruded_solid(rectangle, circle, depth_mm, direction)
     except (TransactionError, MechanicalKernelEvaluationError):
         raise
     except Exception as exc:  # raw OCP / OCCT failure on a plausible recipe
@@ -138,8 +152,11 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
         if ftype not in ("fillet", "chamfer", "hole"):
             continue
         if extrude is None:
+            # v1 fold features (fillet/chamfer/hole) target the extrude box; they
+            # are not supported on a revolve base yet (a v2 stacking concern).
             raise TransactionError(
-                f"{ENGINE_OP_PREFIX}: a {ftype} requires an extruded solid"
+                f"{ENGINE_OP_PREFIX}: a {ftype} requires an extruded solid (v1 does "
+                f"not support {ftype} on a revolve)"
             )
         prefix = features[:idx]
         if ftype == "fillet":
@@ -377,6 +394,77 @@ def _fillet_radius(fillet: dict[str, Any]) -> float:
         f"{ENGINE_OP_PREFIX}: fillet feature {fillet.get('id')!r} missing a "
         f"'radius_mm' parameter record"
     )
+
+
+# ---------------------------------------------------------------------------
+# Revolve (a non-referencing creation feature; arc 20260622-4)
+# ---------------------------------------------------------------------------
+
+
+def revolve_radial_mode(rectangle: dict[str, Any], axis: str) -> str:
+    """The derived radial MODE of a revolve (Codex1 B1) — `solid` if the profile
+    touches the revolve axis (min radius 0), `tube` if it is offset. A profile
+    that CROSSES the axis is an invalid v1 revolve (self-intersecting) → Class-1.
+
+    The mode is topology SKELETON (it adds/removes the `inner_wall` role), so it
+    enters `compute_topology_signature`; the radii/positions are VALUES within a
+    mode (ADR/0038 A2 spirit). Shared by the evaluator, the signature, and the
+    correlation so all three agree."""
+    if axis == "x":
+        lo = float(rectangle["y_mm"])
+        hi = lo + float(rectangle["height_mm"])
+    elif axis == "y":
+        lo = float(rectangle["x_mm"])
+        hi = lo + float(rectangle["width_mm"])
+    else:
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: revolve axis must be 'x' or 'y', got {axis!r}"
+        )
+    if lo < -1e-9 and hi > 1e-9:  # straddles the axis
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: revolve profile crosses the {axis}-axis (a "
+            f"self-intersecting v1 revolve); offset the profile to one side of the axis"
+        )
+    min_radius = min(abs(lo), abs(hi))
+    return "solid" if min_radius <= 1e-9 else "tube"
+
+
+def require_simple_revolve_profile(primitives: list[dict[str, Any]]) -> dict[str, Any]:
+    """Codex1 B2: a v1 revolve profile is EXACTLY one rectangle — no circles,
+    lines, or extra rectangles silently ignored (which would make Truth claim a
+    revolve of more than the engine actually revolved). Shared by the handler
+    (early error) and the evaluator (direct/corrupt-recipe path)."""
+    rects = [p for p in primitives if p.get("type") == "rectangle"]
+    others = [p for p in primitives if p.get("type") != "rectangle"]
+    if len(rects) != 1 or others:
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: v1 revolve requires a SIMPLE profile of exactly one "
+            f"rectangle (no circles, lines, or extra rectangles); got primitive types "
+            f"{[p.get('type') for p in primitives]}"
+        )
+    return rects[0]
+
+
+def _revolve_axis(revolve: dict[str, Any]) -> str:
+    axis = (revolve.get("adapter_payload") or {}).get("axis")
+    if axis not in ("x", "y"):
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: revolve feature {revolve.get('id')!r} has invalid "
+            f"axis {axis!r} (expected 'x' or 'y')"
+        )
+    return axis
+
+
+def _build_revolved_solid(rectangle: dict[str, Any], axis: str) -> TopoDS_Shape:
+    """Revolve the XY rectangle profile 360° around the global X or Y axis →
+    a tube/washer (offset profile) or a solid cylinder (touching). The
+    crossing-axis guard runs here too (the direct/evaluator path), not only the
+    handler."""
+    revolve_radial_mode(rectangle, axis)  # crossing-axis guard (Class-1)
+    face = _rectangle_face(rectangle)
+    direction = gp_Dir(1.0, 0.0, 0.0) if axis == "x" else gp_Dir(0.0, 1.0, 0.0)
+    gp_axis = gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), direction)
+    return BRepPrimAPI_MakeRevol(face, gp_axis, 2.0 * math.pi).Shape()
 
 
 # ---------------------------------------------------------------------------

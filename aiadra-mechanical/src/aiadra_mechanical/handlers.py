@@ -1,4 +1,4 @@
-"""4 Native Engine handlers for `aiadra-mechanical` v0.0.1 (ADR/0031 D5).
+"""Native Engine authoring handlers for `aiadra-mechanical` v0.0.1 (ADR/0031 D5).
 
 Mirrors the proven Wedge-003 handler flow against the production API, with
 three production deltas:
@@ -32,6 +32,7 @@ from .adapter_payload import (
     build_extrude_payload,
     build_fillet_payload,
     build_hole_payload,
+    build_revolve_payload,
     build_sketch_payload,
     require_simple_cap_fit,
 )
@@ -41,6 +42,10 @@ if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.5 (arc 20260622-4): adds the revolve feature — the first non-referencing
+# CREATION feature since extrude (sketch → extrude XOR revolve); a revolve solid
+# (tube/washer or solid cylinder) correlated recipe-first into outer/inner-wall +
+# cap roles. No ADR/0038 reference machinery (revolve creates base geometry).
 # 0.1.4 (arc 20260622-3): adds the chamfer feature (the fillet's edge-reference
 # twin; shared `build_edge_reference_payload`; planar `…:face:chamfer` role, A3).
 # 0.1.3 (arc 20260622-2): adds the hole feature + the `target_face` reference
@@ -49,7 +54,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.4"
+ADAPTER_SCHEMA_VERSION = "0.1.5"
 
 
 # =============================================================================
@@ -133,6 +138,14 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
             f"mechanical.add_extrude_feature: sketch feature {sketch_feature_id!r} "
             f"not found on Part {part_number}"
         )
+    # Codex1 B3 (arc 20260622-4): extrude XOR revolve, enforced symmetrically —
+    # a Part with a revolve base cannot also take an extrude (one base creation
+    # per Part in v1). The mirror guard lives on add_revolve_feature.
+    if any(f.get("feature_type") == "revolve" for f in sidecar.get("feature", [])):
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: Part {part_number} already has a revolve "
+            f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
+        )
 
     feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
     depth_param_id = _next_id_within_parameters(sidecar.get("feature", []), prefix="featp_")
@@ -196,6 +209,106 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
     context.emit_event("part_changed", {
         "object_uuid": part_uuid,
         "rationale": f"add extrude feature {feature_id} consuming sketch {sketch_feature_id} (depth={depth_mm}mm)",
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": geometry_delta,
+    })
+
+
+# =============================================================================
+# Handler: add_revolve_feature (ADR/0037 D8; a creation feature; arc 20260622-4)
+# =============================================================================
+
+
+def handle_add_revolve_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    part_number = _require_param(params, "part_number", str, "mechanical.add_revolve_feature")
+    sketch_feature_id = _require_param(params, "sketch_feature_id", str, "mechanical.add_revolve_feature")
+    axis = _require_param(params, "axis", str, "mechanical.add_revolve_feature")
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+    features = sidecar.get("feature", [])
+
+    sketch_feature = next(
+        (f for f in features
+         if f.get("id") == sketch_feature_id and f.get("feature_type") == "sketch"),
+        None,
+    )
+    if sketch_feature is None:
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: sketch feature {sketch_feature_id!r} "
+            f"not found on Part {part_number}"
+        )
+    # Codex1 B3 (symmetric XOR): a Part with an extrude base cannot also revolve.
+    if any(f.get("feature_type") == "extrude" for f in features):
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: Part {part_number} already has an extrude "
+            f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
+        )
+    # Codex1 B2 (early-error path): exactly one rectangle, no circles/lines/extras.
+    # The SAME check runs inside the evaluator fold (geometry._evaluate), so a
+    # direct/corrupt recipe is rejected there too.
+    from . import geometry
+
+    primitives = sketch_feature.get("adapter_payload", {}).get("primitives", [])
+    rectangle = geometry.require_simple_revolve_profile(primitives)
+    # Crossing-axis is also caught at the gate below (evaluator path, Codex1 B1),
+    # but check here for the clearest early error.
+    geometry.revolve_radial_mode(rectangle, axis)
+
+    feature_id = _next_id(features, prefix="feat_")
+    feature_record = {
+        "id": feature_id,
+        "name": f"revolve_{feature_id}",
+        "feature_type": "revolve",
+        "engine": ENGINE_ID,
+        "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
+        "depends_on_feature_ids": [sketch_feature_id],
+        # v1 has no numeric parameter (360° fixed; axis is structural payload).
+        "adapter_payload": build_revolve_payload(
+            sketch_feature_id=sketch_feature_id, axis=axis
+        ),
+        "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
+    }
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    _gate_validity(context, sidecar["feature"])  # builds the revolve through real OCCT
+    vault_ref = _stage_recipe(context, sidecar["feature"])
+
+    # Like the extrude, the revolve REPLACES the sketch's authoring_geometry with
+    # one derived from BOTH features (the sketch profile + the revolve).
+    existing_geom = next(
+        (g for g in sidecar.get("geometry_ref", [])
+         if g.get("role") == "authoring_geometry"
+         and sketch_feature_id in g.get("derived_from_feature_ids", [])),
+        None,
+    )
+    new_geom_record = {
+        "id": existing_geom["id"] if existing_geom else _next_id(sidecar.get("geometry_ref", []), prefix="geom_"),
+        "role": "authoring_geometry",
+        "vault_ref": vault_ref,  # `kind` omitted per ADR/0031 D6/B1.
+        "derived_from_feature_ids": [sketch_feature_id, feature_id],
+        "fact_provenance": {
+            "category": "computed_result",
+            "derived_from": [f"feature:{sketch_feature_id}", f"feature:{feature_id}"],
+        },
+    }
+    if existing_geom is not None:
+        for i, g in enumerate(sidecar["geometry_ref"]):
+            if g.get("id") == new_geom_record["id"]:
+                sidecar["geometry_ref"][i] = copy.deepcopy(new_geom_record)
+                break
+        geometry_delta = {"updated": [{"id": new_geom_record["id"], "new_record": copy.deepcopy(new_geom_record)}]}
+    else:
+        sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(new_geom_record))
+        geometry_delta = {"added": [copy.deepcopy(new_geom_record)]}
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": (
+            f"add revolve feature {feature_id} consuming sketch {sketch_feature_id} "
+            f"(360° around the {axis}-axis)"
+        ),
         "feature_delta": {"added": [copy.deepcopy(feature_record)]},
         "geometry_ref_delta": geometry_delta,
     })

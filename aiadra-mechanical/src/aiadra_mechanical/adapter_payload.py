@@ -92,6 +92,24 @@ def build_extrude_payload(
     }
 
 
+def build_revolve_payload(*, sketch_feature_id: str, axis: str) -> dict[str, Any]:
+    """Build (and domain-validate) the adapter_payload for a revolve feature
+    (arc 20260622-4). The `axis` (`"x"`/`"y"` — an in-plane global axis) is
+    STRUCTURAL (it is part of the topology skeleton, ADR/0038 A2 spirit), so it
+    lives in the payload, not in `parameters[]`. v1 is a full 360° revolve, so
+    there is no angle parameter."""
+    if axis not in ("x", "y"):
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: axis must be 'x' or 'y', got {axis!r}"
+        )
+    if not sketch_feature_id.startswith("feat_"):
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: sketch_feature_id must match feat_NNNN, "
+            f"got {sketch_feature_id!r}"
+        )
+    return {"sketch_feature_id": sketch_feature_id, "axis": axis}
+
+
 _EDGE_KINDS = {"sharp", "tangent", "seam", "boundary", "free"}
 
 

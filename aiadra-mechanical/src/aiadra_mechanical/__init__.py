@@ -1,8 +1,8 @@
 """`aiadra-mechanical` — the first shippable AIADRA Native Engine (ADR/0031).
 
-Registers the mechanical authoring operations (sketch / extrude / fillet /
-chamfer / hole / adjust-parameter / remove) + the read-only display operations
-under the `mechanical` engine_id via the `aiadra.native_engines` entry-point
+Registers the mechanical authoring operations (sketch / extrude / revolve /
+fillet / chamfer / hole / adjust-parameter / remove) + the read-only display
+operations under the `mechanical` engine_id via the `aiadra.native_engines` entry-point
 group (ADR/0028 D2). Uses OCCT (via the `cadquery-ocp` binding) as a
 geometry-validity kernel; geometry IDENTITY is the canonical feature recipe hash,
 not the evaluated BREP (ADR/0031 D6).
@@ -31,6 +31,7 @@ def register(registrar: "NativeEngineRegistrar") -> None:
         handle_add_extrude_feature,
         handle_add_fillet_feature,
         handle_add_hole_feature,
+        handle_add_revolve_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
         handle_remove_feature,
@@ -38,6 +39,8 @@ def register(registrar: "NativeEngineRegistrar") -> None:
 
     registrar.add_operation("mechanical.add_sketch_feature", handle_add_sketch_feature)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
+    # First non-referencing CREATION feature since extrude — ADR/0037 D8 (arc 20260622-4).
+    registrar.add_operation("mechanical.add_revolve_feature", handle_add_revolve_feature)
     # First referencing feature (edge) — ADR/0037 D8 step 1; ADR/0038 (arc 20260621-2).
     registrar.add_operation("mechanical.add_fillet_feature", handle_add_fillet_feature)
     # The fillet's edge-reference twin — ADR/0037 D8 (arc 20260622-3).

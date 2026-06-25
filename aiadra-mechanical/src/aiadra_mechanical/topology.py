@@ -344,6 +344,22 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             # edit, exactly like a sketch circle's position/radius.
             tgt = (f.get("adapter_payload") or {}).get("target_face", {})
             entry["target"] = tgt.get("face_role")
+        elif ftype == "revolve":
+            # Codex1 B1 (arc 20260622-4): the axis AND the derived radial mode
+            # (tube vs solid) are skeleton — tube↔solid adds/removes the
+            # `inner_wall` role, a topology change, not a value edit. The radii
+            # (the profile dimensions, already excluded with every sketch dim)
+            # stay out within a mode.
+            axis = (f.get("adapter_payload") or {}).get("axis")
+            sk = _last(features, "sketch")
+            prims = (sk.get("adapter_payload", {}) if sk else {}).get("primitives", [])
+            rect = next((p for p in prims if p.get("type") == "rectangle"), None)
+            try:
+                mode = geometry.revolve_radial_mode(rect, axis) if rect is not None else None
+            except TransactionError:
+                mode = "invalid"  # a crossing recipe; the evaluator rejects it separately
+            entry["axis"] = axis
+            entry["mode"] = mode
         skeleton.append(entry)
     raw = json.dumps(skeleton, sort_keys=True).encode("utf-8")
     return "topo_" + hashlib.sha256(raw).hexdigest()[:16]
@@ -372,6 +388,20 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
             "mechanical.display: sketch has no rectangle profile"
         )
 
+    # Revolve base (arc 20260622-4): a different topology family than the extrude
+    # box, so the recipe carries its base kind and the correlation dispatches.
+    revolve = _last(features, "revolve")
+    if revolve is not None:
+        axis = (revolve.get("adapter_payload") or {}).get("axis")
+        return {
+            "base": "revolve",
+            "sketch_id": sketch_id,
+            "revolve_id": revolve["id"],
+            "rectangle": rectangle,
+            "axis": axis,
+            "mode": geometry.revolve_radial_mode(rectangle, axis),
+        }
+
     extrude = _last(features, "extrude")
     direction = "z+"
     depth = None
@@ -384,6 +414,7 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
                 depth = float(p["value"])
                 break
     return {
+        "base": "extrude",
         "sketch_id": sketch_id,
         "extrude_id": extrude_id,
         "rectangle": rectangle,
@@ -422,6 +453,8 @@ def _correlate_faces(
     Raises if an unclaimed face cannot be mapped (fail-loud: a correlation gap is
     a real bug, not a silent fallback to traversal order)."""
     claimed = claimed or {}
+    if recipe.get("base") == "revolve":
+        return _correlate_revolve_faces(face_map, recipe, claimed)
     sketch_id = recipe["sketch_id"]
     extrude_id = recipe["extrude_id"]
     rect = recipe["rectangle"]
@@ -487,6 +520,70 @@ def _correlate_faces(
             f"mechanical.display: unexpected surface type "
             f"{stype} on face {i}; v0.0.1 supports plane + cylinder only"
         )
+    return roles
+
+
+def _correlate_revolve_faces(
+    face_map, recipe: dict[str, Any], claimed: dict[int, str]
+) -> dict[int, str]:
+    """Recipe-anchored roles for a revolve solid (arc 20260622-4). The recipe's
+    radial mode + axis enumerate the expected roles; geometry ORDERS the faces
+    into them — `outer_wall`/`inner_wall` by absolute radius, `cap_lo`/`cap_hi`
+    by axis coordinate (Codex1 Q2). v1 surfaces are plane + cylinder only; any
+    other surface, a cap whose normal is not the axis, or a face-count mismatch
+    against the mode fails loud (the same no-silent-fallback discipline as the
+    box correlation)."""
+    feat = recipe["revolve_id"]
+    axis = recipe["axis"]
+    mode = recipe["mode"]
+    axis_idx = {"x": 0, "y": 1}[axis]
+
+    roles: dict[int, str] = {}
+    cylinders: list[tuple[int, float]] = []   # (face index, radius)
+    caps: list[tuple[int, float]] = []        # (face index, axis coordinate)
+    for i in range(1, face_map.Extent() + 1):
+        if i in claimed:  # forward-compat: a stacked produced face (none in v1)
+            roles[i] = claimed[i]
+            continue
+        face = TopoDS.Face_s(face_map.FindKey(i))
+        surf = BRepAdaptor_Surface(face)
+        stype = surf.GetType()
+        if stype == GeomAbs_Cylinder:
+            cylinders.append((i, surf.Cylinder().Radius()))
+            continue
+        if stype == GeomAbs_Plane:
+            n = surf.Plane().Position().Direction()
+            if abs((n.X(), n.Y(), n.Z())[axis_idx]) < _AXIS_DOT:
+                raise TransactionError(
+                    f"mechanical.display: revolve face {i} is a plane whose normal is "
+                    f"not the {axis}-axis (an unexpected revolve cap); recipe/topology mismatch"
+                )
+            loc = surf.Plane().Position().Location()
+            caps.append((i, (loc.X(), loc.Y(), loc.Z())[axis_idx]))
+            continue
+        raise TransactionError(
+            f"mechanical.display: revolve face {i} has unexpected surface type "
+            f"{stype}; a v1 (rectangle-profile) revolve is plane + cylinder only "
+            f"(cones/tori are a richer-profile v2)"
+        )
+
+    expected_cyl = 1 if mode == "solid" else 2
+    if len(cylinders) != expected_cyl or len(caps) != 2:
+        raise TransactionError(
+            f"mechanical.display: revolve face-count mismatch for {mode!r} mode — "
+            f"expected {expected_cyl} cylinder(s) + 2 cap(s), got {len(cylinders)} "
+            f"cylinder(s) + {len(caps)} cap(s); recipe/topology mismatch"
+        )
+
+    cylinders.sort(key=lambda c: c[1])  # ascending radius
+    if mode == "solid":
+        roles[cylinders[0][0]] = f"{feat}:face:outer_wall"
+    else:
+        roles[cylinders[0][0]] = f"{feat}:face:inner_wall"   # smaller radius
+        roles[cylinders[1][0]] = f"{feat}:face:outer_wall"   # larger radius
+    caps.sort(key=lambda c: c[1])  # ascending axis coordinate
+    roles[caps[0][0]] = f"{feat}:face:cap_lo"
+    roles[caps[1][0]] = f"{feat}:face:cap_hi"
     return roles
 
 
