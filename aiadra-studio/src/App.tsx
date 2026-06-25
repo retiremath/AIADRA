@@ -12,6 +12,7 @@ import { createSettingsRegistry, type SettingsRegistry } from './settings/regist
 import { createPersistence, type Persistence } from './settings/persistence'
 import { SETTING_DESCRIPTORS, type SettingDescriptor, type SettingValue } from './settings/descriptors'
 import { createViewStateStore, toCommandContext, type ViewStateStore } from './viewstate/store'
+import { createSelectionStore, type SelectionStore } from './selection/store'
 import { dispatchShortcut, normalizeChord } from './commands/registry'
 import type { CommandActions } from './commands/types'
 
@@ -325,10 +326,12 @@ function Workbench({
   ready,
   viewportApi,
   viewStore,
+  selectionStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
   viewStore: ViewStateStore
+  selectionStore: SelectionStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
@@ -344,9 +347,19 @@ function Workbench({
       reset: () => viewportApi.current?.reset(),
       setMode: (m) => viewStore.setMode(m),
       toggleGrid: () => viewStore.setGridVisible(!viewStore.getSnapshot().gridVisible),
+      standardView: (id) => viewportApi.current?.standardView(id),
+      toggleFilterKind: (k) => selectionStore.toggleFilterKind(k),
+      clearSelection: () => selectionStore.clearSelected(),
     }),
-    [viewStore, viewportApi],
+    [viewStore, selectionStore, viewportApi],
   )
+
+  // The command context combines the view-state and selection snapshots.
+  const ctxNow = () =>
+    toCommandContext(viewStore.getSnapshot(), {
+      filter: selectionStore.getSnapshot().filter,
+      hasSelection: selectionStore.getSnapshot().selected !== null,
+    })
 
   // Keyboard shortcuts (Codex1 N4) — guarded: no command fires while typing in
   // an input / select / textarea / contenteditable, or with modifier chords the
@@ -357,13 +370,21 @@ function Workbench({
       const t = e.target as HTMLElement | null
       const tag = t?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t?.isContentEditable) return
+      // Escape clears the committed selection (Codex1 Q7) — guarded like the rest.
+      if (e.key === 'Escape') {
+        if (selectionStore.getSnapshot().selected) {
+          selectionStore.clearSelected()
+          e.preventDefault()
+        }
+        return
+      }
       const chord = normalizeChord(e)
-      const ctx = toCommandContext(viewStore.getSnapshot())
-      if (dispatchShortcut(chord, ctx, actions)) e.preventDefault()
+      if (dispatchShortcut(chord, ctxNow(), actions)) e.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [ready, viewStore, actions])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, viewStore, selectionStore, actions])
 
   // Browser-dev fixture lane (arc 20260610-1 P7): loaded ONLY when there is no
   // bridge AND this is a dev build, after settings are ready (so the Viewport
@@ -413,12 +434,13 @@ function Workbench({
         <main className="viewport">
           {ready ? (
             <>
-              <Toolbar store={viewStore} actions={actions} />
+              <Toolbar store={viewStore} selectionStore={selectionStore} actions={actions} />
               <Viewport
                 apiRef={viewportApi}
                 theme={theme}
                 settleMs={registry.get('settleMs') as number}
                 viewStore={viewStore}
+                selectionStore={selectionStore}
                 commandActions={actions}
               />
             </>
@@ -437,6 +459,7 @@ export default function App() {
   const registryRef = useRef<SettingsRegistry | null>(null)
   const persistenceRef = useRef<Persistence | null>(null)
   const viewStoreRef = useRef<ViewStateStore | null>(null)
+  const selectionStoreRef = useRef<SelectionStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -459,6 +482,9 @@ export default function App() {
     })
   }
   const viewStore = viewStoreRef.current
+
+  if (!selectionStoreRef.current) selectionStoreRef.current = createSelectionStore()
+  const selectionStore = selectionStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -491,7 +517,12 @@ export default function App() {
 
   return (
     <SettingsProvider registry={registry}>
-      <Workbench ready={ready} viewportApi={viewportApi} viewStore={viewStore} />
+      <Workbench
+        ready={ready}
+        viewportApi={viewportApi}
+        viewStore={viewStore}
+        selectionStore={selectionStore}
+      />
     </SettingsProvider>
   )
 }

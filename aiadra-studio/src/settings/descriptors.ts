@@ -59,6 +59,7 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
   { key: 'hlrHidden', type: 'color', default: 0xb4bac2, label: 'HLR — hidden', group: 'Theme' },
   // ---- Theme: selection + reference imports ----
   { key: 'selectionHighlight', type: 'color', default: 0x16314e, label: 'Selection highlight', group: 'Theme' },
+  { key: 'hoverHighlight', type: 'color', default: 0x4a7fb5, label: 'Hover pre-highlight', group: 'Theme' },
   { key: 'importedFace', type: 'color', default: 0x9aa0a6, label: 'Imported face', group: 'Theme' },
   { key: 'importedEdgeBright', type: 'color', default: 0x33373d, label: 'Imported edge', group: 'Theme' },
   { key: 'importedEdgeDim', type: 'color', default: 0xb4bac2, label: 'Imported edge (dim)', group: 'Theme' },

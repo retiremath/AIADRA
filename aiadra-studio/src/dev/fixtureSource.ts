@@ -29,7 +29,9 @@ import type { DisplaySource, SnapView } from '../display/displaySource'
 
 export const FIXTURE_BADGE = 'dev fixture — not Product Truth'
 
-const FIXTURE_VIEW_IDS = ['front', 'iso', 'tilt'] as const
+// Iso first → the dev lane opens on the 3D iso view (the nav cube shows three
+// faces, the CAD-default first impression). The gallery script snaps explicitly.
+const FIXTURE_VIEW_IDS = ['iso', 'front', 'tilt'] as const
 
 export class FixtureVersionError extends Error {
   constructor(found: string) {

@@ -6,9 +6,17 @@
  * dispatch tests stay cheap.
  */
 import type { DisplayMode } from '../display/modes'
+import type { StandardViewId } from '../display/viewOrientation'
+import type { SelectableKind } from '../selection/store'
 
 export type CommandKind = 'action' | 'toggle' | 'radio'
-export type CommandGroup = 'view' | 'display' | 'scene' | 'selection' | 'operations'
+export type CommandGroup =
+  | 'view'
+  | 'orientation'
+  | 'display'
+  | 'scene'
+  | 'selection'
+  | 'operations'
 
 /**
  * The enablement/active snapshot. Scene facts are SPLIT (Codex1 B1): an
@@ -22,6 +30,9 @@ export interface CommandContext {
   hasRenderableScene: boolean // canonical OR reference
   mode: DisplayMode
   gridVisible: boolean
+  /** Selection filter + selection presence (arc 20260625-1 / 6c). */
+  filter: { face: boolean; edge: boolean }
+  hasSelection: boolean
 }
 
 /** The runtime actions a command invokes — injected, never captured (N3). */
@@ -30,6 +41,10 @@ export interface CommandActions {
   reset(): void
   setMode(mode: DisplayMode): void
   toggleGrid(): void
+  /** Orient the main camera to a standard view (arc 20260625-1 / 6c). */
+  standardView(id: StandardViewId): void
+  toggleFilterKind(kind: SelectableKind): void
+  clearSelection(): void
 }
 
 export interface Command {

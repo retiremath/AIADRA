@@ -61,14 +61,27 @@ export function createViewStateStore(initial: ViewState): ViewStateStore {
   }
 }
 
-/** Derive the command-enablement context from a view-state snapshot (B1). */
-export function toCommandContext(s: ViewState): CommandContext {
+/**
+ * Derive the command-enablement context from a view-state snapshot (B1) plus the
+ * committed-selection snapshot (arc 20260625-1 / 6c). Selection lives in its own
+ * store (`selection/store.ts`); the toolbar/menu pass its snapshot here so the
+ * filter toggles + clear command can read filter/selection state.
+ */
+export function toCommandContext(
+  s: ViewState,
+  sel: { filter: { face: boolean; edge: boolean }; hasSelection: boolean } = {
+    filter: { face: true, edge: true },
+    hasSelection: false,
+  },
+): CommandContext {
   return {
     hasCanonicalPart: s.hasCanonicalPart,
     hasReferenceGeometry: s.hasReferenceGeometry,
     hasRenderableScene: s.hasCanonicalPart || s.hasReferenceGeometry,
     mode: s.mode,
     gridVisible: s.gridVisible,
+    filter: sel.filter,
+    hasSelection: sel.hasSelection,
   }
 }
 

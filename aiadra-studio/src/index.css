@@ -116,11 +116,12 @@ body { background: var(--bg); overflow: hidden; }
 .part-row { cursor: pointer; }
 .part-row.on { background: rgba(107, 155, 209, 0.18); color: var(--text-h); }
 
-/* Standard-view snap buttons (fixture lane, arc 20260610-1 P7) */
+/* Fixture-lane HLR snap buttons (arc 20260610-1 P7). Moved to the bottom-left in
+   6c so they clear the nav cube's top-right corner. Dev/fixture only. */
 .snap-views {
   position: absolute;
-  right: 12px;
-  top: 10px;
+  left: 12px;
+  bottom: 40px;
   display: flex;
   gap: 6px;
 }
@@ -225,3 +226,52 @@ body { background: var(--bg); overflow: hidden; }
 .tb-seg:hover:not(:disabled) { background: var(--panel); color: var(--text-h); }
 .tb-seg.on { color: #fff; background: var(--accent); }
 .tb-seg:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+.tb-seg { white-space: nowrap; }
+/* Text buttons (standard views, selection filters) — auto-width, no wrap
+   (arc 20260625-1 / 6c). */
+.tb-btn.tb-text {
+  width: auto;
+  min-width: 30px;
+  padding: 0 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* The nav-cube control cluster (arc 20260625-1 / 6c). A 180px box at top-right;
+   the GL cube renders in its centre, these HTML arrows ring it. The container is
+   click-through (pointer-events:none) so the cube behind stays hoverable/pickable;
+   only the arrow buttons take input. */
+.nav-cube-cluster {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 180px;
+  height: 180px;
+  pointer-events: none;
+  z-index: 15;
+}
+.nc-arrow {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.nc-arrow:hover { color: var(--text-h); border-color: var(--accent); opacity: 1; }
+.nc-up { top: 0; left: 50%; transform: translateX(-50%); }
+.nc-down { bottom: 0; left: 50%; transform: translateX(-50%); }
+.nc-left { left: 0; top: 50%; transform: translateY(-50%); }
+.nc-right { right: 0; top: 50%; transform: translateY(-50%); }
+.nc-roll-l { top: 1px; left: 1px; }
+.nc-roll-r { top: 1px; right: 1px; }

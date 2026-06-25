@@ -10,15 +10,28 @@ import { commandsInGroup } from './commands/registry'
 import type { Command, CommandActions } from './commands/types'
 import { ICONS } from './commands/icons'
 import { toCommandContext, useViewState, type ViewStateStore } from './viewstate/store'
+import { useSelectionState, type SelectionStore } from './selection/store'
 
-export function Toolbar({ store, actions }: { store: ViewStateStore; actions: CommandActions }) {
-  const ctx = toCommandContext(useViewState(store))
+export function Toolbar({
+  store,
+  selectionStore,
+  actions,
+}: {
+  store: ViewStateStore
+  selectionStore: SelectionStore
+  actions: CommandActions
+}) {
+  const sel = useSelectionState(selectionStore)
+  const ctx = toCommandContext(useViewState(store), {
+    filter: sel.filter,
+    hasSelection: sel.selected !== null,
+  })
   const tip = (c: Command) => (c.shortcut ? `${c.label} (${c.shortcut.toUpperCase()})` : c.label)
 
   const iconButton = (c: Command) => (
     <button
       key={c.id}
-      className={`tb-btn${c.isActive?.(ctx) ? ' on' : ''}`}
+      className={`tb-btn${c.iconKey ? '' : ' tb-text'}${c.isActive?.(ctx) ? ' on' : ''}`}
       type="button"
       disabled={!c.isEnabled(ctx)}
       title={tip(c)}
@@ -26,7 +39,7 @@ export function Toolbar({ store, actions }: { store: ViewStateStore; actions: Co
       aria-pressed={c.kind === 'toggle' ? !!c.isActive?.(ctx) : undefined}
       onClick={() => c.run(actions, ctx)}
     >
-      {c.iconKey ? ICONS[c.iconKey] : c.label}
+      {c.iconKey ? ICONS[c.iconKey] : (c.shortLabel ?? c.label)}
     </button>
   )
 
@@ -48,6 +61,26 @@ export function Toolbar({ store, actions }: { store: ViewStateStore; actions: Co
             {c.shortLabel ?? c.label}
           </button>
         ))}
+      </div>
+      <span className="tb-sep" />
+      <div className="tb-group" role="group" aria-label="Standard views">
+        {commandsInGroup('orientation').map((c) => (
+          <button
+            key={c.id}
+            className="tb-btn tb-text"
+            type="button"
+            disabled={!c.isEnabled(ctx)}
+            title={c.label}
+            aria-label={c.label}
+            onClick={() => c.run(actions, ctx)}
+          >
+            {c.shortLabel ?? c.label}
+          </button>
+        ))}
+      </div>
+      <span className="tb-sep" />
+      <div className="tb-group" role="group" aria-label="Selection">
+        {commandsInGroup('selection').map(iconButton)}
       </div>
       <span className="tb-sep" />
       <div className="tb-group">{commandsInGroup('scene').map(iconButton)}</div>

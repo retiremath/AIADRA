@@ -11,6 +11,7 @@
  * model-changing command leaks into the display shell (Codex1 N6 / D10 boundary).
  */
 import { DISPLAY_MODES, MODE_LABELS, type DisplayMode } from '../display/modes'
+import { STANDARD_VIEW_IDS, STANDARD_VIEW_LABELS } from '../display/viewOrientation'
 import type { Command, CommandActions, CommandContext } from './types'
 
 const MODE_SHORT: Record<DisplayMode, string> = {
@@ -22,10 +23,23 @@ const MODE_SHORT: Record<DisplayMode, string> = {
 }
 
 const renderable = (c: CommandContext) => c.hasRenderableScene
+const canonical = (c: CommandContext) => c.hasCanonicalPart
 
 export const COMMANDS: Command[] = [
   { id: 'view.fit', group: 'view', kind: 'action', label: 'Fit to view', iconKey: 'fit', shortcut: 'f', isEnabled: renderable, run: (a) => a.fit() },
   { id: 'view.reset', group: 'view', kind: 'action', label: 'Reset view', iconKey: 'reset', shortcut: 'r', isEnabled: renderable, run: (a) => a.reset() },
+  // Standard views (arc 20260625-1 / 6c). The nav cube and these buttons share
+  // ONE orientation table; keybindings are deferred to the benchmark packet
+  // (Codex1 Q2 — the 1–5 chords already own those digits for display modes).
+  ...STANDARD_VIEW_IDS.map((id): Command => ({
+    id: `orientation.${id}`,
+    group: 'orientation',
+    kind: 'action',
+    label: STANDARD_VIEW_LABELS[id],
+    shortLabel: STANDARD_VIEW_LABELS[id],
+    isEnabled: renderable,
+    run: (a) => a.standardView(id),
+  })),
   ...DISPLAY_MODES.map((m, i): Command => ({
     id: `display.${m}`,
     group: 'display',
@@ -39,6 +53,12 @@ export const COMMANDS: Command[] = [
     run: (a) => a.setMode(m),
   })),
   { id: 'scene.grid', group: 'scene', kind: 'toggle', label: 'Grid', iconKey: 'grid', shortcut: 'g', isEnabled: () => true, isActive: (c) => c.gridVisible, run: (a) => a.toggleGrid() },
+  // Selection filters + clear (arc 20260625-1 / 6c). Selection is canonical-only,
+  // so these gate on `hasCanonicalPart`. Vertex selection is deferred (no vertex
+  // markers rendered yet) — like the `operations` reserved slot.
+  { id: 'selection.filter-face', group: 'selection', kind: 'toggle', label: 'Select faces', shortLabel: 'Faces', isEnabled: canonical, isActive: (c) => c.filter.face, run: (a) => a.toggleFilterKind('face') },
+  { id: 'selection.filter-edge', group: 'selection', kind: 'toggle', label: 'Select edges', shortLabel: 'Edges', isEnabled: canonical, isActive: (c) => c.filter.edge, run: (a) => a.toggleFilterKind('edge') },
+  { id: 'selection.clear', group: 'selection', kind: 'action', label: 'Clear selection', shortLabel: 'Clear', isEnabled: (c) => c.hasSelection, run: (a) => a.clearSelection() },
   // Reserved placeholder — authoring/model-changing commands are a LATER strand
   // (ADR/0033 D10 boundary; Codex1 N6). Always disabled, no effect.
   { id: 'operations.soon', group: 'operations', kind: 'action', label: 'Operations (with selection) — soon', isEnabled: () => false, run: () => {} },

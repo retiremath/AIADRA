@@ -15,6 +15,8 @@ function ctx(over: Partial<CommandContext> = {}): CommandContext {
     hasRenderableScene: false,
     mode: 'shading-edges',
     gridVisible: true,
+    filter: { face: true, edge: true },
+    hasSelection: false,
     ...over,
   }
   merged.hasRenderableScene = merged.hasCanonicalPart || merged.hasReferenceGeometry
@@ -26,6 +28,9 @@ const mkActions = (): CommandActions => ({
   reset: vi.fn(),
   setMode: vi.fn(),
   toggleGrid: vi.fn(),
+  standardView: vi.fn(),
+  toggleFilterKind: vi.fn(),
+  clearSelection: vi.fn(),
 })
 
 describe('command taxonomy', () => {
@@ -57,12 +62,40 @@ describe('command taxonomy', () => {
     expect(COMMANDS_BY_ID['display.shading'].isEnabled(canonical)).toBe(true)
   })
 
-  it('B1: no 6b command is canonical-only — reference-only enables exactly what canonical does', () => {
+  it('B1: no VIEW/DISPLAY/SCENE command is canonical-only — reference-only matches canonical', () => {
+    // Selection (6c) IS canonical-only by design (topology selection needs a
+    // canonical Part), so it is excluded from the imported-lane parity invariant.
     const imported = ctx({ hasReferenceGeometry: true })
     const canonical = ctx({ hasCanonicalPart: true })
     for (const c of COMMANDS) {
+      if (c.group === 'selection') continue
       expect(c.isEnabled(imported)).toBe(c.isEnabled(canonical))
     }
+  })
+
+  // --- 6c: orientation (standard views) + selection (filters/clear) ---
+  it('6c: standard-view commands cover the 7 named views and orient the camera', () => {
+    const views = commandsInGroup('orientation')
+    expect(views.map((c) => c.id).sort()).toEqual(
+      ['back', 'bottom', 'front', 'iso', 'left', 'right', 'top'].map((v) => `orientation.${v}`).sort(),
+    )
+    const a = mkActions()
+    COMMANDS_BY_ID['orientation.front'].run(a, ctx({ hasReferenceGeometry: true }))
+    expect(a.standardView).toHaveBeenCalledWith('front')
+  })
+
+  it('6c: selection filters are canonical-only toggles; clear gates on a selection', () => {
+    expect(COMMANDS_BY_ID['selection.filter-face'].isEnabled(ctx({ hasReferenceGeometry: true }))).toBe(false)
+    expect(COMMANDS_BY_ID['selection.filter-face'].isEnabled(ctx({ hasCanonicalPart: true }))).toBe(true)
+    expect(COMMANDS_BY_ID['selection.filter-edge'].isActive!(ctx({ filter: { face: true, edge: false } }))).toBe(false)
+    // clear needs a committed selection
+    expect(COMMANDS_BY_ID['selection.clear'].isEnabled(ctx({ hasCanonicalPart: true, hasSelection: false }))).toBe(false)
+    expect(COMMANDS_BY_ID['selection.clear'].isEnabled(ctx({ hasCanonicalPart: true, hasSelection: true }))).toBe(true)
+    const a = mkActions()
+    COMMANDS_BY_ID['selection.filter-edge'].run(a, ctx({ hasCanonicalPart: true }))
+    expect(a.toggleFilterKind).toHaveBeenCalledWith('edge')
+    COMMANDS_BY_ID['selection.clear'].run(a, ctx({ hasCanonicalPart: true, hasSelection: true }))
+    expect(a.clearSelection).toHaveBeenCalledTimes(1)
   })
 
   it('active state reflects the live mode + grid', () => {

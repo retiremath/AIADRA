@@ -24,6 +24,7 @@ export interface Theme {
   hlrVisible: number
   hlrHidden: number
   selectionHighlight: number
+  hoverHighlight: number
   importedFace: number
   importedEdgeBright: number
   importedEdgeDim: number
@@ -51,6 +52,7 @@ export function themeFromValues(v: Record<string, SettingValue>): Theme {
     hlrVisible: c('hlrVisible'),
     hlrHidden: c('hlrHidden'),
     selectionHighlight: c('selectionHighlight'),
+    hoverHighlight: c('hoverHighlight'),
     importedFace: c('importedFace'),
     importedEdgeBright: c('importedEdgeBright'),
     importedEdgeDim: c('importedEdgeDim'),

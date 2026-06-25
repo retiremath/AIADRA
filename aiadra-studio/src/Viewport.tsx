@@ -7,9 +7,11 @@ import type { HlrView } from './display/contract'
 import {
   applyPartTheme,
   buildCanonicalPart,
+  canonicalEdgeColor,
   disposeCanonicalPart,
+  faceBoundaryEdges,
   pickDisplayId,
-  pickTargets,
+  pickTargetsFiltered,
   type CanonicalPart,
 } from './display/canonicalPart'
 import { checkAttachHlr } from './display/attachHlr'
@@ -17,8 +19,27 @@ import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import type { DisplaySource } from './display/displaySource'
 import { modeFlags, type DisplayMode } from './display/modes'
+import {
+  standardViewOrientation,
+  rollUp,
+  type StandardViewId,
+  type ViewOrientation,
+} from './display/viewOrientation'
+import { createNavCube } from './navcube/navCube'
+import { createAxisGnomon } from './navcube/navGnomon'
+import {
+  navCubeViewportRect,
+  pointerInNavCube,
+  pointerToNavCubeNdc,
+  type NavCubeLayout,
+} from './navcube/navCubeRect'
 import type { Theme } from './settings/theme'
 import { toCommandContext, useViewState, type ViewStateStore } from './viewstate/store'
+import {
+  useSelectionState,
+  type SelectableKind,
+  type SelectionStore,
+} from './selection/store'
 import { commandsInGroup } from './commands/registry'
 import type { Command, CommandActions } from './commands/types'
 
@@ -33,6 +54,12 @@ export type ViewportApi = {
   setDisplaySource: (source: DisplaySource | null) => Promise<void>
   /** Snap the camera to a pregenerated standard view (fixture lane). */
   snapToView: (viewId: string) => void
+  /** Orient the main camera to a client-computed standard view (arc 20260625-1 / 6c). */
+  standardView: (id: StandardViewId) => void
+  /** Roll the camera ±90° about its look axis (the nav-cube roll arrows). */
+  rollView: (sign: 1 | -1) => void
+  /** Step the camera 90° — yaw (turntable) or pitch (the nav-cube side arrows). */
+  orbitView: (kind: 'yaw' | 'pitch', sign: 1 | -1) => void
   /** Add reference-only imported geometry as one group keyed by `id` (ADR/0032 D5). */
   addImported: (id: string, meshes: ImportedMesh[]) => void
   /** Remove an imported group and dispose all its GPU resources. */
@@ -57,12 +84,14 @@ export default function Viewport({
   theme,
   settleMs = 200,
   viewStore,
+  selectionStore,
   commandActions,
 }: {
   apiRef?: MutableRefObject<ViewportApi | null>
   theme: Theme
   settleMs?: number
   viewStore: ViewStateStore
+  selectionStore: SelectionStore
   commandActions: CommandActions
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -70,9 +99,12 @@ export default function Viewport({
   const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
-  const [picked, setPicked] = useState<{ kind: string; displayId: string } | null>(null)
   const [snapIds, setSnapIds] = useState<string[]>([])
-  const ctx = toCommandContext(useViewState(viewStore))
+  const selState = useSelectionState(selectionStore)
+  const ctx = toCommandContext(useViewState(viewStore), {
+    filter: selState.filter,
+    hasSelection: selState.selected !== null,
+  })
 
   useEffect(() => {
     const mount = mountRef.current!
@@ -115,7 +147,51 @@ export default function Viewport({
     controls.target.copy(HOME_TARGET)
     controls.mouseButtons = { MIDDLE: THREE.MOUSE.ROTATE } as typeof controls.mouseButtons
 
+    // ---- Nav cube (arc 20260625-1 / 6c; Codex1 B1) ----
+    // A scissor-corner overlay on THIS renderer. Its camera mirrors the main
+    // camera each frame; a click on a region orients the MAIN camera. The cube
+    // lane CONSUMES pointer gestures inside its rect so OrbitControls / selection
+    // / context menu never see them, and it never feeds the settle machine — only
+    // a programmatic main-camera change (orientMainCamera) does.
+    // The cube uses its OWN fixed, high-contrast palette (a neutral mid-gray body
+    // + dark edges) so it reads on any background; only the hover tracks the theme.
+    const NAV_CUBE_FACE = 0xaab2bb
+    const NAV_CUBE_EDGE = 0x2c3137
+    const navCube = createNavCube()
+    navCube.applyTheme(NAV_CUBE_FACE, NAV_CUBE_EDGE, theme.hoverHighlight)
+    // The cube sits in the centre of a 180px control cluster (the rotate arrows
+    // ring it in the JSX); 116px + a 42px corner margin places it there.
+    const navLayout: NavCubeLayout = { sizeCss: 116, marginCss: 42, corner: 'top-right' }
+    // The axis triad (indicator only, no interaction) sits bottom-right (FreeCAD).
+    const gnomon = createAxisGnomon()
+    const gnomonLayout: NavCubeLayout = { sizeCss: 76, marginCss: 16, corner: 'bottom-right' }
+    const canvasRel = (e: { clientX: number; clientY: number }): [number, number] => {
+      const r = canvas.getBoundingClientRect()
+      return [e.clientX - r.left, e.clientY - r.top]
+    }
+    const inNavCube = (e: { clientX: number; clientY: number }): boolean => {
+      const [px, py] = canvasRel(e)
+      return pointerInNavCube(navLayout, w(), h(), px, py)
+    }
+
     const onPointerDownCapture = (e: PointerEvent) => {
+      // The cube rect is an INPUT-OWNED ISLAND (Codex2 B1): it consumes EVERY
+      // pointer button so OrbitControls (middle = rotate/zoom) never engages and
+      // the context menu never opens over it. Left orients; other buttons are
+      // swallowed. Done in capture so the gesture never reaches OrbitControls'
+      // bubble listener, the canonical picker, or the menu.
+      if (inNavCube(e)) {
+        if (e.button === 0) {
+          const [px, py] = canvasRel(e)
+          const [nx, ny] = pointerToNavCubeNdc(navLayout, w(), h(), px, py)
+          const region = navCube.pickRegion(nx, ny)
+          if (region) orientMainCamera(region.orientation)
+        }
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        setMenu(null)
+        return
+      }
       if (e.button === 1) {
         e.preventDefault()
         controls.mouseButtons.MIDDLE = e.ctrlKey ? THREE.MOUSE.DOLLY : THREE.MOUSE.ROTATE
@@ -346,6 +422,10 @@ export default function Viewport({
         dimPass = null
         display = null
       }
+      // Codex1 B2/Q4: selected ids are canonical for ONE package — every load /
+      // reload / recompute path runs through here, so clear unconditionally.
+      hovId = null
+      selectionStore.clearSelected() // → reconcileSelection (selId=null), no-op repaint (part gone)
       viewStore.setSceneFacts({ hasCanonicalPart: false })
     }
 
@@ -463,6 +543,51 @@ export default function Viewport({
       currentSnapId = viewId
     }
 
+    // Client-side orientation (arc 20260625-1 / 6c): nav cube + standard views.
+    // A programmatic MAIN-camera move → `fit()` → controls 'change' → the settle
+    // machine recomputes HLR exactly like any real camera move (B1).
+    const orientMainCamera = (o: ViewOrientation) => {
+      const box = sceneBox()
+      const center = box.isEmpty()
+        ? controls.target.clone()
+        : box.getBoundingSphere(new THREE.Sphere()).center
+      const dir = new THREE.Vector3(o.direction[0], o.direction[1], o.direction[2]).normalize()
+      camera.up.set(o.up[0], o.up[1], o.up[2])
+      controls.target.copy(center)
+      camera.position.copy(center).addScaledVector(dir, -120)
+      currentSnapId = null // not a fixture snap; the live/bridge HLR lane recomputes
+      fit()
+    }
+
+    const standardView = (id: StandardViewId) => orientMainCamera(standardViewOrientation(id))
+
+    const rollView = (sign: 1 | -1) => {
+      const dir = controls.target.clone().sub(camera.position).normalize()
+      const up = camera.up.clone().normalize()
+      const next = rollUp([dir.x, dir.y, dir.z], [up.x, up.y, up.z], sign)
+      camera.up.set(next[0], next[1], next[2])
+      controls.update() // 'change' → settle, like any camera move
+    }
+
+    // The nav-cube side arrows: step the camera 90° about the world vertical
+    // (yaw — left/right turntable) or the screen-horizontal axis (pitch — up/down).
+    const orbitView = (kind: 'yaw' | 'pitch', sign: 1 | -1) => {
+      const target = controls.target.clone()
+      const offset = camera.position.clone().sub(target)
+      const dir = offset.clone().negate().normalize() // eye → target
+      const up = camera.up.clone().normalize()
+      const axis =
+        kind === 'yaw'
+          ? new THREE.Vector3(0, 0, 1) // world up — a turntable spin
+          : new THREE.Vector3().crossVectors(dir, up).normalize() // screen-right
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, (sign * Math.PI) / 2)
+      offset.applyQuaternion(q)
+      camera.up.applyQuaternion(q)
+      camera.position.copy(target).add(offset)
+      currentSnapId = null
+      fit()
+    }
+
     // ---- Store-driven mode + grid (Codex1 N1). The viewport APPLIES; the
     // toolbar/menu/keyboard WRITE the store. ----
     const applyModeChange = (m: DisplayMode) => {
@@ -491,16 +616,56 @@ export default function Viewport({
       if (s.gridVisible !== gridVisible) applyGridVisible(s.gridVisible)
     })
 
-    // ---- Selection (left click): canonical faces/edges ONLY. ----
+    // ---- Selection + hover (arc 20260625-1 / 6c; Codex1 B2). Canonical faces /
+    // edges ONLY — the ephemeral-identity firewall: `pickTargetsFiltered` returns
+    // only the part's faces/edges, never the HLR overlay, dim pass, or imports.
+    // Hover is imperative + rAF-coalesced (Codex1 Q5); committed selection is the
+    // selectionStore's (the viewport renders it). A selected FACE also lights its
+    // boundary edges (via contract adjacency) so it stays visible in wireframe. ----
+    type SelId = { kind: SelectableKind; id: string } | null
     const raycaster = new THREE.Raycaster()
     raycaster.params.Line = { threshold: 0.3 }
     const ndc = new THREE.Vector2()
     let downX = 0
     let downY = 0
-    let selectedFace: THREE.Mesh | null = null
-    const setEmissive = (m: THREE.Mesh, hex: number) => {
-      ;(m.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(hex)
+    let selId: SelId = null
+    let hovId: SelId = null
+    const sameId = (a: SelId, b: SelId) =>
+      (a === null) === (b === null) && (!a || !b || (a.kind === b.kind && a.id === b.id))
+
+    const repaintHighlights = () => {
+      if (!part) return
+      const selFace = selId?.kind === 'face' ? selId.id : null
+      const hovFace = hovId?.kind === 'face' ? hovId.id : null
+      for (const f of part.faces) {
+        const id = f.userData.displayId as string
+        const hex =
+          selFace === id ? liveTheme.selectionHighlight : hovFace === id ? liveTheme.hoverHighlight : 0x000000
+        ;(f.userData.shadedMaterial as THREE.MeshStandardMaterial).emissive.setHex(hex)
+      }
+      const selBoundary = selFace ? new Set(faceBoundaryEdges(part, selFace)) : null
+      const hovBoundary = hovFace ? new Set(faceBoundaryEdges(part, hovFace)) : null
+      for (const e of part.edges) {
+        const id = e.userData.displayId as string
+        const kind = (e.userData.edgeKind as string) ?? 'sharp'
+        const hex =
+          (selId?.kind === 'edge' && selId.id === id) || selBoundary?.has(e)
+            ? liveTheme.selectionHighlight
+            : (hovId?.kind === 'edge' && hovId.id === id) || hovBoundary?.has(e)
+              ? liveTheme.hoverHighlight
+              : canonicalEdgeColor(liveTheme, kind)
+        ;(e.material as THREE.LineBasicMaterial).color.setHex(hex)
+      }
     }
+
+    // selectionStore is the source of truth for committed selection; render it.
+    const reconcileSelection = () => {
+      const s = selectionStore.getSnapshot().selected
+      selId = s ? { kind: s.kind, id: s.id } : null
+      repaintHighlights()
+    }
+    const unsubSelection = selectionStore.subscribe(reconcileSelection)
+
     const onLeftDown = (e: PointerEvent) => {
       if (e.button === 0) {
         downX = e.clientX
@@ -511,32 +676,78 @@ export default function Viewport({
       if (e.button !== 0) return
       if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return
       if (!part) return
+      const filter = selectionStore.getSnapshot().filter
       const r = canvas.getBoundingClientRect()
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      const hit = pickDisplayId(raycaster, pickTargets(part))
-      if (selectedFace) {
-        setEmissive(selectedFace, 0x000000)
-        selectedFace = null
-      }
-      if (hit && hit.kind === 'face') {
-        const mesh = part.faces.find((f) => f.userData.displayId === hit.displayId) ?? null
-        if (mesh) {
-          setEmissive(mesh, liveTheme.selectionHighlight)
-          selectedFace = mesh
-        }
-      }
-      setPicked(hit)
+      const hit = pickDisplayId(raycaster, pickTargetsFiltered(part, filter))
+      selectionStore.setSelected(hit ? { kind: hit.kind, id: hit.displayId } : null)
     }
+
+    // Hover: route to the cube over its rect, else pre-highlight the model.
+    let hoverRaf = 0
+    let lastMove: PointerEvent | null = null
+    const doHover = () => {
+      hoverRaf = 0
+      const e = lastMove
+      if (!e) return
+      const [px, py] = canvasRel(e)
+      if (pointerInNavCube(navLayout, w(), h(), px, py)) {
+        const [nx, ny] = pointerToNavCubeNdc(navLayout, w(), h(), px, py)
+        navCube.setHover(navCube.pickRegion(nx, ny))
+        if (hovId) {
+          hovId = null
+          repaintHighlights()
+        }
+        return
+      }
+      navCube.setHover(null)
+      if (!part) return
+      const filter = selectionStore.getSnapshot().filter
+      ndc.set((px / w()) * 2 - 1, -((py / h()) * 2) + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const hit = pickDisplayId(raycaster, pickTargetsFiltered(part, filter))
+      const next: SelId = hit ? { kind: hit.kind, id: hit.displayId } : null
+      if (sameId(next, hovId)) return
+      hovId = next
+      repaintHighlights()
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      lastMove = e
+      if (!hoverRaf) hoverRaf = requestAnimationFrame(doHover)
+    }
+    const onPointerLeave = () => {
+      navCube.setHover(null)
+      if (hovId) {
+        hovId = null
+        repaintHighlights()
+      }
+    }
+
     canvas.addEventListener('pointerdown', onLeftDown)
     canvas.addEventListener('pointerup', onLeftUp)
+    canvas.addEventListener('pointermove', onPointerMove)
+    canvas.addEventListener('pointerleave', onPointerLeave)
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault()
-      const r = canvas.getBoundingClientRect()
-      setMenu({ x: e.clientX - r.left, y: e.clientY - r.top })
+      // The cube owns its rect (Codex2 B1): a right-click there opens no menu.
+      if (inNavCube(e)) return
+      const [px, py] = canvasRel(e)
+      setMenu({ x: px, y: py })
     }
     canvas.addEventListener('contextmenu', onContextMenu)
+
+    // Complete the island (Codex2 B1): a wheel over the cube must not zoom the
+    // main scene through OrbitControls. Capture + stop so its bubble listener
+    // never sees it.
+    const onWheelCapture = (e: WheelEvent) => {
+      if (inNavCube(e)) {
+        e.stopImmediatePropagation()
+        e.preventDefault()
+      }
+    }
+    canvas.addEventListener('wheel', onWheelCapture, { capture: true, passive: false })
 
     // ---- Imports ----
     const disposeGroup = (group: THREE.Group) => {
@@ -625,7 +836,8 @@ export default function Viewport({
       if (dimPass) (dimPass.material as THREE.LineBasicMaterial).color.setHex(next.hiddenEdgeDim)
       if (heldHlrView) rebuildOverlayForMode()
       for (const g of importGroups.values()) restyleImport(g)
-      if (selectedFace) setEmissive(selectedFace, next.selectionHighlight)
+      navCube.applyTheme(NAV_CUBE_FACE, NAV_CUBE_EDGE, next.hoverHighlight)
+      repaintHighlights()
       applyMode()
     }
 
@@ -635,6 +847,9 @@ export default function Viewport({
       applyTheme,
       setDisplaySource,
       snapToView,
+      standardView,
+      rollView,
+      orbitView,
       addImported,
       removeImported,
     }
@@ -646,22 +861,42 @@ export default function Viewport({
     window.addEventListener('resize', onResize)
 
     let rafId = 0
+    const navDir = new THREE.Vector3()
     const animate = () => {
       rafId = requestAnimationFrame(animate)
       controls.update()
       renderer.render(scene, camera)
+      // Nav cube overlay: mirror the main camera, then draw into the corner rect
+      // (state saved/restored inside navCube.render — B1). This does NOT feed the
+      // settle machine; only a programmatic main-camera move does.
+      navDir.copy(controls.target).sub(camera.position).normalize()
+      navCube.syncToMainView(
+        [navDir.x, navDir.y, navDir.z],
+        [camera.up.x, camera.up.y, camera.up.z],
+      )
+      // CSS-pixel rect — three.js applies pixelRatio inside setViewport/setScissor.
+      navCube.render(renderer, navCubeViewportRect(navLayout, w(), h()))
+      gnomon.syncToMainView([navDir.x, navDir.y, navDir.z], [camera.up.x, camera.up.y, camera.up.z])
+      gnomon.render(renderer, navCubeViewportRect(gnomonLayout, w(), h()))
     }
     animate()
 
     return () => {
       cancelAnimationFrame(rafId)
+      if (hoverRaf) cancelAnimationFrame(hoverRaf)
       unsubStore()
+      unsubSelection()
       machine.dispose()
       window.removeEventListener('resize', onResize)
       canvas.removeEventListener('pointerdown', onPointerDownCapture, true)
       canvas.removeEventListener('pointerdown', onLeftDown)
       canvas.removeEventListener('pointerup', onLeftUp)
+      canvas.removeEventListener('pointermove', onPointerMove)
+      canvas.removeEventListener('pointerleave', onPointerLeave)
       canvas.removeEventListener('contextmenu', onContextMenu)
+      canvas.removeEventListener('wheel', onWheelCapture, true)
+      navCube.dispose()
+      gnomon.dispose()
       controls.dispose()
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)
@@ -710,9 +945,19 @@ export default function Viewport({
           ))}
         </div>
       )}
-      {picked && (
+      {/* Nav-cube control cluster — the GL cube renders in the centre; these HTML
+          arrows ring it (4 side = 90° yaw/pitch, 2 corner = roll). */}
+      <div className="nav-cube-cluster">
+        <button className="nc-arrow nc-up" type="button" title="Rotate up" aria-label="Rotate up" onClick={() => apiRef.current?.orbitView('pitch', 1)}>▲</button>
+        <button className="nc-arrow nc-down" type="button" title="Rotate down" aria-label="Rotate down" onClick={() => apiRef.current?.orbitView('pitch', -1)}>▼</button>
+        <button className="nc-arrow nc-left" type="button" title="Rotate left" aria-label="Rotate left" onClick={() => apiRef.current?.orbitView('yaw', 1)}>◀</button>
+        <button className="nc-arrow nc-right" type="button" title="Rotate right" aria-label="Rotate right" onClick={() => apiRef.current?.orbitView('yaw', -1)}>▶</button>
+        <button className="nc-arrow nc-roll-l" type="button" title="Roll left" aria-label="Roll left" onClick={() => apiRef.current?.rollView(-1)}>↺</button>
+        <button className="nc-arrow nc-roll-r" type="button" title="Roll right" aria-label="Roll right" onClick={() => apiRef.current?.rollView(1)}>↻</button>
+      </div>
+      {selState.selected && (
         <div className="sel-badge small">
-          selected: {picked.kind} <code>{picked.displayId}</code>
+          selected: {selState.selected.kind} <code>{selState.selected.id}</code>
         </div>
       )}
       {menu && (
@@ -723,7 +968,11 @@ export default function Viewport({
         >
           {commandsInGroup('view').map(menuItem)}
           <li className="sep" />
+          {commandsInGroup('orientation').map(menuItem)}
+          <li className="sep" />
           {commandsInGroup('display').map(menuItem)}
+          <li className="sep" />
+          {commandsInGroup('selection').map(menuItem)}
           <li className="sep" />
           {commandsInGroup('scene').map(menuItem)}
           <li className="sep" />

@@ -19,10 +19,23 @@ export interface PickResult {
   displayId: string
 }
 
+/** The pick filter the viewport consults (arc 20260625-1 / 6c). */
+export interface PickFilter {
+  face: boolean
+  edge: boolean
+}
+
 export interface CanonicalPart {
   group: THREE.Group
   faces: THREE.Mesh[]
   edges: THREE.LineSegments[]
+  /**
+   * Face-id → its bounding edge lines, derived from the contract's
+   * `EdgePolyline.faces` adjacency (NOT from parsing edge-id grammar — Codex1 B2).
+   * Lets the viewport keep a selected/hovered face visible in wireframe by
+   * lighting its boundary edges.
+   */
+  faceToEdges: Map<string, THREE.LineSegments[]>
 }
 
 // Face/edge colors are theme-owned (arc 20260619-1 / 6a, Codex1 B2). The theme
@@ -31,6 +44,12 @@ export interface CanonicalPart {
 // `applyPartTheme` on change.
 function edgeColor(theme: Theme, kind: string): number {
   return theme.canonicalEdge[kind as CanonicalEdgeKind] ?? theme.canonicalEdge.boundary
+}
+
+/** The base (un-highlighted) theme color for an edge of a given kind — used by
+ * the viewport to RESTORE an edge after hover/selection clears (arc 20260625-1). */
+export function canonicalEdgeColor(theme: Theme, kind: string): number {
+  return edgeColor(theme, kind)
 }
 
 export function buildFaceMesh(face: FaceBuffer, theme: Theme = DEFAULT_THEME): THREE.Mesh {
@@ -69,7 +88,15 @@ export function buildEdgeLine(edge: EdgePolyline, theme: Theme = DEFAULT_THEME):
     new THREE.LineBasicMaterial({ color: edgeColor(theme, edge.kind) }),
   )
   line.name = edge.edge_id
-  line.userData = { kind: 'edge', displayId: edge.edge_id, edgeId: edge.edge_id, edgeKind: edge.kind }
+  // `faces` is first-class contract adjacency (Codex1 B2) — carried so the
+  // viewport can light a selected face's boundary without parsing id grammar.
+  line.userData = {
+    kind: 'edge',
+    displayId: edge.edge_id,
+    edgeId: edge.edge_id,
+    edgeKind: edge.kind,
+    faces: edge.faces ?? [],
+  }
   return line
 }
 
@@ -88,7 +115,19 @@ export function buildCanonicalPart(
   const edges = dr.render.edges.map((e) => buildEdgeLine(e, theme))
   faces.forEach((m) => group.add(m))
   edges.forEach((l) => group.add(l))
-  return { group, faces, edges }
+
+  // Face → boundary edges, from contract adjacency (Codex1 B2). An edge can bound
+  // up to two faces; index it under each.
+  const faceToEdges = new Map<string, THREE.LineSegments[]>()
+  dr.render.edges.forEach((e, i) => {
+    for (const faceId of e.faces ?? []) {
+      const list = faceToEdges.get(faceId)
+      if (list) list.push(edges[i])
+      else faceToEdges.set(faceId, [edges[i]])
+    }
+  })
+
+  return { group, faces, edges, faceToEdges }
 }
 
 /**
@@ -120,6 +159,23 @@ export function applyPartTheme(part: CanonicalPart, theme: Theme): void {
  */
 export function pickTargets(part: CanonicalPart): THREE.Object3D[] {
   return [...part.faces, ...part.edges]
+}
+
+/**
+ * Pick targets honoring the active selection filter (arc 20260625-1 / 6c). Still
+ * canonical-only — never the HLR overlay, dim pass, or imports — so the firewall
+ * holds while the user narrows picking to faces or edges.
+ */
+export function pickTargetsFiltered(part: CanonicalPart, filter: PickFilter): THREE.Object3D[] {
+  const out: THREE.Object3D[] = []
+  if (filter.face) out.push(...part.faces)
+  if (filter.edge) out.push(...part.edges)
+  return out
+}
+
+/** The boundary edge lines of a face, via contract adjacency (Codex1 B2). */
+export function faceBoundaryEdges(part: CanonicalPart, faceId: string): THREE.LineSegments[] {
+  return part.faceToEdges.get(faceId) ?? []
 }
 
 /**

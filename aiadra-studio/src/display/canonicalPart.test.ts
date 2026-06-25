@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import type { DisplayRepresentation } from './contract'
-import { buildCanonicalPart, disposeCanonicalPart, pickDisplayId } from './canonicalPart'
+import {
+  buildCanonicalPart,
+  disposeCanonicalPart,
+  faceBoundaryEdges,
+  pickDisplayId,
+  pickTargetsFiltered,
+} from './canonicalPart'
 
 /**
  * Pick-path smoke (ADR/0035; arc 20260609-1 Codex N3): prove an engine-minted
@@ -108,6 +114,33 @@ describe('canonical-part render path', () => {
   it('the part group records the topology signature for invalidation', () => {
     const part = buildCanonicalPart(sampleContract())
     expect(part.group.userData.topologySignature).toBe('topo_deadbeef')
+    disposeCanonicalPart(part)
+  })
+
+  // --- 6c (arc 20260625-1; Codex1 B2) ---
+  it('face→boundary edges come from contract adjacency (edges[].faces), not id parsing', () => {
+    const part = buildCanonicalPart(sampleContract())
+    // The sample edge lists cap_top among its `faces`; cap_base does not.
+    const topBoundary = faceBoundaryEdges(part, 'feat_0002:face:cap_top')
+    expect(topBoundary).toHaveLength(1)
+    expect(topBoundary[0].userData.edgeId).toContain('cap_top')
+    expect(faceBoundaryEdges(part, 'feat_0002:face:cap_base')).toHaveLength(0)
+    disposeCanonicalPart(part)
+  })
+
+  it('the pick filter honors face/edge kinds — still canonical-only (the firewall)', () => {
+    const part = buildCanonicalPart(sampleContract())
+    const both = pickTargetsFiltered(part, { face: true, edge: true })
+    const facesOnly = pickTargetsFiltered(part, { face: true, edge: false })
+    const edgesOnly = pickTargetsFiltered(part, { face: false, edge: true })
+    expect(both).toHaveLength(3) // 2 faces + 1 edge
+    expect(facesOnly).toHaveLength(2)
+    expect(edgesOnly).toHaveLength(1)
+    // Every target is a canonical face/edge object — never an overlay/import.
+    for (const o of both) {
+      expect(o.userData.kind === 'face' || o.userData.kind === 'edge').toBe(true)
+      expect(typeof o.userData.displayId).toBe('string')
+    }
     disposeCanonicalPart(part)
   })
 })
