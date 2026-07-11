@@ -40,6 +40,26 @@ declare global {
         views: HlrViewRequest[],
         algorithm?: 'exact' | 'poly',
       ): Promise<Envelope<{ view_dependent: ViewDependentPayload }>>
+      // Authoring session — the Ring-2 WRITE lane (arc 20260711-11; ADR/0043).
+      // Optional: absent in browser-only dev (the AuthoringBackend uses a mock there).
+      opBegin?(
+        workspaceId: string,
+        kind: string,
+        params: unknown,
+      ): Promise<Envelope<{ operationSessionId: string }>>
+      opAdd?(
+        operationSessionId: string,
+        kind: string,
+        params: unknown,
+      ): Promise<Envelope<{ session_id: string }>>
+      opSimulate?(
+        operationSessionId: string,
+      ): Promise<Envelope<{ report: { valid: boolean } & Record<string, unknown> }>>
+      opCommit?(
+        operationSessionId: string,
+        objectRef: string,
+      ): Promise<Envelope<{ commit: unknown; object_ref?: string; display?: DisplayRepresentation }>>
+      opRollback?(operationSessionId: string): Promise<Envelope<{ rolled_back: boolean }>>
       // App settings (arc 20260619-1 / 6a) — optional: absent in browser-only dev.
       loadSettings?(): Promise<Envelope<{ settings: PersistedSettings | null }>>
       saveSettings?(settings: PersistedSettings): Promise<Envelope<Record<string, never>>>

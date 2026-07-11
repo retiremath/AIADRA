@@ -137,6 +137,105 @@ def m_display_hlr(params: dict[str, Any]) -> dict[str, Any]:
     return {"view_dependent": payload.to_dict()}
 
 
+# ---- Authoring session — the Ring-2 write lane (arc 20260711-11 slice 1) ----
+# A `TransactionDraft` is a stateful Python object that cannot cross the wire, so
+# it lives HERE, keyed by an opaque `session_id` that Electron main mints and
+# tracks as a capability (Codex B1). The renderer never touches this process;
+# main brokers capability-checked verbs (begin/add/simulate/commit/rollback) and
+# has already validated the `workspace_path`, the allowlisted feature `kind`, and
+# the params before calling. `actor="human"` — these are user/AI authoring ops
+# through the Studio, committed only on an explicit commit.
+_DRAFTS: dict[str, Any] = {}
+
+
+def _report_to_dict(report: Any) -> dict[str, Any]:
+    d = _to_jsonable(report)
+    if not isinstance(d, dict):
+        d = {"report": str(report)}
+    outcomes = d.get("outcomes") or []
+    failed = [o for o in outcomes if isinstance(o, dict) and str(o.get("status", "")).upper() == "FAIL"]
+    d["valid"] = len(failed) == 0
+    return d
+
+
+def m_authoring_begin(params: dict[str, Any]) -> dict[str, Any]:
+    """Open an authoring draft for a feature op (Ring-2 `propose`). `session_id`
+    + `workspace_path` are main-minted/resolved; `kind` is a main-allowlisted
+    feature kind; `op_params` are main-validated."""
+    from aiadra_core.protocol import propose
+
+    session_id = params["session_id"]
+    if session_id in _DRAFTS:
+        raise ValueError(f"authoring session already open: {session_id}")
+    draft = propose(
+        Path(params["workspace_path"]), kind=params["kind"], params=params.get("op_params", {}), actor="human"
+    )
+    _DRAFTS[session_id] = draft
+    return {"session_id": session_id, "op_count": 1}
+
+
+def m_authoring_add(params: dict[str, Any]) -> dict[str, Any]:
+    """Extend the open draft with another op (Ring-2 `modify`) — e.g. add an
+    extrude after a sketch within one authoring session."""
+    from aiadra_core.protocol import modify
+
+    session_id = params["session_id"]
+    draft = _DRAFTS.get(session_id)
+    if draft is None:
+        raise ValueError(f"no open authoring session: {session_id}")
+    modify(draft, kind=params["kind"], params=params.get("op_params", {}), actor="human")
+    return {"session_id": session_id}
+
+
+def m_authoring_simulate(params: dict[str, Any]) -> dict[str, Any]:
+    """Validate the draft without writing (Ring-2 `simulate`) — the transient
+    check before commit. Returns the ValidationReport + a `valid` flag."""
+    from aiadra_core.protocol import simulate
+
+    session_id = params["session_id"]
+    draft = _DRAFTS.get(session_id)
+    if draft is None:
+        raise ValueError(f"no open authoring session: {session_id}")
+    return {"session_id": session_id, "report": _report_to_dict(simulate(draft))}
+
+
+def m_authoring_commit(params: dict[str, Any]) -> dict[str, Any]:
+    """Commit the draft to Product Truth (Ring-2 `commit`) and return the
+    refreshed display of the committed object so the renderer knows exactly what
+    to show (Codex B1 — commit returns refreshed identity).
+
+    Lifecycle (Codex2 B1): the draft is kept in `_DRAFTS` until commit + display
+    reload SUCCEED. If any step raises, the draft stays open so the user can fix
+    params, re-simulate, retry, or cancel — a failed commit never orphans the
+    draft into invisible state. The session closes ONLY on success."""
+    from aiadra_core.protocol import commit, display_representation
+
+    session_id = params["session_id"]
+    draft = _DRAFTS.get(session_id)  # do NOT pop yet — only on success (Codex2 B1)
+    if draft is None:
+        raise ValueError(f"no open authoring session: {session_id}")
+    result = commit(draft)
+    out: dict[str, Any] = {"session_id": session_id, "commit": _to_jsonable(result)}
+    object_ref = params.get("object_ref")
+    if object_ref:
+        out["object_ref"] = object_ref
+        out["display"] = display_representation(Path(params["workspace_path"]), object_ref).to_dict()
+    _DRAFTS.pop(session_id, None)  # commit + display reload succeeded — close now
+    return out
+
+
+def m_authoring_rollback(params: dict[str, Any]) -> dict[str, Any]:
+    """DISCARD an uncommitted authoring draft (cancel) — Codex2 B1.
+
+    Named explicitly as a *discard*, NOT a Ring-2 failed-Transaction rollback:
+    nothing was staged to disk, so dropping the in-memory draft IS the cancel,
+    and no failed-Transaction audit record is warranted for a draft the user
+    never committed. Infallible + idempotent; closes the session."""
+    session_id = params["session_id"]
+    _DRAFTS.pop(session_id, None)
+    return {"session_id": session_id, "rolled_back": True}
+
+
 METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "ping": m_ping,
     "core_version": m_core_version,
@@ -144,6 +243,12 @@ METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "list_parts": m_list_parts,
     "display_representation": m_display_representation,
     "display_hlr": m_display_hlr,
+    # authoring (write) lane — arc 20260711-11 slice 1
+    "authoring_begin": m_authoring_begin,
+    "authoring_add": m_authoring_add,
+    "authoring_simulate": m_authoring_simulate,
+    "authoring_commit": m_authoring_commit,
+    "authoring_rollback": m_authoring_rollback,
 }
 
 

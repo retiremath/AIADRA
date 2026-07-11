@@ -149,6 +149,10 @@ function startBridge(): void {
       p.reject(new Error('engine bridge exited'))
     }
     pending.clear()
+    // ADR/0043 D4: the bridge held every authoring draft; when it dies they are
+    // gone, so forget the capabilities. A subsequent verb fails loudly with
+    // 'unknown operationSessionId' rather than pretending a dead draft is live.
+    authoringSessions.clear()
   })
   process.stderr.write(`[main] spawned bridge: ${python} ${script}\n`)
 }
@@ -171,6 +175,11 @@ function rpc(method: string, params: Record<string, unknown>): Promise<BridgeFra
 
 // ---- Capability map (B2): opaque workspaceId -> canonical, validated path ----
 const workspaces = new Map<string, string>()
+
+// ---- Authoring session capabilities (arc 20260711-11; ADR/0043 D4) ----
+// opaque operationSessionId -> its workspace path. Module-scope so the
+// bridge-exit handler can fail/clear them (the drafts die with the bridge).
+const authoringSessions = new Map<string, { wsPath: string }>()
 
 function isAiadraWorkspace(dir: string): boolean {
   return existsSync(join(dir, '.aiadra'))
@@ -299,6 +308,133 @@ function registerIpc(): void {
       views: a.views,
       algorithm,
     })
+  })
+
+  // ---- Authoring session — the Ring-2 WRITE lane (arc 20260711-11 slice 1;
+  // ADR/0043). Main mints an opaque operationSessionId (a capability bound to a
+  // workspace), allowlists the feature kind, and structurally validates params
+  // BEFORE anything reaches the engine (Codex B1). The stateful Ring-2 draft
+  // lives in bridge.py keyed by this id; NO paths / drafts / OCCT handles cross
+  // to the renderer. commit returns the refreshed display; rollback/commit close
+  // the session.
+  const AUTHORING_KINDS = new Set<string>([
+    'create_part',
+    'mechanical.add_sketch_feature',
+    'mechanical.add_extrude_feature',
+    'mechanical.add_fillet_feature',
+    'mechanical.add_chamfer_feature',
+  ])
+  const posNum = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v > 0
+  const validateAuthoringParams = (kind: string, params: unknown): string | null => {
+    if (params === null || typeof params !== 'object') return 'op params must be an object'
+    const p = params as Record<string, unknown>
+    switch (kind) {
+      case 'create_part':
+        return typeof p.number === 'string' && typeof p.name === 'string'
+          ? null
+          : 'create_part requires string number + name'
+      case 'mechanical.add_sketch_feature':
+        return typeof p.part_number === 'string' && Array.isArray(p.primitives)
+          ? null
+          : 'add_sketch_feature requires part_number + primitives[]'
+      case 'mechanical.add_extrude_feature':
+        return typeof p.part_number === 'string' &&
+          typeof p.sketch_feature_id === 'string' &&
+          posNum(p.depth_mm)
+          ? null
+          : 'add_extrude_feature requires part_number + sketch_feature_id + depth_mm(>0)'
+      // Codex2 non-blocking: tighten the value param before slice 2 uses targets.
+      // The `target_*` field is added when the selection→target slice lands.
+      case 'mechanical.add_fillet_feature':
+        return typeof p.part_number === 'string' && posNum(p.radius_mm)
+          ? null
+          : 'add_fillet_feature requires part_number + radius_mm(>0)'
+      case 'mechanical.add_chamfer_feature':
+        return typeof p.part_number === 'string' && posNum(p.distance_mm)
+          ? null
+          : 'add_chamfer_feature requires part_number + distance_mm(>0)'
+      default:
+        return `feature kind not allowed: ${kind}`
+    }
+  }
+
+  ipcMain.handle('aiadra:opBegin', async (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { workspaceId?: unknown; kind?: unknown; params?: unknown } | null
+    if (!a || typeof a.workspaceId !== 'string' || typeof a.kind !== 'string') {
+      return err('opBegin requires { workspaceId, kind, params }')
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    if (!AUTHORING_KINDS.has(a.kind)) return err(`feature kind not allowed: ${a.kind}`)
+    const pErr = validateAuthoringParams(a.kind, a.params)
+    if (pErr) return err(pErr)
+    const operationSessionId = randomUUID()
+    const r = await callBridge('authoring_begin', {
+      session_id: operationSessionId,
+      workspace_path: wsPath,
+      kind: a.kind,
+      op_params: a.params,
+    })
+    if (!r.ok) return r
+    authoringSessions.set(operationSessionId, { wsPath })
+    return ok({ operationSessionId })
+  })
+
+  ipcMain.handle('aiadra:opAdd', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { operationSessionId?: unknown; kind?: unknown; params?: unknown } | null
+    if (!a || typeof a.operationSessionId !== 'string' || typeof a.kind !== 'string') {
+      return err('opAdd requires { operationSessionId, kind, params }')
+    }
+    if (!authoringSessions.has(a.operationSessionId)) return err('unknown operationSessionId')
+    if (!AUTHORING_KINDS.has(a.kind)) return err(`feature kind not allowed: ${a.kind}`)
+    const pErr = validateAuthoringParams(a.kind, a.params)
+    if (pErr) return err(pErr)
+    return callBridge('authoring_add', {
+      session_id: a.operationSessionId,
+      kind: a.kind,
+      op_params: a.params,
+    })
+  })
+
+  ipcMain.handle('aiadra:opSimulate', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { operationSessionId?: unknown } | null
+    if (!a || typeof a.operationSessionId !== 'string') return err('opSimulate requires { operationSessionId }')
+    if (!authoringSessions.has(a.operationSessionId)) return err('unknown operationSessionId')
+    return callBridge('authoring_simulate', { session_id: a.operationSessionId })
+  })
+
+  ipcMain.handle('aiadra:opCommit', async (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { operationSessionId?: unknown; objectRef?: unknown } | null
+    if (!a || typeof a.operationSessionId !== 'string') return err('opCommit requires { operationSessionId, objectRef }')
+    const s = authoringSessions.get(a.operationSessionId)
+    if (!s) return err('unknown operationSessionId')
+    const r = await callBridge('authoring_commit', {
+      session_id: a.operationSessionId,
+      workspace_path: s.wsPath,
+      object_ref: typeof a.objectRef === 'string' ? a.objectRef : undefined,
+    })
+    // Codex2 B1: close the capability ONLY on a successful commit. On failure
+    // the bridge keeps the draft open (recoverable), so main keeps its session
+    // too — the two sides stay consistent and the user can fix/retry/cancel.
+    if (r.ok) authoringSessions.delete(a.operationSessionId)
+    return r
+  })
+
+  ipcMain.handle('aiadra:opRollback', async (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { operationSessionId?: unknown } | null
+    if (!a || typeof a.operationSessionId !== 'string') return err('opRollback requires { operationSessionId }')
+    if (!authoringSessions.has(a.operationSessionId)) return err('unknown operationSessionId')
+    // Codex2 B1: confirm the bridge discarded the draft BEFORE main forgets the
+    // session. On bridge failure, keep the main capability so the session isn't
+    // orphaned (the bridge-exit handler clears it if the bridge is truly gone).
+    const r = await callBridge('authoring_rollback', { session_id: a.operationSessionId })
+    if (r.ok) authoringSessions.delete(a.operationSessionId)
+    return r
   })
 
   // ---- App settings (arc 20260619-1 / 6a; ADR/0033 D8) ----
