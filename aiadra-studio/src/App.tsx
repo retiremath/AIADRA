@@ -6,8 +6,9 @@ import { createOperationStore, type OperationStore } from './operation/store'
 import { useCandidatePreview } from './operation/previewController'
 import { SessionPill } from './operation/SessionPill'
 import { Dock } from './dock/Dock'
-import { createFeatureSessionStore, type FeatureSessionStore } from './authoring/featureSession'
-import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard'
+import { createFeatureSessionStore, useFeatureSession, type FeatureSessionStore } from './authoring/featureSession'
+import { FeatureDashboard } from './authoring/FeatureDashboard'
+import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
 import type { AuthoringBackend } from './authoring/backend'
@@ -338,6 +339,30 @@ function AppearancePanel() {
   )
 }
 
+// ---- Model tree (arc 20260711-11 / slice A — the Creo-shaped shell) ----
+// For now it reflects the ACTIVE feature op; the persistent per-Part feature
+// list arrives with the stepwise Sketch→Extrude flow (slice B).
+function ModelTreePanel({ store }: { store: FeatureSessionStore }) {
+  const s = useFeatureSession(store)
+  const kindLabel = s.featureKind ? s.featureKind[0].toUpperCase() + s.featureKind.slice(1) : null
+  return (
+    <ul className="tree model-tree">
+      {!s.active && (
+        <li className="muted small">No features yet — start with Extrude in the Model ribbon.</li>
+      )}
+      {s.active && (
+        <li className={`feat-row ${s.phase}`}>
+          <span className="feat-glyph">{s.phase === 'committed' ? '▸' : '◐'}</span>
+          <span className="feat-name">{kindLabel}</span>
+          <span className="muted small feat-state">
+            {s.phase === 'committed' ? (s.objectRef ?? 'committed') : s.phase === 'busy' ? '…' : 'editing'}
+          </span>
+        </li>
+      )}
+    </ul>
+  )
+}
+
 function Workbench({
   ready,
   viewportApi,
@@ -466,25 +491,20 @@ function Workbench({
     <div className="studio">
       <header className="topbar">
         <span className="brand">AIADRA&nbsp;Studio</span>
-        <span className="muted small">command toolbar · arc 20260619-2</span>
+        <span className="muted small">Modeling workspace</span>
         {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
       </header>
+      <ModelRibbon store={featureStore} />
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel api={viewportApi} onWorkspaceOpen={setOpenWorkspaceId} />
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
-          <div className="panel-title">Model</div>
-          <button
-            className="btn small"
-            type="button"
-            onClick={() => featureStore.start('extrude', EXTRUDE_DEFAULTS)}
-          >
-            New Extrude…
-          </button>
+          <div className="panel-title">Model tree</div>
+          <ModelTreePanel store={featureStore} />
           <div className="muted small pad">
-            Manual feature authoring (arc 20260711-11). The model tree wires to
-            real Workspace sidecars in the data-panel strand.
+            Create features from the <b>Model</b> ribbon above. The persistent
+            per-Part tree arrives with the stepwise Sketch→Extrude flow.
           </div>
           {fixtureError && <div className="small pad err">{fixtureError}</div>}
           <div className="panel-title">Properties</div>

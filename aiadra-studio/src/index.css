@@ -36,6 +36,74 @@ body { background: var(--bg); overflow: hidden; }
 }
 .brand { color: var(--text-h); font-weight: 600; letter-spacing: 0.2px; }
 
+/* Model ribbon (arc 20260711-11 / slice A — the Creo-shaped shell) */
+.ribbon {
+  display: flex;
+  align-items: stretch;
+  padding: 4px 10px 0;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  min-height: 62px;
+}
+.ribbon-tab {
+  display: flex;
+  align-items: center;
+  align-self: flex-end;
+  padding: 0 12px 6px 4px;
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-h);
+  border-bottom: 2px solid var(--accent);
+}
+.ribbon-group {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px;
+  border-right: 1px solid var(--border);
+}
+.ribbon-group:last-child { border-right: none; }
+.ribbon-btns { display: flex; gap: 2px; flex: 1; align-items: flex-start; padding-top: 2px; }
+.ribbon-group-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  padding: 2px 0 4px;
+  letter-spacing: 0.3px;
+}
+.rb-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 60px;
+  padding: 5px 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+.rb-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
+.rb-btn:active:not(:disabled) { background: rgba(107, 155, 209, 0.18); }
+.rb-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
+.rb-ico { display: flex; color: var(--accent); }
+.rb-btn:disabled .rb-ico { color: var(--muted); }
+.rb-lbl { line-height: 1; }
+
+/* Model tree (slice A — reflects the active feature op for now) */
+.model-tree { margin: 2px 0; }
+.feat-row { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 4px; }
+.feat-glyph { color: var(--accent); }
+.feat-name { color: var(--text-h); }
+.feat-row.editing { background: rgba(107, 155, 209, 0.12); }
+.feat-row.committed .feat-glyph { color: #7bbf7b; }
+.feat-state { margin-left: auto; }
+
 .workbench {
   flex: 1;
   display: flex;
