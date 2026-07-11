@@ -60,6 +60,7 @@ ADR/0034 (decision) **clears the Display rendering-foundation gate.** The founda
 3. **License-back vs assignment** + the copyright-holding **entity setup** (for a clean acquisition / exclusive title).
 4. The **AGPL §13 unmodified-SaaS gap** — confirm acceptable given the commercial-license lever.
 5. The **CLA text + signing/record process** (use a vetted template).
+6. **Commercial/proprietary KB-pack distribution + the data-not-code / AGPL posture** (added 2026-07-11 per [ADR/0041 D4](0041-kb-interchange-and-ecosystem.md)) — confirm that a KB pack consumed **as data** by the AGPL engine may carry its **own independent license** (incl. commercial/proprietary) without triggering copyleft, and pin the **threshold at which pack contents become "code"** requiring D3 dependency-policy review (executable validators/generators/templates/plugins are out of data-only scope). A **release-prerequisite confirmation**, not a build blocker.
 
 ## Consequences
 - AIADRA's public license is **`AGPL-3.0-only`** with a **license-back CLA** — open + adoption-friendly, protective (modified-SaaS reciprocity + the commercial-license lever), and **sale/acquisition-optional**.
