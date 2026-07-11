@@ -3,6 +3,7 @@
 ## Frontmatter
 
 - **Status:** Accepted — 2026-06-03 (arc 20260603-3; two-round convergence Claude1 + Codex1 / Claude2). Vision/scope ADR — north star + roadmap; no code in this arc.
+- **Roadmap status (2026-07-11, arc 20260711-7):** the Display & UX strand's **step 6 (appearance + command/toolbar + interaction shell) is COMPLETE** (arcs 20260619-1 / 20260619-2 / 20260625-1), and Studio has moved from display-strand work into the **application strand**. This ADR's D10 display roadmap is therefore **consumed by [ADR/0040](0040-studio-application-ai-pdm-ux.md)** (application shell / AI integration / PDM UX) — ADR/0040 is the active next-surface roadmap; ADR/0033 remains the authority for the display foundation (D2–D7).
 - **What it is:** the **vision and scope for the Display & UX strand** of AIADRA Studio — a first-class, multi-arc, years-horizon strand benchmarked to **Creo 10**. Elevates the seeds in [ADR/0032](0032-aiadra-studio-scope.md) D4/D8/D9/D10 into a designed foundation.
 - **Driven by Petre** (a long-time CAD user, 2026-06-03): UX is **existential** for a CAD system's adoption; Creo 10 is the explicit benchmark (he holds a license; we demo against it). Approached systematically across sessions, Codex-shaped from the start.
 - **No schema / bundle / `aiadra-core` / Glossary change.** A Studio UI strand.
