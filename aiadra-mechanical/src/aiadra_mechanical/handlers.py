@@ -54,7 +54,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.5"
+ADAPTER_SCHEMA_VERSION = "0.1.6"
 
 
 # =============================================================================

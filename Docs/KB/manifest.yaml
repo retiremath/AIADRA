@@ -12,13 +12,13 @@
 # engine feature semantics version with their engine (adapter schema), Ring 2
 # command semantics version with core.
 
-kb_version: "0.4.0"   # + the revolve feature (first non-referencing creation feature
-                      #   since extrude, arc 20260622-4); 0.3.0 = chamfer; 0.2.0 = hole;
-                      #   0.1.0 = fillet
+kb_version: "0.5.0"   # + the contour outer profile (arbitrary closed-ring extrude,
+                      #   arc 20260711-11 slice E); 0.4.0 = revolve; 0.3.0 = chamfer;
+                      #   0.2.0 = hole; 0.1.0 = fillet
 
 compatible:
   aiadra_core: ">=0.13.0,<0.14.0"
-  aiadra_mechanical_adapter_schema_version: ">=0.1.5,<0.2.0"
+  aiadra_mechanical_adapter_schema_version: ">=0.1.6,<0.2.0"
 
 source_refs:
   adrs: ["ADR/0037", "ADR/0038", "ADR/0035", "ADR/0031", "ADR/0029"]
@@ -28,6 +28,7 @@ source_refs:
     - "aiadra-mechanical/tests/test_hole_feature.py"
     - "aiadra-mechanical/tests/test_chamfer_feature.py"
     - "aiadra-mechanical/tests/test_revolve_feature.py"
+    - "aiadra-mechanical/tests/test_contour_extrude.py"
 
 contents:
   feature_semantics:
@@ -35,18 +36,21 @@ contents:
     - features/hole.md
     - features/chamfer.md
     - features/revolve.md
+    - features/contour.md
   golden_recipes:
     - golden-recipes/fillet-box.md
     - golden-recipes/hole-box.md
     - golden-recipes/chamfer-box.md
     - golden-recipes/revolve-tube.md
+    - golden-recipes/contour-l-bracket.md
   traces:
     - traces/fillet-negative-repair.md
     - traces/hole-negative-repair.md
     - traces/chamfer-negative-repair.md
     - traces/revolve-crossing-axis-repair.md
+    - traces/contour-negative-repair.md
 
-retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm]
+retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, contour, closed-ring, profile, segment, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm]
 
 firewall:
   # ADR/0037 D3 — original-content discipline (clean-room-style). Every shippable

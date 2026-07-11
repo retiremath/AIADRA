@@ -328,6 +328,22 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             entry["primitives"] = sorted(
                 (p.get("id", ""), p.get("type")) for p in prims
             )
+            # arc 20260711-11 slice E (Codex4 D-E2): a contour's ordered segment
+            # (id, kind) list is SKELETON — an insert/delete or line→arc changes
+            # topology; the vertex COORDINATES stay values (excluded). Added under
+            # a separate key ONLY when a contour is present, so existing
+            # rectangle/circle signatures are byte-identical (no migration).
+            contour_segments = {
+                p.get("id", ""): [
+                    (s.get("id", ""), s.get("kind")) for s in p.get("segments", [])
+                ]
+                for p in prims
+                if p.get("type") == "contour"
+            }
+            if contour_segments:
+                entry["contour_segments"] = {
+                    k: contour_segments[k] for k in sorted(contour_segments)
+                }
         elif ftype in ("fillet", "chamfer"):
             # An edge-referencing feature IS a topology change; retargeting it
             # changes topology too (ADR/0038 D4) — so the target ANCHOR is part of
@@ -382,16 +398,22 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
     sketch_id = sketch["id"]
     prims = sketch.get("adapter_payload", {}).get("primitives", [])
     rectangle = next((p for p in prims if p.get("type") == "rectangle"), None)
+    contour = next((p for p in prims if p.get("type") == "contour"), None)
     circle = next((p for p in prims if p.get("type") == "circle"), None)
-    if rectangle is None:
+    if rectangle is None and contour is None:
         raise TransactionError(
-            "mechanical.display: sketch has no rectangle profile"
+            "mechanical.display: sketch has no rectangle or contour profile"
         )
 
     # Revolve base (arc 20260622-4): a different topology family than the extrude
     # box, so the recipe carries its base kind and the correlation dispatches.
     revolve = _last(features, "revolve")
     if revolve is not None:
+        if rectangle is None:
+            raise TransactionError(
+                "mechanical.display: revolve v1 requires a rectangle profile "
+                "(a contour revolve is unsupported)"
+            )
         axis = (revolve.get("adapter_payload") or {}).get("axis")
         return {
             "base": "revolve",
@@ -413,16 +435,19 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
             if p.get("name") == "depth_mm":
                 depth = float(p["value"])
                 break
-    return {
+    common = {
         "base": "extrude",
         "sketch_id": sketch_id,
         "extrude_id": extrude_id,
-        "rectangle": rectangle,
-        "circle": circle,
         "direction": direction,
         "depth": depth,
         "sign": 1.0 if direction == "z+" else -1.0,
     }
+    # arc 20260711-11 slice E: a contour outer profile is a different (N-side)
+    # topology family; the recipe carries the kind so correlation dispatches.
+    if contour is not None:
+        return {**common, "outer_kind": "contour", "contour": contour, "circle": None}
+    return {**common, "outer_kind": "rectangle", "rectangle": rectangle, "circle": circle}
 
 
 def _rect_edges(rect: dict[str, Any]) -> list[tuple[str, float, float]]:
@@ -455,6 +480,8 @@ def _correlate_faces(
     claimed = claimed or {}
     if recipe.get("base") == "revolve":
         return _correlate_revolve_faces(face_map, recipe, claimed)
+    if recipe.get("outer_kind") == "contour":
+        return _correlate_contour_faces(face_map, recipe, claimed)
     sketch_id = recipe["sketch_id"]
     extrude_id = recipe["extrude_id"]
     rect = recipe["rectangle"]
@@ -585,6 +612,94 @@ def _correlate_revolve_faces(
     roles[caps[0][0]] = f"{feat}:face:cap_lo"
     roles[caps[1][0]] = f"{feat}:face:cap_hi"
     return roles
+
+
+def _correlate_contour_faces(
+    face_map, recipe: dict[str, Any], claimed: dict[int, str]
+) -> dict[int, str]:
+    """Assign roles for an extruded CLOSED-RING contour (arc 20260711-11 slice E;
+    Codex4 D-E2). Caps by axis-parallel normal (`cap_base` at the sketch plane
+    z≈0, `cap_top` at the swept end). Each side wall is anchored to its
+    originating contour SEGMENT id — so a vertex move (a value edit) preserves
+    every wall role, while a segment insert/delete (a skeleton change) changes
+    them. Fail-loud on an unmatched/duplicated wall (no positional fallback)."""
+    contour = recipe["contour"]
+    feat_prefix = recipe["extrude_id"] if recipe.get("extrude_id") is not None else recipe["sketch_id"]
+    seg_mids = _contour_segment_midpoints(contour)
+    roles: dict[int, str] = {}
+    used_segments: set[str] = set()
+    for i in range(1, face_map.Extent() + 1):
+        if i in claimed:
+            roles[i] = claimed[i]
+            continue
+        face = TopoDS.Face_s(face_map.FindKey(i))
+        stype = BRepAdaptor_Surface(face).GetType()
+        centroid, normal = _face_centroid_normal(face)
+        if stype == GeomAbs_Plane and abs(normal[2]) >= _AXIS_DOT:
+            roles[i] = (
+                f"{feat_prefix}:face:cap_base"
+                if abs(centroid[2]) <= 1e-6
+                else f"{feat_prefix}:face:cap_top"
+            )
+            continue
+        if stype == GeomAbs_Plane:
+            seg_id = _nearest_segment(centroid, seg_mids)
+            if seg_id is None or seg_id in used_segments:
+                raise TransactionError(
+                    f"mechanical.display: could not uniquely correlate side face {i} "
+                    f"to a contour segment (centroid={centroid}); recipe/topology mismatch"
+                )
+            used_segments.add(seg_id)
+            roles[i] = f"{feat_prefix}/{seg_id}:face:wall"
+            continue
+        raise TransactionError(
+            f"mechanical.display: unexpected surface type {stype} on face {i}; "
+            f"a v1 contour extrude produces planar faces only"
+        )
+    # Codex5 B1: the segment↔wall map must be a bijection — every declared segment
+    # produces exactly one wall. The in-loop guard rejects a duplicate; this guards
+    # the OTHER direction (a missing wall, e.g. a coplanar merge emitting fewer side
+    # faces than segments), fail loud rather than returning silently-incomplete
+    # identity (ADR/0035 no-placeholder / no-silent-gap).
+    declared = {sid for sid, _, _ in seg_mids}
+    if used_segments != declared:
+        missing = sorted(declared - used_segments)
+        raise TransactionError(
+            f"mechanical.display: contour correlation did not map every segment to its "
+            f"own wall (no wall for {missing}); a coplanar merge or face-count mismatch "
+            f"broke one-segment-one-wall identity"
+        )
+    return roles
+
+
+def _contour_segment_midpoints(contour: dict[str, Any]) -> list[tuple[str, float, float]]:
+    """Each contour segment as (segment_id, midpoint_x, midpoint_y). The id is the
+    engine-minted stable anchor (Codex4 B1); the midpoint disambiguates walls even
+    under symmetric dimensions. Fail loud on a missing anchor (no placeholder)."""
+    out: list[tuple[str, float, float]] = []
+    for seg in contour.get("segments", []):
+        sid = seg.get("id")
+        if not isinstance(sid, str) or not sid:
+            raise TransactionError(
+                "mechanical.display: contour segment lacks an engine-minted id — a "
+                "corrupt/pre-slice-E payload cannot anchor stable wall identity "
+                "(failing loud rather than minting a placeholder, ADR/0035)"
+            )
+        mx = 0.5 * (float(seg["x1_mm"]) + float(seg["x2_mm"]))
+        my = 0.5 * (float(seg["y1_mm"]) + float(seg["y2_mm"]))
+        out.append((sid, mx, my))
+    return out
+
+
+def _nearest_segment(centroid, seg_mids) -> str | None:
+    best = None
+    best_d = None
+    for sid, mx, my in seg_mids:
+        d = math.hypot(centroid[0] - mx, centroid[1] - my)
+        if best_d is None or d < best_d:
+            best_d = d
+            best = sid
+    return best
 
 
 def _nearest_wall(centroid, rect_edges) -> str | None:

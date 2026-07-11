@@ -28,6 +28,8 @@ from typing import Any
 
 from aiadra_core.transaction.boundary import TransactionError
 
+from .adapter_payload import require_valid_contour
+
 from OCP.Bnd import Bnd_Box
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
@@ -124,12 +126,22 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
             rectangle = require_simple_revolve_profile(primitives)  # Codex1 B2
             shape: TopoDS_Shape = _build_revolved_solid(rectangle, _revolve_axis(revolve))
         else:
-            rectangle, circle = _split_primitives(primitives)
-            if extrude is None:
-                shape = _build_sketch_face(rectangle, circle)
+            outer_kind, outer, circle = _outer_profile(primitives)
+            if outer_kind == "contour":
+                # arc 20260711-11 slice E: an arbitrary closed-ring profile.
+                # Eval-time Class-1 re-check (Codex4 D-E3) so a stored/edited/
+                # corrupt recipe fails loud before OCCT, on every regeneration.
+                require_valid_contour(outer)
+                if extrude is None:
+                    shape = _contour_face(outer)
+                else:
+                    depth_mm, direction = _extract_extrude(extrude)
+                    shape = _build_contour_solid(outer, depth_mm, direction)
+            elif extrude is None:
+                shape = _build_sketch_face(outer, circle)
             else:
                 depth_mm, direction = _extract_extrude(extrude)
-                shape = _build_extruded_solid(rectangle, circle, depth_mm, direction)
+                shape = _build_extruded_solid(outer, circle, depth_mm, direction)
     except (TransactionError, MechanicalKernelEvaluationError):
         raise
     except Exception as exc:  # raw OCP / OCCT failure on a plausible recipe
@@ -506,6 +518,46 @@ def _build_extruded_solid(
         cyl_face, gp_Vec(0.0, 0.0, sign * (depth_mm + 2.0 * margin))
     ).Shape()
     return BRepAlgoAPI_Cut(box, cylinder).Shape()
+
+
+def _outer_profile(
+    primitives: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    """The single outer profile of a sketch + an optional circle hole. arc
+    20260711-11 slice E: the outer profile is a rectangle OR a contour (Codex4
+    D-E4 — a contour is an outer boundary only, so no circle rides with it)."""
+    contour = next((p for p in primitives if p.get("type") == "contour"), None)
+    if contour is not None:
+        return "contour", contour, None
+    rectangle = next((p for p in primitives if p.get("type") == "rectangle"), None)
+    circle = next((p for p in primitives if p.get("type") == "circle"), None)
+    if rectangle is None:
+        raise TransactionError(
+            "mechanical: sketch has no rectangle or contour outer profile to evaluate"
+        )
+    return "rectangle", rectangle, circle
+
+
+def _contour_face(contour: dict[str, Any]) -> TopoDS_Shape:
+    """A planar face from an explicit CLOSED RING of line segments (arc
+    20260711-11 slice E). The segments already close the ring (Codex4 B1 — no
+    implicit closing edge); one OCCT edge per segment, in ring order."""
+    wire = BRepBuilderAPI_MakeWire()
+    for seg in contour["segments"]:
+        p1 = gp_Pnt(float(seg["x1_mm"]), float(seg["y1_mm"]), 0.0)
+        p2 = gp_Pnt(float(seg["x2_mm"]), float(seg["y2_mm"]), 0.0)
+        wire.Add(BRepBuilderAPI_MakeEdge(p1, p2).Edge())
+    return BRepBuilderAPI_MakeFace(wire.Wire()).Face()
+
+
+def _build_contour_solid(
+    contour: dict[str, Any], depth_mm: float, direction: str
+) -> TopoDS_Shape:
+    """Prism a contour face into a solid (v1: outer boundary only, no hole)."""
+    sign = 1.0 if direction == "z+" else -1.0
+    return BRepPrimAPI_MakePrism(
+        _contour_face(contour), gp_Vec(0.0, 0.0, sign * depth_mm)
+    ).Shape()
 
 
 def _rectangle_face(rectangle: dict[str, Any]) -> TopoDS_Shape:
