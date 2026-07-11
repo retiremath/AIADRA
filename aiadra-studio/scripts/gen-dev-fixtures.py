@@ -151,6 +151,16 @@ def main() -> int:
             bws.mkdir()
             build_bracket(bws, holes)
             _dump_part(bws, f"bracket-{key}")
+
+    # Slice 1b/1c (arc 20260711-11): a PLAIN extruded rectangle — a 6-face box,
+    # the honest preview geometry for the extrude manual dashboard's dev:web mock
+    # (the real bridge lane shows the true parametric solid). Same builder as the
+    # bracket, with no holes.
+    with tempfile.TemporaryDirectory() as etmp:
+        ews = Path(etmp) / "ws"
+        ews.mkdir()
+        build_bracket(ews, [])  # rectangle only → a plain box
+        _dump_part(ews, "extrude-box")
     return 0
 
 

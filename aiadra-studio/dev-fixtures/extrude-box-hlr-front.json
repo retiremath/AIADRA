@@ -1,0 +1,179 @@
+{
+ "identity_echo": {
+  "object_uuid": "0e07c7d5-1af8-4225-84d0-29d7aca606a6",
+  "object_number": "P-000001",
+  "geometry_ref": "sha256:080127eb171e4fb5385d482b842b7bff1b4eaa9fc2155e5cde4b60854ace0f33",
+  "display_representation_version": "1.1",
+  "cache_key": "080127eb171e4fb5385d482b842b7bff1b4eaa9fc2155e5cde4b60854ace0f33|evt_0003|0.1.5|7.9.3.1.1",
+  "topology_signature": "topo_8b3d982e8ef30128"
+ },
+ "views": [
+  {
+   "view_id": "front",
+   "projector": {
+    "projection": "orthographic",
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "direction": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "up": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "right": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "units": "mm"
+   },
+   "algorithm": "exact",
+   "coordinate_space": "view_plane_2d",
+   "correlation_min_length_mm": 0.01,
+   "segments": [
+    {
+     "polyline_2d": [
+      82.0,
+      0.0,
+      82.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      82.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      82.0,
+      6.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      82.0,
+      0.0,
+      82.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      0.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      82.0,
+      0.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      6.0,
+      82.0,
+      6.0
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    }
+   ],
+   "counters": {
+    "visible_segments": 4,
+    "hidden_segments": 4,
+    "outline_segments": 0,
+    "discarded_tolerance_segments": 0,
+    "generation_ms": 1.1437999783083797
+   }
+  }
+ ]
+}

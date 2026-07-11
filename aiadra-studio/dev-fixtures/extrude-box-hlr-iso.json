@@ -1,0 +1,243 @@
+{
+ "identity_echo": {
+  "object_uuid": "0e07c7d5-1af8-4225-84d0-29d7aca606a6",
+  "object_number": "P-000001",
+  "geometry_ref": "sha256:080127eb171e4fb5385d482b842b7bff1b4eaa9fc2155e5cde4b60854ace0f33",
+  "display_representation_version": "1.1",
+  "cache_key": "080127eb171e4fb5385d482b842b7bff1b4eaa9fc2155e5cde4b60854ace0f33|evt_0003|0.1.5|7.9.3.1.1",
+  "topology_signature": "topo_8b3d982e8ef30128"
+ },
+ "views": [
+  {
+   "view_id": "iso",
+   "projector": {
+    "projection": "orthographic",
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "direction": [
+     -0.5773502691896258,
+     -0.5773502691896258,
+     -0.5773502691896258
+    ],
+    "up": [
+     -0.4082482904638631,
+     -0.4082482904638631,
+     0.8164965809277261
+    ],
+    "right": [
+     -0.7071067811865476,
+     0.7071067811865476,
+     0.0
+    ],
+    "units": "mm"
+   },
+   "algorithm": "exact",
+   "coordinate_space": "view_plane_2d",
+   "correlation_min_length_mm": 0.01,
+   "segments": [
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      0.0,
+      4.898979485566357
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      36.76955262170048,
+      -21.22891110412088,
+      0.0,
+      3.552713678800501e-15
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      0.0,
+      -57.9827560572969,
+      -33.47635981803678
+     ],
+     "visibility": "hidden",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -21.213203435596427,
+      -54.70527092215765,
+      -21.213203435596427,
+      -49.806291436591295
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -57.9827560572969,
+      -33.47635981803677,
+      -57.9827560572969,
+      -28.577380332470412
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002/skp_0001:face:wall_y_min",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -57.9827560572969,
+      -33.47635981803677,
+      -21.213203435596427,
+      -54.70527092215765
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -57.9827560572969,
+      -28.577380332470412,
+      -21.213203435596427,
+      -49.806291436591295
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_max~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      36.76955262170048,
+      -21.22891110412088,
+      36.76955262170048,
+      -16.32993161855452
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002/skp_0001:face:wall_y_max",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      36.76955262170048,
+      -16.32993161855452,
+      0.0,
+      4.898979485566361
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_x_min~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -21.213203435596427,
+      -54.70527092215765,
+      36.76955262170048,
+      -21.228911104120876
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_base",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      -21.213203435596427,
+      -49.806291436591295,
+      36.76955262170048,
+      -16.329931618554518
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_max~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    },
+    {
+     "polyline_2d": [
+      0.0,
+      4.898979485566357,
+      -57.9827560572969,
+      -28.57738033247042
+     ],
+     "visibility": "visible",
+     "edge_class": "sharp",
+     "source": {
+      "kind": "model_edge",
+      "edge_id": "edge:feat_0002/skp_0001:face:wall_y_min~feat_0002:face:cap_top",
+      "face_id": null,
+      "index": null
+     }
+    }
+   ],
+   "counters": {
+    "visible_segments": 9,
+    "hidden_segments": 3,
+    "outline_segments": 0,
+    "discarded_tolerance_segments": 0,
+    "generation_ms": 1.0675000958144665
+   }
+  }
+ ]
+}

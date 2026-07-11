@@ -6,6 +6,11 @@ import { createOperationStore, type OperationStore } from './operation/store'
 import { useCandidatePreview } from './operation/previewController'
 import { SessionPill } from './operation/SessionPill'
 import { Dock } from './dock/Dock'
+import { createFeatureSessionStore, type FeatureSessionStore } from './authoring/featureSession'
+import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard'
+import { createMockAuthoringBackend } from './authoring/backendMock'
+import { createBridgeAuthoringBackend } from './authoring/backendBridge'
+import type { AuthoringBackend } from './authoring/backend'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
@@ -33,7 +38,13 @@ import type { CommandActions } from './commands/types'
  */
 type PartRow = { object_number: string; name: string; object_uuid: string }
 
-function EnginePanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
+function EnginePanel({
+  api,
+  onWorkspaceOpen,
+}: {
+  api: MutableRefObject<ViewportApi | null>
+  onWorkspaceOpen?: (workspaceId: string) => void
+}) {
   const [version, setVersion] = useState<string | null>(null)
   const [ws, setWs] = useState<{ name: string; workspaceId: string } | null>(null)
   const [parts, setParts] = useState<PartRow[]>([])
@@ -69,6 +80,7 @@ function EnginePanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
       return
     }
     setWs({ name: r.result.name, workspaceId: r.result.workspaceId })
+    onWorkspaceOpen?.(r.result.workspaceId) // lift the id for the authoring bridge
     setParts([])
     setLoadedPart(null)
     setNote('')
@@ -332,15 +344,27 @@ function Workbench({
   viewStore,
   selectionStore,
   operationStore,
+  featureStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
   viewStore: ViewStateStore
   selectionStore: SelectionStore
   operationStore: OperationStore
+  featureStore: FeatureSessionStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
+  // Manual authoring lane (arc 20260711-11 slice 1c): the write bridge in the
+  // Electron+workspace lane, the deterministic mock in dev:web (Codex B2).
+  const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null)
+  const featureBackend = useMemo<AuthoringBackend>(
+    () =>
+      window.aiadra && openWorkspaceId
+        ? createBridgeAuthoringBackend(openWorkspaceId)
+        : createMockAuthoringBackend(),
+    [openWorkspaceId],
+  )
   const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
   const [fixtureError, setFixtureError] = useState<string | null>(null)
   // The CAD↔AI dock chrome (ADR/0040 D5). Live open/width are transient; their
@@ -447,13 +471,20 @@ function Workbench({
       </header>
       <div className="workbench">
         <aside className="sidebar">
-          <EnginePanel api={viewportApi} />
+          <EnginePanel api={viewportApi} onWorkspaceOpen={setOpenWorkspaceId} />
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
           <div className="panel-title">Model</div>
+          <button
+            className="btn small"
+            type="button"
+            onClick={() => featureStore.start('extrude', EXTRUDE_DEFAULTS)}
+          >
+            New Extrude…
+          </button>
           <div className="muted small pad">
-            Model tree — placeholder; wires to real Workspace sidecars in the
-            data-panel strand. Parts load from the Engine panel above.
+            Manual feature authoring (arc 20260711-11). The model tree wires to
+            real Workspace sidecars in the data-panel strand.
           </div>
           {fixtureError && <div className="small pad err">{fixtureError}</div>}
           <div className="panel-title">Properties</div>
@@ -477,6 +508,12 @@ function Workbench({
           ) : (
             <div className="hud muted small">initializing…</div>
           )}
+          <FeatureDashboard
+            store={featureStore}
+            backend={featureBackend}
+            viewportApi={viewportApi}
+            onClose={restoreBase}
+          />
           <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
         {dockOpen && (
@@ -506,6 +543,7 @@ export default function App() {
   const viewStoreRef = useRef<ViewStateStore | null>(null)
   const selectionStoreRef = useRef<SelectionStore | null>(null)
   const operationStoreRef = useRef<OperationStore | null>(null)
+  const featureStoreRef = useRef<FeatureSessionStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -534,6 +572,9 @@ export default function App() {
 
   if (!operationStoreRef.current) operationStoreRef.current = createOperationStore()
   const operationStore = operationStoreRef.current
+
+  if (!featureStoreRef.current) featureStoreRef.current = createFeatureSessionStore()
+  const featureStore = featureStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -572,6 +613,7 @@ export default function App() {
         viewStore={viewStore}
         selectionStore={selectionStore}
         operationStore={operationStore}
+        featureStore={featureStore}
       />
     </SettingsProvider>
   )

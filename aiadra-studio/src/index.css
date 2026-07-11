@@ -365,3 +365,30 @@ body { background: var(--bg); overflow: hidden; }
 .pill-btn.danger:hover { border-color: var(--warn); color: var(--warn); }
 .chipbar { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; }
 .chipbar.byo { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+
+/* ---- Manual feature dashboard — the CAD operation panel (arc 20260711-11) ---- */
+.feature-dash {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6;
+  width: 300px; background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px -12px rgba(0,0,0,.5); backdrop-filter: blur(4px);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.fd-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.fd-title { font-weight: 600; color: var(--text-h); }
+.fd-lane { font-family: ui-monospace, monospace; font-size: 10px; padding: 2px 7px; border-radius: 999px; }
+.fd-lane.real { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.fd-lane.mock { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.fd-x { margin-left: auto; background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; font-size: 13px; }
+.fd-x:hover { background: var(--panel-2); color: var(--text-h); }
+.fd-body { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.fd-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.param-unit { color: var(--muted); font-size: 10px; }
+.fd-ctl { display: flex; align-items: center; gap: 8px; }
+.fd-ctl input[type=range] { width: 130px; accent-color: var(--accent); }
+.fd-val { width: 32px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+.fd-msg { font-size: 12px; color: var(--text); padding: 4px 2px; }
+.fd-msg.err { color: var(--warn); }
+.fd-msg.ok { color: var(--accent); }
+.fd-actions { display: flex; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
+.fd-actions .btn { flex: 1; }

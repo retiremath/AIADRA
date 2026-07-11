@@ -138,3 +138,18 @@ export async function loadCandidateFixtureSource(sourceId: string, badge: string
   const [display, front, iso, tilt] = await loader()
   return buildFixtureSource(display, { front, iso, tilt }, badge)
 }
+
+/** The plain extruded box (6-face) — the dev:web mock's honest preview geometry
+ *  for the extrude manual dashboard (arc 20260711-11 slice 1b/1c). The real
+ *  bridge lane shows the true parametric solid instead. */
+export async function loadExtrudeBoxSource(badge: string): Promise<DisplaySource | null> {
+  if (!import.meta.env.DEV) return null
+  if (window.aiadra) return null
+  const [display, front, iso, tilt] = await Promise.all([
+    import('../../dev-fixtures/extrude-box.json'),
+    import('../../dev-fixtures/extrude-box-hlr-front.json'),
+    import('../../dev-fixtures/extrude-box-hlr-iso.json'),
+    import('../../dev-fixtures/extrude-box-hlr-tilt.json'),
+  ])
+  return buildFixtureSource(display.default, { front: front.default, iso: iso.default, tilt: tilt.default }, badge)
+}
