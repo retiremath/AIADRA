@@ -93,6 +93,29 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     group: 'Behavior',
     help: 'Startup default; the live toggle is transient (Codex1 N3).',
   },
+  // ---- CAD↔AI dock chrome (arc 20260711-10 / MVP-1; ADR/0040 D5/N4). Typed
+  // settings, not ad-hoc local state (Codex arc-20260711-10 note). The live
+  // width/open are transient; these are the persisted startup values. ----
+  {
+    key: 'aiDockWidth',
+    type: 'number',
+    default: 340,
+    label: 'AI dock width',
+    group: 'Behavior',
+    min: 260,
+    max: 640,
+    step: 10,
+    unit: 'px',
+    help: 'The CAD↔AI dock width; also set by dragging its edge.',
+  },
+  {
+    key: 'aiDockOpenDefault',
+    type: 'boolean',
+    default: true,
+    label: 'Show AI dock by default',
+    group: 'Behavior',
+    help: 'Startup default; the live toggle is transient (like grid/mode).',
+  },
 ]
 
 export const DESCRIPTOR_BY_KEY: Record<string, SettingDescriptor> = Object.fromEntries(

@@ -1,7 +1,11 @@
-import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Viewport, { type ViewportApi } from './Viewport'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
+import { createOperationStore, type OperationStore } from './operation/store'
+import { useCandidatePreview } from './operation/previewController'
+import { SessionPill } from './operation/SessionPill'
+import { Dock } from './dock/Dock'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
@@ -327,16 +331,42 @@ function Workbench({
   viewportApi,
   viewStore,
   selectionStore,
+  operationStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
   viewStore: ViewStateStore
   selectionStore: SelectionStore
+  operationStore: OperationStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
   const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
   const [fixtureError, setFixtureError] = useState<string | null>(null)
+  // The CAD↔AI dock chrome (ADR/0040 D5). Live open/width are transient; their
+  // startup defaults come from the settings registry (aiDockOpenDefault) and the
+  // width is a persisted setting written on drag (aiDockWidth).
+  const [dockOpen, setDockOpen] = useState<boolean>(() => registry.get('aiDockOpenDefault') as boolean)
+  const [dockWidth, setDockWidth] = useSetting('aiDockWidth')
+
+  // Restore the base display when a session ends (Codex B2 — intentional
+  // restore, not a stale candidate left on screen). Fast lane only.
+  const restoreBase = useCallback(() => {
+    if (!import.meta.env.DEV || window.aiadra) return
+    import('./dev/fixtureSource')
+      .then(({ loadFixtureSource }) => loadFixtureSource())
+      .then((src) => {
+        if (src) {
+          void viewportApi.current?.setDisplaySource(src)
+          setFixtureBadge(src.badge)
+        }
+      })
+      .catch(() => {})
+  }, [viewportApi])
+
+  // Preview controller: drives setDisplaySource off the selected candidate with
+  // monotonic race protection (B2). The store stays the source of truth.
+  useCandidatePreview({ store: operationStore, viewportApi, ready, restoreBaseDisplay: restoreBase })
 
   // Command actions (Codex1 N3) — injected into the taxonomy's `run`, never
   // captured by descriptors. Mode/grid flow through the store (so toolbar, menu,
@@ -449,6 +479,21 @@ function Workbench({
           )}
           <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
+        {dockOpen && (
+          <Dock
+            store={operationStore}
+            width={dockWidth as number}
+            onWidthChange={(w) => setDockWidth(w)}
+            onDismiss={() => setDockOpen(false)}
+          />
+        )}
+      </div>
+      <div className="statusbar">
+        <SessionPill store={operationStore} dockOpen={dockOpen} onShowDock={() => setDockOpen(true)} />
+        <span className="grow" />
+        <span className="chipbar byo" title="AIADRA Core ships no AI — MVP-1 uses a scripted configurator">
+          ● BYO-AI: scripted (MVP-1)
+        </span>
       </div>
     </div>
   )
@@ -460,6 +505,7 @@ export default function App() {
   const persistenceRef = useRef<Persistence | null>(null)
   const viewStoreRef = useRef<ViewStateStore | null>(null)
   const selectionStoreRef = useRef<SelectionStore | null>(null)
+  const operationStoreRef = useRef<OperationStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -485,6 +531,9 @@ export default function App() {
 
   if (!selectionStoreRef.current) selectionStoreRef.current = createSelectionStore()
   const selectionStore = selectionStoreRef.current
+
+  if (!operationStoreRef.current) operationStoreRef.current = createOperationStore()
+  const operationStore = operationStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -522,6 +571,7 @@ export default function App() {
         viewportApi={viewportApi}
         viewStore={viewStore}
         selectionStore={selectionStore}
+        operationStore={operationStore}
       />
     </SettingsProvider>
   )

@@ -1,11 +1,11 @@
 {
  "identity_echo": {
-  "object_uuid": "e1de7a95-1e36-4eab-8650-9f71f4385c21",
+  "object_uuid": "5342d58d-2ec7-415b-990c-02590a05f37b",
   "object_number": "P-000001",
-  "geometry_ref": "sha256:30d767e41e92b643d736a297bb7ef75baee43ceb2e15f0bd4adda79349b6c519",
+  "geometry_ref": "sha256:32aceaaae21d6deeed537c7533eb7b0d09a028fd28642d9854459a5606424d01",
   "display_representation_version": "1.1",
-  "cache_key": "30d767e41e92b643d736a297bb7ef75baee43ceb2e15f0bd4adda79349b6c519|evt_0003|0.1.5|7.9.3.1.1",
-  "topology_signature": "topo_5fdc3a3a50ed3a27"
+  "cache_key": "32aceaaae21d6deeed537c7533eb7b0d09a028fd28642d9854459a5606424d01|evt_0003|0.1.5|7.9.3.1.1",
+  "topology_signature": "topo_4e55c638b1209d7d"
  },
  "views": [
   {
@@ -40,9 +40,9 @@
    "segments": [
     {
      "polyline_2d": [
-      3.8,
+      8.0,
       6.0,
-      3.8,
+      8.0,
       0.0
      ],
      "visibility": "hidden",
@@ -56,9 +56,9 @@
     },
     {
      "polyline_2d": [
-      23.0,
+      82.0,
       0.0,
-      23.0,
+      82.0,
       6.0
      ],
      "visibility": "hidden",
@@ -88,7 +88,7 @@
     },
     {
      "polyline_2d": [
-      23.0,
+      82.0,
       0.0,
       0.0,
       0.0
@@ -104,7 +104,7 @@
     },
     {
      "polyline_2d": [
-      23.0,
+      82.0,
       6.0,
       0.0,
       6.0
@@ -120,9 +120,9 @@
     },
     {
      "polyline_2d": [
-      3.8,
+      8.0,
       0.0,
-      8.2,
+      14.0,
       0.0
      ],
      "visibility": "hidden",
@@ -136,9 +136,9 @@
     },
     {
      "polyline_2d": [
-      8.2,
+      14.0,
       0.0,
-      3.8,
+      8.0,
       0.0
      ],
      "visibility": "hidden",
@@ -152,9 +152,9 @@
     },
     {
      "polyline_2d": [
-      3.8,
+      8.0,
       6.0,
-      8.2,
+      14.0,
       6.0
      ],
      "visibility": "hidden",
@@ -168,9 +168,9 @@
     },
     {
      "polyline_2d": [
-      8.2,
+      14.0,
       6.0,
-      3.8,
+      8.0,
       6.0
      ],
      "visibility": "hidden",
@@ -184,9 +184,9 @@
     },
     {
      "polyline_2d": [
-      8.2,
+      14.0,
       0.0,
-      8.2,
+      14.0,
       6.0
      ],
      "visibility": "hidden",
@@ -200,9 +200,9 @@
     },
     {
      "polyline_2d": [
-      23.0,
+      82.0,
       0.0,
-      23.0,
+      82.0,
       6.0
      ],
      "visibility": "visible",
@@ -234,7 +234,7 @@
      "polyline_2d": [
       0.0,
       0.0,
-      23.0,
+      82.0,
       0.0
      ],
      "visibility": "visible",
@@ -250,7 +250,7 @@
      "polyline_2d": [
       0.0,
       6.0,
-      23.0,
+      82.0,
       6.0
      ],
      "visibility": "visible",
@@ -268,7 +268,7 @@
     "hidden_segments": 10,
     "outline_segments": 1,
     "discarded_tolerance_segments": 0,
-    "generation_ms": 49.779799999669194
+    "generation_ms": 4.3805999448522925
    }
   }
  ]

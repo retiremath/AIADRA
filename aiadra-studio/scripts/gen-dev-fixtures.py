@@ -46,6 +46,52 @@ VIEWS = [
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "dev-fixtures"
 
+# MVP-1 (arc 20260711-10): the scripted bracket configurator's three real
+# candidates. Each is a distinct evaluated recipe (a flat plate + a hole
+# pattern) baked through the REAL engine so the candidate gallery previews true
+# geometry (ADR/0039 P-A2; Codex2 B1) — not a re-badged single fixture. Plate is
+# 82 x 52 (off the 5 mm grid — see build_part) x 6 thick; holes are Ø6.
+_BRACKET_W = 82.0
+_BRACKET_H = 52.0
+_BRACKET_THICK = 6.0
+_HOLE_R = 3.0
+BRACKETS: dict[str, list[tuple[float, float]]] = {
+    # keyed by candidate sourceId suffix (bracket/<key>)
+    "corners": [(11.0, 11.0), (71.0, 11.0), (11.0, 41.0), (71.0, 41.0)],
+    "grid": [(29.0, 19.0), (53.0, 19.0), (29.0, 33.0), (53.0, 33.0)],
+    "inline": [(29.0, 26.0), (53.0, 26.0)],
+}
+
+
+def build_bracket(ws: Path, holes: list[tuple[float, float]]) -> None:
+    """A flat plate (rectangle) with a set of circular holes, extruded."""
+    propose(ws, kind="init", params={}).commit()
+    propose(ws, kind="create_part", params={"number": "P-000001", "name": "Bracket"}).commit()
+    primitives: list[dict] = [
+        {"type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": _BRACKET_W, "height_mm": _BRACKET_H},
+    ]
+    for cx, cy in holes:
+        primitives.append({"type": "circle", "cx_mm": cx, "cy_mm": cy, "radius_mm": _HOLE_R})
+    propose(ws, kind="mechanical.add_sketch_feature", params={
+        "part_number": "P-000001", "primitives": primitives,
+    }).commit()
+    propose(ws, kind="mechanical.add_extrude_feature", params={
+        "part_number": "P-000001", "sketch_feature_id": "feat_0001",
+        "depth_mm": _BRACKET_THICK, "direction": "z+",
+    }).commit()
+
+
+def _dump_part(ws: Path, prefix: str) -> None:
+    """Write <prefix>.json (display) + <prefix>-hlr-<view>.json for a built part."""
+    dr = display_representation(ws, "P-000001")
+    (OUT_DIR / f"{prefix}.json").write_text(json.dumps(dr.to_dict(), indent=1), encoding="utf-8")
+    for view in VIEWS:
+        payload = display_hlr(ws, "P-000001", views=[view], algorithm="exact")
+        (OUT_DIR / f"{prefix}-hlr-{view['view_id']}.json").write_text(
+            json.dumps(payload.to_dict(), indent=1), encoding="utf-8"
+        )
+    print(f"wrote {prefix} (display + {len(VIEWS)} hlr)")
+
 
 def build_part(ws: Path) -> None:
     # Deliberately NOT grid-quantized: a 5 mm-multiple box on the viewport's
@@ -97,6 +143,14 @@ def main() -> int:
             counters = d["views"][0]["counters"]
             print(f"wrote {name} (visible={counters['visible_segments']} "
                   f"hidden={counters['hidden_segments']} outline={counters['outline_segments']})")
+
+    # MVP-1 bracket candidates — each a fresh workspace + a distinct hole pattern.
+    for key, holes in BRACKETS.items():
+        with tempfile.TemporaryDirectory() as btmp:
+            bws = Path(btmp) / "ws"
+            bws.mkdir()
+            build_bracket(bws, holes)
+            _dump_part(bws, f"bracket-{key}")
     return 0
 
 
