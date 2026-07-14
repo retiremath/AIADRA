@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { join, resolve, sep } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
 import { contentTypeFor, resolveAppAssetRelPath } from './appProtocol'
+import { createRecentsRegistry, type RecentsRegistry } from './recents'
 // Shared PURE envelope validators (arc 20260619-1 / 6a, Codex1 B1 + Codex2 R2):
 // main owns BOTH the settings file path AND the persisted shape. The renderer is
 // the untrusted side of the IPC boundary even when sandboxed. Load is tolerant
@@ -185,6 +186,39 @@ function isAiadraWorkspace(dir: string): boolean {
   return existsSync(join(dir, '.aiadra'))
 }
 
+// ---- Durable recent-workspaces registry (arc 20260714-1; D-H4/Codex6 B3) ----
+// MAIN-owned, ONE store under userData. Lazy: userData is valid only after
+// app.ready, and registerIpc runs after that.
+let recentsRegistry: RecentsRegistry | null = null
+function recents(): RecentsRegistry {
+  if (!recentsRegistry) {
+    const file = join(app.getPath('userData'), 'recent-workspaces.json')
+    recentsRegistry = createRecentsRegistry({
+      load: () => {
+        try {
+          return readFileSync(file, 'utf8')
+        } catch {
+          return null
+        }
+      },
+      save: (contents) => {
+        try {
+          mkdirSync(app.getPath('userData'), { recursive: true })
+          const tmp = `${file}.tmp`
+          writeFileSync(tmp, contents, 'utf8')
+          renameSync(tmp, file)
+        } catch (e) {
+          // Recents are convenience, never truth — log, don't break the open.
+          console.warn('[recents] save failed:', e instanceof Error ? e.message : e)
+        }
+      },
+      now: () => new Date().toISOString(),
+      mintId: () => `rec_${randomUUID()}`,
+    })
+  }
+  return recentsRegistry
+}
+
 // ---- Typed IPC envelopes ----
 type Ok<T> = { ok: true; result: T }
 type Err = { ok: false; error: { message: string } }
@@ -231,10 +265,70 @@ function registerIpc(): void {
     }
     const workspaceId = randomUUID()
     workspaces.set(workspaceId, canonical)
+    const name = canonical.split(/[\\/]/).pop() ?? canonical
+    // A successful native-dialog grant is recorded as a durable recent (D-H4).
+    recents().record(canonical, name)
     // N1 (Codex2): the canonical path stays main-side. The renderer contract
     // carries no filesystem paths (tightens B2) — only the opaque id + a display
     // name cross the wire.
-    return ok({ workspaceId, name: canonical.split(/[\\/]/).pop() ?? canonical })
+    return ok({ workspaceId, name })
+  })
+
+  // ---- Recent workspaces (arc 20260714-1; D-H4 as repinned per Codex6 B3) ----
+  // The renderer sees stripped views only. Reopening is a RENEWED USER GRANT:
+  // main re-resolves the stored canonical path, re-validates the `.aiadra`
+  // marker, and mints a FRESH session workspaceId. An invalid target fails
+  // loudly and the entry stays (removable in place) — never silently dropped.
+  // Retire a live workspace capability on Close/switch (Codex1 B1) — the
+  // renderer's central transition calls this so session capabilities never
+  // accumulate. In-flight authoring sessions are unaffected (they captured
+  // their wsPath at opBegin); the UI gate prevents switching while one is open.
+  ipcMain.handle('aiadra:closeWorkspace', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { workspaceId?: unknown } | null
+    if (!a || typeof a.workspaceId !== 'string') return err('closeWorkspace requires { workspaceId }')
+    workspaces.delete(a.workspaceId)
+    return ok({ closed: true })
+  })
+
+  ipcMain.handle('aiadra:recentsList', () => {
+    aiadraIpcCalls++
+    return ok({ recents: recents().views() })
+  })
+
+  ipcMain.handle('aiadra:recentsRemove', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { recentId?: unknown } | null
+    if (!a || typeof a.recentId !== 'string') return err('recentsRemove requires { recentId }')
+    recents().remove(a.recentId)
+    return ok({ recents: recents().views() })
+  })
+
+  ipcMain.handle('aiadra:recentsClear', () => {
+    aiadraIpcCalls++
+    recents().clear()
+    return ok({ recents: [] })
+  })
+
+  ipcMain.handle('aiadra:reopenWorkspace', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { recentId?: unknown } | null
+    if (!a || typeof a.recentId !== 'string') return err('reopenWorkspace requires { recentId }')
+    const entry = recents().get(a.recentId)
+    if (!entry) return err('unknown recent entry')
+    let canonical: string
+    try {
+      canonical = realpathSync(entry.canonicalPath)
+    } catch {
+      return err(`'${entry.name}' was not found — the folder may have been moved or deleted`)
+    }
+    if (!isAiadraWorkspace(canonical)) {
+      return err(`'${entry.name}' is no longer an AIADRA workspace (no .aiadra/ directory)`)
+    }
+    const workspaceId = randomUUID() // FRESH capability — never reused
+    workspaces.set(workspaceId, canonical)
+    recents().record(canonical, entry.name) // bump LRU
+    return ok({ workspaceId, name: entry.name })
   })
 
   ipcMain.handle('aiadra:inspect', (_e, args: unknown) => {

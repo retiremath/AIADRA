@@ -46,6 +46,62 @@ export interface AuthoringBackend {
   previewSource?(): Promise<DisplaySource | null>
 }
 
+// ---- Provisional Part numbers (arc 20260714-1; Codex2 B2) ------------------
+
+export const PART_NUMBER_RE = /^P-\d{6}$/
+
+/**
+ * Suggest a PROVISIONAL Part number — an honest draft candidate, NOT a
+ * Truth-Model allocation. The authority is core's creation contract: ADR/0004
+ * allocates the Number atomically with `object_created` + its Reservation entry
+ * at commit, and a collision FAILS LOUDLY there (surfaced by the session
+ * lifecycle's error path). Random 6 digits beat the old clock-modulo for
+ * collision odds, but the semantics are unchanged: validated at commit, never
+ * presented as already-canonical.
+ */
+export function suggestPartNumber(rand: () => number = Math.random): string {
+  return `P-${String(Math.floor(rand() * 1_000_000)).padStart(6, '0')}`
+}
+
+// ---- Backend lane selection (arc 20260714-1; Codex1 B2) --------------------
+
+export type BackendLane = 'mock' | 'bridge' | 'unavailable'
+
+/**
+ * The truth-lane rule: the mock exists ONLY for browser dev (`no bridge`). The
+ * desktop app NEVER falls back to the mock — with no workspace capability,
+ * authoring is UNAVAILABLE and fails clearly (a missing capability must not
+ * silently change the truth lane).
+ */
+export function chooseBackendLane(hasBridge: boolean, workspaceId: string | null): BackendLane {
+  if (!hasBridge) return 'mock'
+  return workspaceId ? 'bridge' : 'unavailable'
+}
+
+/** The desktop-without-workspace backend: every operation fails loud. */
+export function createUnavailableBackend(): AuthoringBackend {
+  const fail = (): never => {
+    throw new Error(
+      'No workspace is open — open an AIADRA workspace (File → Open Workspace…) before authoring',
+    )
+  }
+  return {
+    isReal: true, // the desktop lane — just not available; NEVER badged as a mock
+    async begin() {
+      return fail()
+    },
+    async simulate() {
+      return fail()
+    },
+    async commit() {
+      return fail()
+    },
+    async rollback() {
+      /* nothing to roll back */
+    },
+  }
+}
+
 /**
  * Build the op sequence for "sketch a rectangle + extrude it" — the parametric-
  * rectangle sketch of the anti-balloon guardrail (a fresh Part; sketch = feat_0001).

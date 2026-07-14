@@ -60,6 +60,21 @@ declare global {
         objectRef: string,
       ): Promise<Envelope<{ commit: unknown; object_ref?: string; display?: DisplayRepresentation }>>
       opRollback?(operationSessionId: string): Promise<Envelope<{ rolled_back: boolean }>>
+      // Recent workspaces (arc 20260714-1; D-H4/Codex6 B3) — durable MAIN-owned
+      // registry; views only ({recentId, name, lastOpened} — no paths), and a
+      // reopen re-validates + mints a FRESH workspaceId. Optional: absent in
+      // browser-only dev.
+      /** Retire a live workspace capability (Codex1 B1 — the central transition
+       *  calls this on Close/switch). Optional: absent in browser-only dev. */
+      closeWorkspace?(workspaceId: string): Promise<Envelope<{ closed: boolean }>>
+      recentsList?(): Promise<
+        Envelope<{ recents: { recentId: string; name: string; lastOpened: string }[] }>
+      >
+      recentsRemove?(
+        recentId: string,
+      ): Promise<Envelope<{ recents: { recentId: string; name: string; lastOpened: string }[] }>>
+      recentsClear?(): Promise<Envelope<{ recents: [] }>>
+      reopenWorkspace?(recentId: string): Promise<Envelope<{ workspaceId: string; name: string }>>
       // App settings (arc 20260619-1 / 6a) — optional: absent in browser-only dev.
       loadSettings?(): Promise<Envelope<{ settings: PersistedSettings | null }>>
       saveSettings?(settings: PersistedSettings): Promise<Envelope<Record<string, never>>>

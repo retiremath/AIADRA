@@ -35,6 +35,16 @@ contextBridge.exposeInMainWorld('aiadra', {
     ipcRenderer.invoke('aiadra:opCommit', { operationSessionId, objectRef }),
   opRollback: (operationSessionId: string) =>
     ipcRenderer.invoke('aiadra:opRollback', { operationSessionId }),
+  // Recent workspaces (arc 20260714-1; D-H4/Codex6 B3) — durable MAIN-owned
+  // registry; the renderer sees {recentId, name, lastOpened} views only, and a
+  // reopen re-validates + mints a FRESH workspaceId (a renewed user grant).
+  closeWorkspace: (workspaceId: string) =>
+    ipcRenderer.invoke('aiadra:closeWorkspace', { workspaceId }),
+  recentsList: () => ipcRenderer.invoke('aiadra:recentsList'),
+  recentsRemove: (recentId: string) => ipcRenderer.invoke('aiadra:recentsRemove', { recentId }),
+  recentsClear: () => ipcRenderer.invoke('aiadra:recentsClear'),
+  reopenWorkspace: (recentId: string) =>
+    ipcRenderer.invoke('aiadra:reopenWorkspace', { recentId }),
   // App settings (arc 20260619-1 / 6a) — local userData JSON, main-owned path.
   loadSettings: () => ipcRenderer.invoke('aiadra:loadSettings'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('aiadra:saveSettings', { settings }),

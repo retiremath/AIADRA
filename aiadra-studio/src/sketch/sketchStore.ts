@@ -13,6 +13,16 @@ import type { Pt } from './contour'
 
 export type SketchPhase = 'drawing' | 'closed' | 'busy' | 'committed' | 'error'
 
+/** New-dialog metadata scoped to ONE sketch session (Codex2 B1) — installed at
+ *  `start`, gone when the session resets. Never ambient Workbench state. */
+export interface SketchMeta {
+  /** The user-chosen Part name; null → an auto label. */
+  partName?: string | null
+  /** The PROVISIONAL Part number (validated/reserved by core at commit —
+   *  Codex2 B2); null → suggest one at extrude time. */
+  partNumber?: string | null
+}
+
 export interface SketchState {
   active: boolean
   points: Pt[]
@@ -22,12 +32,14 @@ export interface SketchState {
   phase: SketchPhase
   message: string | null
   objectRef: string | null
+  partName: string | null
+  partNumber: string | null
 }
 
 export interface SketchStore {
   getSnapshot(): SketchState
   subscribe(fn: () => void): () => void
-  start(): void
+  start(meta?: SketchMeta): void
   addPoint(p: Pt): void
   setCursor(p: Pt | null): void
   undoPoint(): void
@@ -46,6 +58,8 @@ const IDLE: SketchState = {
   phase: 'drawing',
   message: null,
   objectRef: null,
+  partName: null,
+  partNumber: null,
 }
 
 export function createSketchStore(): SketchStore {
@@ -62,7 +76,13 @@ export function createSketchStore(): SketchStore {
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    start: () => emit({ ...IDLE, active: true }),
+    start: (meta) =>
+      emit({
+        ...IDLE,
+        active: true,
+        partName: meta?.partName?.trim() || null,
+        partNumber: meta?.partNumber?.trim() || null,
+      }),
     addPoint: (p) => {
       if (!state.active || state.closed || busy()) return
       emit({ ...state, points: [...state.points, p], message: null })

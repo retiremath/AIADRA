@@ -6,9 +6,9 @@
  * feature session (source of truth) and OWNS the async side effects (the
  * AuthoringBackend begin→simulate→commit + the viewport setDisplaySource).
  */
-import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
+import { useEffect, useMemo, type MutableRefObject } from 'react'
 import type { ViewportApi } from '../Viewport'
-import { buildExtrudeOps, type AuthoringBackend } from './backend'
+import { buildExtrudeOps, suggestPartNumber, type AuthoringBackend } from './backend'
 import { createSessionLifecycle } from './sessionLifecycle'
 import { useFeatureSession, type FeatureSessionStore } from './featureSession'
 
@@ -51,7 +51,6 @@ export function FeatureDashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active])
 
-  const seq = useRef(0)
   // Codex3 B1 → Codex6 B1: the begin→simulate→commit orchestration (retained
   // session id, retry cleanup, uninterruptible terminal commit, stale-async
   // token) lives in ONE shared module used by every authoring surface.
@@ -68,7 +67,8 @@ export function FeatureDashboard({
 
   const commit = async () => {
     if (busy) return
-    const num = `P-${String((seq.current++ + Math.floor(performance.now())) % 1000000).padStart(6, '0')}`
+    // PROVISIONAL number (Codex2 B2) — core validates + reserves at commit.
+    const num = suggestPartNumber()
     const ops = buildExtrudeOps(num, `Extrude ${num}`, s.params.width_mm, s.params.height_mm, s.params.depth_mm)
     await lifecycle.run(ops, num, {
       onBusy: () => store.setPhase('busy', 'committing…'),

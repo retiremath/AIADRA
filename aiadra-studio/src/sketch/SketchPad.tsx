@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import type { ViewportApi } from '../Viewport'
-import { buildContourOps, type AuthoringBackend } from '../authoring/backend'
+import { buildContourOps, suggestPartNumber, type AuthoringBackend } from '../authoring/backend'
 import { createSessionLifecycle } from '../authoring/sessionLifecycle'
 import { contourProblem, dist, type Pt } from './contour'
 import { useSketch, type SketchStore } from './sketchStore'
@@ -47,7 +47,6 @@ export function SketchPad({
 }) {
   const s = useSketch(store)
   const svgRef = useRef<SVGSVGElement>(null)
-  const seq = useRef(0)
   const [depthMm, setDepthMm] = useState(10)
 
   // Codex6 B1: the SAME shared begin→simulate→commit lifecycle as the
@@ -104,8 +103,11 @@ export function SketchPad({
 
   const extrude = async () => {
     if (busy || problem) return
-    const num = `P-${String((seq.current++ + Math.floor(performance.now())) % 1000000).padStart(6, '0')}`
-    const ops = buildContourOps(num, `Sketch ${num}`, s.points, depthMm)
+    // The session's meta (Codex2 B1 — scoped, never ambient). The number is
+    // PROVISIONAL either way: core validates + reserves it at commit (ADR/0004)
+    // and a collision fails loudly through the lifecycle's error path (B2).
+    const num = s.partNumber ?? suggestPartNumber()
+    const ops = buildContourOps(num, s.partName ?? `Sketch ${num}`, s.points, depthMm)
     await lifecycle.run(ops, num, {
       onBusy: () => store.setPhase('busy', 'extruding…'),
       onError: (m) => store.setPhase('error', m),

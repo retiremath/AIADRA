@@ -9,13 +9,14 @@
  * status-strip pill — ADR/0040 D5 B1). The Design tab is the elicit → propose →
  * refine loop over the scripted bracket configurator.
  */
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import {
   BRACKET_ELICITATION,
   BRACKET_PARAMS,
   createBracketConfigurator,
   type ParamDescriptor,
 } from '../authoring/brackets'
+import { CatalogsStub } from '../home/HomeShared'
 import { selectedCandidate, useOperation, type Candidate, type OperationStore } from '../operation/store'
 
 const DOCK_MIN = 260
@@ -25,6 +26,35 @@ const DOCK_MAX = 640
  *  `operations` command both call, so both create the same operation session. */
 export function startBracketSession(store: OperationStore): void {
   store.start(createBracketConfigurator())
+}
+
+/**
+ * The AI design entry — "What do you want to design?" (ADR/0039 elicitation;
+ * ADR/0040 D5). ONE component rendered in BOTH places (Codex6 guardrail): the
+ * dock's idle Design tab AND the Home state's center surface — never a second
+ * disconnected AI mode.
+ */
+export function DesignHero({ onStart, gate = null }: { onStart: () => void; gate?: string | null }) {
+  return (
+    <div className="dock-hero">
+      <div className="dock-eyebrow">AI-native design</div>
+      <h2>What do you want to design?</h2>
+      <p className="muted small">
+        Describe a part and AIADRA proposes real, buildable candidates — every option is a
+        validated recipe, never a mockup.
+      </p>
+      <button
+        className="btn primary"
+        type="button"
+        disabled={!!gate}
+        title={gate ?? undefined}
+        onClick={() => !gate && onStart()}
+      >
+        New flat bracket…
+      </button>
+      <div className="muted small pad">More configurators arrive as the vocabulary grows.</div>
+    </div>
+  )
 }
 
 function HolePattern({ id }: { id: string }) {
@@ -87,25 +117,14 @@ function ParamSlider({
   )
 }
 
-function DesignTab({ store }: { store: OperationStore }) {
+function DesignTab({ store, startGate = null }: { store: OperationStore; startGate?: string | null }) {
   const op = useOperation(store)
   const sel = selectedCandidate(op)
 
   if (op.phase === 'idle') {
-    return (
-      <div className="dock-hero">
-        <div className="dock-eyebrow">AI-native design</div>
-        <h2>What do you want to design?</h2>
-        <p className="muted small">
-          Describe a part and AIADRA proposes real, buildable candidates — every option is a
-          validated recipe, never a mockup.
-        </p>
-        <button className="btn primary" type="button" onClick={() => startBracketSession(store)}>
-          New flat bracket…
-        </button>
-        <div className="muted small pad">More configurators arrive as the vocabulary grows.</div>
-      </div>
-    )
+    // The AI-session start is an operation start — gated during a workspace
+    // transition (Codex3 B1).
+    return <DesignHero onStart={() => startBracketSession(store)} gate={startGate} />
   }
 
   return (
@@ -202,11 +221,18 @@ export function Dock({
   width,
   onWidthChange,
   onDismiss,
+  homeTab,
+  startGate = null,
 }: {
   store: OperationStore
   width: number
   onWidthChange: (w: number) => void
   onDismiss: () => void
+  /** The SAME WorkspaceStart surface the Home state renders (Codex6 guardrail
+   *  — one component family, dock-hosted here). */
+  homeTab?: ReactNode
+  /** Operation-start gate (active work / workspace transition — Codex3 B1). */
+  startGate?: string | null
 }) {
   const [tab, setTab] = useState<Tab>('design')
   const dragging = useRef(false)
@@ -250,11 +276,10 @@ export function Dock({
         </button>
       </div>
       <div className="dock-body">
-        {tab === 'design' && <DesignTab store={store} />}
-        {tab === 'home' && <div className="muted small pad">Home — recent workspaces &amp; start (soon).</div>}
-        {tab === 'catalogs' && (
-          <div className="muted small pad">Catalogs &amp; KB — local configurator library (soon).</div>
-        )}
+        {tab === 'design' && <DesignTab store={store} startGate={startGate} />}
+        {tab === 'home' &&
+          (homeTab ?? <div className="muted small pad">Home — recent workspaces &amp; start.</div>)}
+        {tab === 'catalogs' && <CatalogsStub />}
       </div>
     </aside>
   )

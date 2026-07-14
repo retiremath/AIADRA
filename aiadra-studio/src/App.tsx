@@ -2,16 +2,22 @@ import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useStat
 import Viewport, { type ViewportApi } from './Viewport'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
-import { createOperationStore, type OperationStore } from './operation/store'
+import { createOperationStore, useOperation, type OperationStore } from './operation/store'
 import { useCandidatePreview } from './operation/previewController'
 import { SessionPill } from './operation/SessionPill'
-import { Dock } from './dock/Dock'
+import { Dock, startBracketSession } from './dock/Dock'
+import { HomeSurface } from './home/HomeSurface'
+import { HomeRibbon } from './home/HomeRibbon'
+import { FileMenu, type FileMenuItem } from './home/FileMenu'
+import { NewDialog, type NewObjectChoice } from './home/NewDialog'
+import { WorkspaceStart, type OpenedWorkspace } from './home/HomeShared'
 import { createFeatureSessionStore, useFeatureSession, type FeatureSessionStore } from './authoring/featureSession'
 import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard'
 import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
-import type { AuthoringBackend } from './authoring/backend'
+import { chooseBackendLane, createUnavailableBackend, type AuthoringBackend } from './authoring/backend'
+import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { createSketchStore, useSketch, type SketchStore } from './sketch/sketchStore'
 import { SketchPad } from './sketch/SketchPad'
 import { createImporter, type Importer } from './import/importController'
@@ -43,13 +49,21 @@ type PartRow = { object_number: string; name: string; object_uuid: string }
 
 function EnginePanel({
   api,
-  onWorkspaceOpen,
+  ws,
+  onOpen,
+  gate,
 }: {
   api: MutableRefObject<ViewportApi | null>
-  onWorkspaceOpen?: (workspaceId: string) => void
+  /** The ONE Workbench-owned current workspace (Codex1 B1) — this panel is a
+   *  projection of it, never a second owner. */
+  ws: OpenedWorkspace | null
+  /** Route an open through the central gated transition (Codex2 B3 — resolves
+   *  the refusal reason, or null when adopted). */
+  onOpen: (ws: OpenedWorkspace) => Promise<string | null>
+  /** Human-readable switch-gate reason while an operation is active, else null. */
+  gate: string | null
 }) {
   const [version, setVersion] = useState<string | null>(null)
-  const [ws, setWs] = useState<{ name: string; workspaceId: string } | null>(null)
   const [parts, setParts] = useState<PartRow[]>([])
   const [loadedPart, setLoadedPart] = useState<string | null>(null)
   const [note, setNote] = useState('')
@@ -75,6 +89,37 @@ function EnginePanel({
     }
   }
 
+  // Projection (Codex1 B1): adopt EVERY current-workspace change — including a
+  // mid-modeling A→B switch from any surface — never only the first. The old
+  // parts list is cleared before the new listing (the central transition
+  // already cleared the display before applying).
+  useEffect(() => {
+    setParts([])
+    setLoadedPart(null)
+    setNote('')
+    if (!ws || !window.aiadra) return
+    let cancelled = false
+    window.aiadra
+      .listParts(ws.workspaceId)
+      .then((list) => {
+        if (cancelled) return
+        if (!list.ok) {
+          setNote(list.error.message)
+          return
+        }
+        setParts(list.result.parts)
+        if (list.result.parts.length === 1) {
+          // Exactly one Part — load it without a pointless extra click.
+          void loadPart(ws.workspaceId, list.result.parts[0])
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws?.workspaceId])
+
   const open = async () => {
     if (!window.aiadra) return
     const r = await window.aiadra.chooseWorkspace()
@@ -82,21 +127,9 @@ function EnginePanel({
       if (r.error.message !== 'cancelled') setNote(r.error.message)
       return
     }
-    setWs({ name: r.result.name, workspaceId: r.result.workspaceId })
-    onWorkspaceOpen?.(r.result.workspaceId) // lift the id for the authoring bridge
-    setParts([])
-    setLoadedPart(null)
-    setNote('')
-    const list = await window.aiadra.listParts(r.result.workspaceId)
-    if (!list.ok) {
-      setNote(list.error.message)
-      return
-    }
-    setParts(list.result.parts)
-    if (list.result.parts.length === 1) {
-      // Exactly one Part — load it without a pointless extra click.
-      void loadPart(r.result.workspaceId, list.result.parts[0])
-    }
+    // ONE central gated transition (Codex1 B1 / Codex2 B3) — surface a refusal.
+    const reason = await onOpen(r.result)
+    if (reason !== null) setNote(reason)
   }
 
   return (
@@ -111,7 +144,13 @@ function EnginePanel({
       </div>
       {window.aiadra && (
         <>
-          <button className="btn" type="button" onClick={open}>
+          <button
+            className="btn"
+            type="button"
+            onClick={open}
+            disabled={!!gate}
+            title={gate ?? 'Open an AIADRA workspace folder'}
+          >
             Open Workspace…
           </button>
           {ws && <div className="small pad muted">workspace: {ws.name}</div>}
@@ -389,23 +428,135 @@ function Workbench({
   const featureActive = useFeatureSession(featureStore).active
   const sketchActive = useSketch(sketchStore).active
   const authoringBusy = featureActive || sketchActive
+
+  // ---- The two application states (arc 20260714-1; D-H1 — the Creo paradigm).
+  // `home` at boot: NO viewport, the Home surface (workspace browser + recents
+  // + the AI entry). `modeling` once a Part/workspace/sample is opened; File →
+  // Close returns Home. One state at a time.
+  const [appSession, setAppSession] = useState<'home' | 'modeling'>('home')
+  const opActive = useOperation(operationStore).phase !== 'idle'
+  // The dev-lane sample part (D-H5): loaded only on the explicit Home entry —
+  // never an ambush at boot. `sampleRef` remembers it for restoreBase.
+  const sampleRef = useRef(false)
+  const [sampleWanted, setSampleWanted] = useState(false)
+  const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
+  const [fixtureError, setFixtureError] = useState<string | null>(null)
+
+  // ---- ONE current-workspace owner + ONE gated atomic transition (Codex1 B1).
+  // Every surface (Home browser, recents, File, dock Home tab, EnginePanel
+  // Open) routes through `switchWorkspace`; the gate refuses while an authoring
+  // op or operation session is active; the old context clears BEFORE the new
+  // backend is exposed; the previous main-side capability is retired.
+  const [currentWs, setCurrentWs] = useState<OpenedWorkspace | null>(null)
+  // Transient shell-level transition feedback (Codex2 B3 — refused adoptions
+  // from surfaces without their own note UI surface here, in the statusbar).
+  const [shellNote, setShellNote] = useState<string | null>(null)
+  // Codex3 B1: the transition state is PUBLISHED and joins every operation-
+  // start gate — an op must not start against A while A→B awaits retirement.
+  const [wsTransition, setWsTransition] = useState(false)
+  const switchGate =
+    authoringBusy || opActive ? 'Finish or cancel the active operation first' : null
+  const gateRef = useRef<string | null>(null)
+  gateRef.current = switchGate
+  const switcher = useMemo(
+    () =>
+      createWorkspaceSwitcher({
+        // The OPERATION gate only — the switcher owns the transition state.
+        isBlocked: () => gateRef.current,
+        clearContext: () => {
+          void viewportApi.current?.setDisplaySource(null)
+          selectionStore.clearSelected()
+          setFixtureBadge(null)
+          sampleRef.current = false
+        },
+        // Codex2 B3 + Codex3 B1: retirement is AWAITED and only counts on the
+        // TYPED acknowledgement (ok && result.closed === true).
+        releaseWorkspace: async (id) => {
+          if (!window.aiadra) return true // no bridge — no main-side capability exists
+          if (!window.aiadra.closeWorkspace) return false
+          try {
+            return isCloseAcked(await window.aiadra.closeWorkspace(id))
+          } catch {
+            return false
+          }
+        },
+        apply: (ws) => setCurrentWs(ws),
+        onTransition: (active) => setWsTransition(active),
+      }),
+    [selectionStore, viewportApi],
+  )
+  // The COMBINED gate for every operation start + open/close control (Codex3
+  // B1): active work OR an in-flight workspace transition.
+  const uiGate = switchGate ?? (wsTransition ? 'A workspace transition is in flight' : null)
+  // Authoring dispatch — gated on the COMBINED gate (Codex3 B1): no op may
+  // start while a workspace transition owns the shell.
   const onStartFeature = (kind: string) => {
-    if (authoringBusy) return
+    if (uiGate) return
     if (kind === 'sketch') sketchStore.start()
     else if (kind === 'extrude') featureStore.start('extrude', EXTRUDE_DEFAULTS)
   }
-  // Manual authoring lane (arc 20260711-11 slice 1c): the write bridge in the
-  // Electron+workspace lane, the deterministic mock in dev:web (Codex B2).
-  const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null)
-  const featureBackend = useMemo<AuthoringBackend>(
-    () =>
-      window.aiadra && openWorkspaceId
-        ? createBridgeAuthoringBackend(openWorkspaceId)
-        : createMockAuthoringBackend(),
-    [openWorkspaceId],
-  )
-  const [fixtureBadge, setFixtureBadge] = useState<string | null>(null)
-  const [fixtureError, setFixtureError] = useState<string | null>(null)
+  /** The ONE adoption path — returns the refusal reason (null = adopted). */
+  const switchWorkspace = async (ws: OpenedWorkspace): Promise<string | null> => {
+    setShellNote(null)
+    const reason = await switcher.adopt(ws)
+    if (reason === null) setAppSession('modeling')
+    return reason
+  }
+  const closeToHome = async () => {
+    setShellNote(null)
+    const reason = await switcher.close()
+    if (reason !== null) {
+      setShellNote(reason)
+      return
+    }
+    setAppSession('home')
+  }
+
+  // ONE generic "New" (Petre's steer — Creo's New pattern): a dialog picks the
+  // Type/Sub-type/Number/Name; OK runs the REAL Part path (Codex1 B2): the
+  // desktop obtains a live workspace capability first (the native-dialog
+  // grant), then enters modeling and starts the promised sketch. The metadata
+  // is installed on the SKETCH SESSION only after the grant + transition
+  // succeed, and dies with that session (Codex2 B1 — never ambient state).
+  const [newDialogOpen, setNewDialogOpen] = useState(false)
+  const requestNew = () => {
+    if (!uiGate) setNewDialogOpen(true)
+  }
+  const createNew = async (choice: NewObjectChoice) => {
+    setNewDialogOpen(false)
+    setShellNote(null)
+    if (uiGate) return // Codex3 B1: incl. an in-flight workspace transition
+    if (window.aiadra && !switcher.current()) {
+      const r = await window.aiadra.chooseWorkspace()
+      if (!r.ok) return // chooser cancelled/failed — nothing installed anywhere
+      const reason = await switcher.adopt(r.result)
+      if (reason !== null) {
+        setShellNote(reason) // the fresh capability was retired by the switcher
+        return
+      }
+    }
+    setAppSession('modeling')
+    sketchStore.start({ partName: choice.name, partNumber: choice.number })
+  }
+  const openSample = () => {
+    setSampleWanted(true)
+    setAppSession('modeling')
+  }
+  const startDesign = () => {
+    if (uiGate) return // Codex3 B1: the AI-session start is an operation start
+    setAppSession('modeling')
+    setDockOpen(true)
+    startBracketSession(operationStore)
+  }
+  // Manual authoring lane — the truth-lane rule (Codex1 B2): the bridge with a
+  // live workspace; UNAVAILABLE (fails loud) in the desktop without one; the
+  // badged mock ONLY in browser dev. The desktop never mocks.
+  const featureBackend = useMemo<AuthoringBackend>(() => {
+    const lane = chooseBackendLane(!!window.aiadra, currentWs?.workspaceId ?? null)
+    if (lane === 'bridge') return createBridgeAuthoringBackend(currentWs!.workspaceId)
+    if (lane === 'unavailable') return createUnavailableBackend()
+    return createMockAuthoringBackend()
+  }, [currentWs])
   // The CAD↔AI dock chrome (ADR/0040 D5). Live open/width are transient; their
   // startup defaults come from the settings registry (aiDockOpenDefault) and the
   // width is a persisted setting written on drag (aiDockWidth).
@@ -413,9 +564,15 @@ function Workbench({
   const [dockWidth, setDockWidth] = useSetting('aiDockWidth')
 
   // Restore the base display when a session ends (Codex B2 — intentional
-  // restore, not a stale candidate left on screen). Fast lane only.
+  // restore, not a stale candidate left on screen). Fast lane only. D-H5: the
+  // fixture is restored ONLY if the sample part was explicitly opened this
+  // modeling session; a New-Part session restores to an empty viewport.
   const restoreBase = useCallback(() => {
-    if (!import.meta.env.DEV || window.aiadra) return
+    if (window.aiadra) return
+    if (!import.meta.env.DEV || !sampleRef.current) {
+      void viewportApi.current?.setDisplaySource(null)
+      return
+    }
     import('./dev/fixtureSource')
       .then(({ loadFixtureSource }) => loadFixtureSource())
       .then((src) => {
@@ -479,19 +636,24 @@ function Workbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, viewStore, selectionStore, actions])
 
-  // Browser-dev fixture lane (arc 20260610-1 P7): loaded ONLY when there is no
-  // bridge AND this is a dev build, after settings are ready (so the Viewport
-  // is mounted). The dynamic import keeps fixtures out of production bundles
-  // (scripts/assert-no-fixtures.mjs — Codex1 N2).
+  // The dev-lane SAMPLE part (arc 20260714-1; D-H5): loaded only after the
+  // explicit "Open sample part" Home entry — the app never boots into a fixture
+  // ambush. Runs once the viewport is mounted (`modeling` + ready). The dynamic
+  // import keeps fixtures out of production bundles (assert-no-fixtures).
   useEffect(() => {
-    if (!ready || !import.meta.env.DEV || window.aiadra) return
+    if (!sampleWanted || appSession !== 'modeling' || !ready) return
+    setSampleWanted(false)
+    if (!import.meta.env.DEV || window.aiadra) return
     let cancelled = false
     import('./dev/fixtureSource')
       .then(async ({ loadFixtureSource }) => {
         const src = await loadFixtureSource()
         if (!src || cancelled) return
         await viewportApi.current?.setDisplaySource(src)
-        if (!cancelled) setFixtureBadge(src.badge)
+        if (!cancelled) {
+          setFixtureBadge(src.badge)
+          sampleRef.current = true
+        }
       })
       .catch((e) => {
         if (!cancelled) setFixtureError(e instanceof Error ? e.message : String(e))
@@ -499,19 +661,87 @@ function Workbench({
     return () => {
       cancelled = true
     }
-  }, [ready, viewportApi])
+  }, [sampleWanted, appSession, ready, viewportApi])
+
+  // The File menu (D-H3) — present in both states; unbuilt entries are visibly
+  // disabled with a tooltip (Codex6: Check-In stays disabled until it performs
+  // the real git-backed transition).
+  const bridged = !!window.aiadra
+  const fileItems: FileMenuItem[] = [
+    {
+      label: 'New…',
+      enabled: !uiGate,
+      title: uiGate ?? 'Create a new object (Part, …)',
+      onClick: requestNew,
+    },
+    {
+      label: 'Open Workspace…',
+      enabled: bridged && !uiGate,
+      title: !bridged
+        ? 'Available in the desktop app'
+        : (uiGate ?? 'Open an AIADRA workspace folder'),
+      onClick: async () => {
+        const r = await window.aiadra!.chooseWorkspace()
+        if (!r.ok) return
+        const reason = await switchWorkspace(r.result)
+        if (reason !== null) setShellNote(reason)
+      },
+    },
+    {
+      label: 'Close',
+      enabled: appSession === 'modeling' && !uiGate,
+      title:
+        appSession !== 'modeling'
+          ? 'No model is open'
+          : (uiGate ?? 'Close the model and return Home'),
+      onClick: () => void closeToHome(),
+      sep: true,
+    },
+    {
+      label: 'Check In',
+      enabled: false,
+      title: 'Performs the git-backed check-in — arrives with the PDM slice (ADR/0040 D7)',
+      sep: true,
+    },
+  ]
 
   return (
     <div className="studio">
       <header className="topbar">
         <span className="brand">AIADRA&nbsp;Studio</span>
-        <span className="muted small">Modeling workspace</span>
-        {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
+        <FileMenu items={fileItems} />
+        <span className="muted small">{appSession === 'home' ? 'Home' : 'Modeling workspace'}</span>
+        {appSession === 'modeling' && fixtureBadge && (
+          <span className="ref-badge small">{fixtureBadge}</span>
+        )}
       </header>
-      <ModelRibbon onStart={onStartFeature} busy={authoringBusy} />
+      {appSession === 'home' && (
+        <>
+          <HomeRibbon
+            onNewPart={requestNew}
+            onOpenWorkspace={async () => {
+              const r = await window.aiadra!.chooseWorkspace()
+              if (!r.ok) return
+              const reason = await switchWorkspace(r.result)
+              if (reason !== null) setShellNote(reason)
+            }}
+            canOpenWorkspace={bridged && !uiGate}
+          />
+          <HomeSurface
+            onOpened={switchWorkspace}
+            onOpenSample={import.meta.env.DEV && !window.aiadra ? openSample : undefined}
+            onDesignStart={startDesign}
+            startGate={uiGate}
+            onNewPart={requestNew}
+          />
+        </>
+      )}
+      {appSession === 'modeling' && (
+        <>
+      <ModelRibbon onStart={onStartFeature} busy={!!uiGate} />
       <div className="workbench">
         <aside className="sidebar">
-          <EnginePanel api={viewportApi} onWorkspaceOpen={setOpenWorkspaceId} />
+          <EnginePanel api={viewportApi} ws={currentWs} onOpen={switchWorkspace} gate={uiGate} />
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
@@ -562,16 +792,28 @@ function Workbench({
             width={dockWidth as number}
             onWidthChange={(w) => setDockWidth(w)}
             onDismiss={() => setDockOpen(false)}
+            startGate={uiGate}
+            homeTab={
+              <WorkspaceStart
+                onOpened={switchWorkspace}
+                gate={uiGate}
+                refreshKey={currentWs?.workspaceId ?? ''}
+              />
+            }
           />
         )}
       </div>
+        </>
+      )}
       <div className="statusbar">
         <SessionPill store={operationStore} dockOpen={dockOpen} onShowDock={() => setDockOpen(true)} />
+        {shellNote && <span className="small err">{shellNote}</span>}
         <span className="grow" />
         <span className="chipbar byo" title="AIADRA Core ships no AI — MVP-1 uses a scripted configurator">
           ● BYO-AI: scripted (MVP-1)
         </span>
       </div>
+      <NewDialog open={newDialogOpen} onCancel={() => setNewDialogOpen(false)} onCreate={(c) => void createNew(c)} />
     </div>
   )
 }
