@@ -29,6 +29,13 @@ from typing import Any
 from aiadra_core.transaction.boundary import TransactionError
 
 from .adapter_payload import require_valid_contour
+from .recipe import (
+    PlaneFrame,
+    effective_plane_frame,
+    extrude_sign,
+    principal_frame,
+    resolve_consumed_sketch,
+)
 
 from OCP.Bnd import Bnd_Box
 from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -105,12 +112,6 @@ def evaluate_part_with_provenance(features: list[dict[str, Any]]) -> EvalResult:
 
 
 def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
-    sketch = _last_feature_of_type(features, "sketch")
-    if sketch is None:
-        # Nothing geometric to evaluate yet (e.g. an empty Part). No-op gate.
-        return EvalResult(shape=TopoDS_Shape())
-    primitives = sketch.get("adapter_payload", {}).get("primitives", [])
-
     extrude = _last_feature_of_type(features, "extrude")
     revolve = _last_feature_of_type(features, "revolve")
     # Codex1 B3 (evaluator side): extrude XOR revolve — a single base-creation
@@ -121,8 +122,31 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
             f"{ENGINE_OP_PREFIX}: a Part has BOTH an extrude and a revolve base feature; "
             f"v1 supports exactly one base creation per Part"
         )
+    base = extrude if extrude is not None else revolve
+    if base is not None:
+        # EP2 (arc 20260714-2, Codex1 B2): the base feature consumes EXACTLY the
+        # sketch it names — never "the last sketch".
+        sketch = resolve_consumed_sketch(features, base)
+    else:
+        # No base feature: preview the (last) unconsumed sketch, if any.
+        sketch = _last_feature_of_type(features, "sketch")
+        if sketch is None:
+            # Nothing geometric to evaluate yet (e.g. an empty Part). No-op gate.
+            return EvalResult(shape=TopoDS_Shape())
+    # The effective plane frame (EP2) — validated on EVERY evaluation, so a
+    # corrupt stored plane record fails loud at regeneration too.
+    frame = effective_plane_frame(sketch)
+    primitives = sketch.get("adapter_payload", {}).get("primitives", [])
+
     try:
         if revolve is not None:
+            # D-P4: v1 revolve is principal-xy-only (its axis vocabulary is the
+            # global x/y in the sketch plane). Checked on the EXACT sketch.
+            if frame.orientation != "xy":
+                raise TransactionError(
+                    f"{ENGINE_OP_PREFIX}: v1 revolve requires the sketch on the "
+                    f"principal xy plane; the consumed sketch is on {frame.orientation!r}"
+                )
             rectangle = require_simple_revolve_profile(primitives)  # Codex1 B2
             shape: TopoDS_Shape = _build_revolved_solid(rectangle, _revolve_axis(revolve))
         else:
@@ -133,15 +157,15 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
                 # corrupt recipe fails loud before OCCT, on every regeneration.
                 require_valid_contour(outer)
                 if extrude is None:
-                    shape = _contour_face(outer)
+                    shape = _contour_face(outer, frame)
                 else:
-                    depth_mm, direction = _extract_extrude(extrude)
-                    shape = _build_contour_solid(outer, depth_mm, direction)
+                    depth_mm, sign = _extract_extrude(extrude, frame)
+                    shape = _build_contour_solid(outer, depth_mm, sign, frame)
             elif extrude is None:
-                shape = _build_sketch_face(outer, circle)
+                shape = _build_sketch_face(outer, circle, frame)
             else:
-                depth_mm, direction = _extract_extrude(extrude)
-                shape = _build_extruded_solid(outer, circle, depth_mm, direction)
+                depth_mm, sign = _extract_extrude(extrude, frame)
+                shape = _build_extruded_solid(outer, circle, depth_mm, sign, frame)
     except (TransactionError, MechanicalKernelEvaluationError):
         raise
     except Exception as exc:  # raw OCP / OCCT failure on a plausible recipe
@@ -176,7 +200,7 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
         elif ftype == "chamfer":
             running, hint = _apply_one_chamfer(running, prefix, feat)
         else:
-            running, hint = _apply_one_hole(running, prefix, feat)
+            running, hint = _apply_one_hole(running, prefix, feat, frame)
         produced.append(hint)
 
     return EvalResult(shape=running, produced_hints=tuple(produced))
@@ -287,10 +311,11 @@ def _chamfer_distance(chamfer: dict[str, Any]) -> float:
     )
 
 
-def _apply_one_hole(running, prefix, hole):
+def _apply_one_hole(running, prefix, hole, frame: PlaneFrame):
     """Cut one circular through-hole on a cap face (ADR/0038 D2/D3 + A1). The
     face is resolved on the running instance; the wall is captured BY
-    CONSTRUCTION from the boolean cut (A3)."""
+    CONSTRUCTION from the boolean cut (A3). Hole centres are sketch-local
+    (u, v); the cut runs along the sketch plane's normal (EP2)."""
     from . import topology
 
     tgt = (hole.get("adapter_payload") or {}).get("target_face")
@@ -311,33 +336,43 @@ def _apply_one_hole(running, prefix, hole):
     from .adapter_payload import require_simple_cap_fit
 
     require_simple_cap_fit(prefix, cx, cy, diameter / 2.0)
-    holed, wall = _cut_through_hole(running, cx, cy, face, diameter, hole.get("id"))
+    holed, wall = _cut_through_hole(running, cx, cy, face, diameter, hole.get("id"), frame)
     return holed, ProducedFaceHint(feature_id=hole["id"], role_base="hole_wall", faces=wall)
 
 
-def _cut_through_hole(running, cx, cy, face, diameter, hole_id):
-    """Cut a Ø`diameter` through-hole at sketch-XY (`cx`,`cy`) through a cap face.
-    Cap = planar, normal ∥ the extrude axis (Z); the cylinder spans the solid's
-    full Z-extent so the cut is direction-agnostic for cap_top and cap_base. The
-    wall is captured by construction via `Cut.Modified(cylinder_lateral)`."""
+def _cut_through_hole(running, cx, cy, face, diameter, hole_id, frame: PlaneFrame):
+    """Cut a Ø`diameter` through-hole at sketch-local (`cx`,`cy`) through a cap
+    face. Cap = planar, normal ∥ the sketch plane's normal (EP2); the cylinder
+    spans the solid's full extent along that normal so the cut is direction-
+    agnostic for cap_top and cap_base. The wall is captured by construction via
+    `Cut.Modified(cylinder_lateral)`."""
     surf = BRepAdaptor_Surface(face)
     if surf.GetType() != GeomAbs_Plane:
         raise MechanicalKernelEvaluationError(
             f"{ENGINE_OP_PREFIX}: hole {hole_id!r} target face is not planar"
         )
     n = surf.Plane().Position().Direction()
-    if abs(n.Z()) < 0.999:
+    fn = frame.normal
+    if abs(n.X() * fn[0] + n.Y() * fn[1] + n.Z() * fn[2]) < 0.999:
         raise MechanicalKernelEvaluationError(
             f"{ENGINE_OP_PREFIX}: hole {hole_id!r} target face is not a cap "
             f"(normal not parallel to the extrude axis)"
         )
     bbox = Bnd_Box()
     BRepBndLib.Add_s(running, bbox)
-    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+    corner_min, corner_max = bbox.Get()[:3], bbox.Get()[3:]
+    wmin = min(
+        corner_min[0] * fn[0] + corner_min[1] * fn[1] + corner_min[2] * fn[2],
+        corner_max[0] * fn[0] + corner_max[1] * fn[1] + corner_max[2] * fn[2],
+    )
+    wmax = max(
+        corner_min[0] * fn[0] + corner_min[1] * fn[1] + corner_min[2] * fn[2],
+        corner_max[0] * fn[0] + corner_max[1] * fn[1] + corner_max[2] * fn[2],
+    )
     margin = 1.0
     try:
-        axis = gp_Ax2(gp_Pnt(cx, cy, zmin - margin), gp_Dir(0.0, 0.0, 1.0))
-        cyl = BRepPrimAPI_MakeCylinder(axis, diameter / 2.0, (zmax - zmin) + 2 * margin).Shape()
+        axis = gp_Ax2(gp_Pnt(*frame.to_3d(cx, cy, wmin - margin)), gp_Dir(*fn))
+        cyl = BRepPrimAPI_MakeCylinder(axis, diameter / 2.0, (wmax - wmin) + 2 * margin).Shape()
         cut = BRepAlgoAPI_Cut(running, cyl)
         holed = cut.Shape()
         wall = tuple(TopoDS.Face_s(s) for s in cut.Modified(_cylinder_lateral_face(cyl)))
@@ -473,7 +508,9 @@ def _build_revolved_solid(rectangle: dict[str, Any], axis: str) -> TopoDS_Shape:
     crossing-axis guard runs here too (the direct/evaluator path), not only the
     handler."""
     revolve_radial_mode(rectangle, axis)  # crossing-axis guard (Class-1)
-    face = _rectangle_face(rectangle)
+    # v1 revolve is principal-xy-only (guarded upstream at the handler AND the
+    # evaluator), so the profile builds on the xy frame explicitly.
+    face = _rectangle_face(rectangle, principal_frame("xy"))
     direction = gp_Dir(1.0, 0.0, 0.0) if axis == "x" else gp_Dir(0.0, 1.0, 0.0)
     gp_axis = gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), direction)
     return BRepPrimAPI_MakeRevol(face, gp_axis, 2.0 * math.pi).Shape()
@@ -484,15 +521,18 @@ def _build_revolved_solid(rectangle: dict[str, Any], axis: str) -> TopoDS_Shape:
 # ---------------------------------------------------------------------------
 
 
-def _build_sketch_face(rectangle: dict[str, Any], circle: dict[str, Any] | None) -> TopoDS_Shape:
-    """Planar rectangle face (z=0). The circle, if present, is validated as a
-    constructible hole-profile (Class-1 domain check) but the 2D face is the
-    rectangle outline — the hole is cut at extrude time as a real boolean."""
-    face = _rectangle_face(rectangle)
+def _build_sketch_face(
+    rectangle: dict[str, Any], circle: dict[str, Any] | None, frame: PlaneFrame
+) -> TopoDS_Shape:
+    """Planar rectangle face on the sketch plane (w=0 in the frame). The circle,
+    if present, is validated as a constructible hole-profile (Class-1 domain
+    check) but the 2D face is the rectangle outline — the hole is cut at extrude
+    time as a real boolean."""
+    face = _rectangle_face(rectangle, frame)
     if circle is not None:
         _require_circle_inside_rectangle(rectangle, circle)
         # Validate the circle is itself a constructible wire.
-        _circle_wire(circle)
+        _circle_wire(circle, frame)
     return face
 
 
@@ -500,24 +540,29 @@ def _build_extruded_solid(
     rectangle: dict[str, Any],
     circle: dict[str, Any] | None,
     depth_mm: float,
-    direction: str,
+    sign: float,
+    frame: PlaneFrame,
 ) -> TopoDS_Shape:
-    """Prism the rectangle face into a box; if a circle is present, cut a real
-    cylindrical through-hole (genuine OCCT boolean)."""
-    sign = 1.0 if direction == "z+" else -1.0
-    box = BRepPrimAPI_MakePrism(
-        _rectangle_face(rectangle), gp_Vec(0.0, 0.0, sign * depth_mm)
-    ).Shape()
+    """Prism the rectangle face into a box along the sketch plane's ±normal
+    (EP2); if a circle is present, cut a real cylindrical through-hole (genuine
+    OCCT boolean)."""
+    sweep = _normal_vec(frame, sign * depth_mm)
+    box = BRepPrimAPI_MakePrism(_rectangle_face(rectangle, frame), sweep).Shape()
     if circle is None:
         return box
     _require_circle_inside_rectangle(rectangle, circle)
     # Cylinder spans beyond both faces of the box for a clean through-cut.
     margin = max(1.0, depth_mm)
-    cyl_face = BRepBuilderAPI_MakeFace(_circle_wire(circle, z=-sign * margin)).Face()
+    cyl_face = BRepBuilderAPI_MakeFace(_circle_wire(circle, frame, w=-sign * margin)).Face()
     cylinder = BRepPrimAPI_MakePrism(
-        cyl_face, gp_Vec(0.0, 0.0, sign * (depth_mm + 2.0 * margin))
+        cyl_face, _normal_vec(frame, sign * (depth_mm + 2.0 * margin))
     ).Shape()
     return BRepAlgoAPI_Cut(box, cylinder).Shape()
+
+
+def _normal_vec(frame: PlaneFrame, length: float) -> gp_Vec:
+    n = frame.normal
+    return gp_Vec(n[0] * length, n[1] * length, n[2] * length)
 
 
 def _outer_profile(
@@ -538,37 +583,40 @@ def _outer_profile(
     return "rectangle", rectangle, circle
 
 
-def _contour_face(contour: dict[str, Any]) -> TopoDS_Shape:
+def _contour_face(contour: dict[str, Any], frame: PlaneFrame) -> TopoDS_Shape:
     """A planar face from an explicit CLOSED RING of line segments (arc
-    20260711-11 slice E). The segments already close the ring (Codex4 B1 — no
-    implicit closing edge); one OCCT edge per segment, in ring order."""
+    20260711-11 slice E), built on the sketch plane (EP2). The segments already
+    close the ring (Codex4 B1 — no implicit closing edge); one OCCT edge per
+    segment, in ring order. Segment coordinates are sketch-local (u, v)."""
     wire = BRepBuilderAPI_MakeWire()
     for seg in contour["segments"]:
-        p1 = gp_Pnt(float(seg["x1_mm"]), float(seg["y1_mm"]), 0.0)
-        p2 = gp_Pnt(float(seg["x2_mm"]), float(seg["y2_mm"]), 0.0)
+        p1 = gp_Pnt(*frame.to_3d(float(seg["x1_mm"]), float(seg["y1_mm"])))
+        p2 = gp_Pnt(*frame.to_3d(float(seg["x2_mm"]), float(seg["y2_mm"])))
         wire.Add(BRepBuilderAPI_MakeEdge(p1, p2).Edge())
     return BRepBuilderAPI_MakeFace(wire.Wire()).Face()
 
 
 def _build_contour_solid(
-    contour: dict[str, Any], depth_mm: float, direction: str
+    contour: dict[str, Any], depth_mm: float, sign: float, frame: PlaneFrame
 ) -> TopoDS_Shape:
-    """Prism a contour face into a solid (v1: outer boundary only, no hole)."""
-    sign = 1.0 if direction == "z+" else -1.0
+    """Prism a contour face into a solid along ±normal (v1: outer boundary
+    only, no hole)."""
     return BRepPrimAPI_MakePrism(
-        _contour_face(contour), gp_Vec(0.0, 0.0, sign * depth_mm)
+        _contour_face(contour, frame), _normal_vec(frame, sign * depth_mm)
     ).Shape()
 
 
-def _rectangle_face(rectangle: dict[str, Any]) -> TopoDS_Shape:
-    x = float(rectangle["x_mm"])
-    y = float(rectangle["y_mm"])
+def _rectangle_face(rectangle: dict[str, Any], frame: PlaneFrame) -> TopoDS_Shape:
+    """The rectangle profile on the sketch plane. `x_mm`/`y_mm` are the
+    sketch-LOCAL (u, v) — not global-axis claims (EP2)."""
+    u = float(rectangle["x_mm"])
+    v = float(rectangle["y_mm"])
     w = float(rectangle["width_mm"])
     h = float(rectangle["height_mm"])
-    p1 = gp_Pnt(x, y, 0.0)
-    p2 = gp_Pnt(x + w, y, 0.0)
-    p3 = gp_Pnt(x + w, y + h, 0.0)
-    p4 = gp_Pnt(x, y + h, 0.0)
+    p1 = gp_Pnt(*frame.to_3d(u, v))
+    p2 = gp_Pnt(*frame.to_3d(u + w, v))
+    p3 = gp_Pnt(*frame.to_3d(u + w, v + h))
+    p4 = gp_Pnt(*frame.to_3d(u, v + h))
     e1 = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
     e2 = BRepBuilderAPI_MakeEdge(p2, p3).Edge()
     e3 = BRepBuilderAPI_MakeEdge(p3, p4).Edge()
@@ -577,11 +625,13 @@ def _rectangle_face(rectangle: dict[str, Any]) -> TopoDS_Shape:
     return BRepBuilderAPI_MakeFace(wire).Face()
 
 
-def _circle_wire(circle: dict[str, Any], *, z: float = 0.0):
+def _circle_wire(circle: dict[str, Any], frame: PlaneFrame, *, w: float = 0.0):
     cx = float(circle["cx_mm"])
     cy = float(circle["cy_mm"])
     r = float(circle["radius_mm"])
-    circ = gp_Circ(gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0.0, 0.0, 1.0)), r)
+    circ = gp_Circ(
+        gp_Ax2(gp_Pnt(*frame.to_3d(cx, cy, w)), gp_Dir(*frame.normal)), r
+    )
     edge = BRepBuilderAPI_MakeEdge(circ).Edge()
     return BRepBuilderAPI_MakeWire(edge).Wire()
 
@@ -620,17 +670,14 @@ def _split_primitives(
     return rectangle, circle
 
 
-def _extract_extrude(extrude: dict[str, Any]) -> tuple[float, str]:
+def _extract_extrude(extrude: dict[str, Any], frame: PlaneFrame) -> tuple[float, float]:
+    """The extrude's (depth, sweep-sign) against the consumed sketch's frame.
+    EP2 (Codex1 B3): `normal±` is canonical; legacy stored `z±` normalizes here
+    on EVERY regeneration and is accepted only on a principal-xy frame — never
+    rewritten on disk. A corrupt direction fails loud (arc 20260602-1 Codex2 N1;
+    Manifesto P5)."""
     direction = extrude.get("adapter_payload", {}).get("direction", "z+")
-    # Defensive (arc 20260602-1 Codex2 N1): reject a corrupt stored direction
-    # rather than silently treating an unexpected value as 'z-'. Write-time
-    # validation lives in adapter_payload.build_extrude_payload; a bad value
-    # here means a corrupt adapter_payload — fail loud per Manifesto P5.
-    if direction not in ("z+", "z-"):
-        raise TransactionError(
-            f"mechanical: extrude feature has invalid stored direction {direction!r} "
-            f"(expected 'z+' or 'z-') — corrupt adapter_payload"
-        )
+    sign = extrude_sign(direction, frame, op_kind="mechanical.extrude")
     depth_mm: float | None = None
     for param in extrude.get("parameters", []):
         if param.get("name") == "depth_mm":
@@ -644,7 +691,7 @@ def _extract_extrude(extrude: dict[str, Any]) -> tuple[float, str]:
         raise TransactionError(
             f"mechanical: extrude depth_mm must be positive, got {depth_mm!r}"
         )
-    return depth_mm, direction
+    return depth_mm, sign
 
 
 def _last_feature_of_type(features: list[dict[str, Any]], feature_type: str) -> dict[str, Any] | None:

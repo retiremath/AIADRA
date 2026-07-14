@@ -39,6 +39,12 @@ from OCP.GeomLProp import GeomLProp_SLProps
 from OCP.GCPnts import GCPnts_TangentialDeflection
 
 from . import cache, geometry
+from .recipe import (
+    PlaneFrame,
+    effective_plane_frame,
+    extrude_sign,
+    resolve_consumed_sketch,
+)
 
 DEFAULT_LINEAR_DEFLECTION_MM = 0.1
 DEFAULT_ANGULAR_DEFLECTION_RAD = 0.5
@@ -344,6 +350,24 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
                 entry["contour_segments"] = {
                     k: contour_segments[k] for k in sorted(contour_segments)
                 }
+            # EP2 (Codex1 B3 → Codex3 B2): the plane ORIENTATION is skeleton —
+            # derived through the SAME exact validator every consumer uses
+            # (`effective_plane_frame`), so a malformed/reserved/extra-key
+            # record fails Class-1 HERE too and can never mint an authoritative
+            # signature that evaluation would reject. Included ONLY when
+            # non-default, so absent-plane and explicit principal-xy recipes
+            # keep byte-identical signatures. The direction SIGN stays out (an
+            # orientation value, not a role-set change).
+            ori = effective_plane_frame(f).orientation
+            if ori != "xy":
+                entry["plane"] = ori
+        elif ftype == "extrude":
+            # Codex3 B2: the signature consumer enforces the exact-sketch
+            # discipline too — a missing/mismatched/duplicate consumed sketch
+            # fails Class-1 here, never minting a signature evaluation would
+            # reject. Adds NOTHING to the skeleton bytes (the dependency is
+            # validated, not encoded — valid-recipe signatures are unchanged).
+            resolve_consumed_sketch(features, f)
         elif ftype in ("fillet", "chamfer"):
             # An edge-referencing feature IS a topology change; retargeting it
             # changes topology too (ADR/0038 D4) — so the target ANCHOR is part of
@@ -367,13 +391,18 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             # (the profile dimensions, already excluded with every sketch dim)
             # stay out within a mode.
             axis = (f.get("adapter_payload") or {}).get("axis")
-            sk = _last(features, "sketch")
-            prims = (sk.get("adapter_payload", {}) if sk else {}).get("primitives", [])
+            # EP2 (Codex1 B2 → Codex3 B2): resolver violations PROPAGATE — the
+            # signature consumer provides the same Class-1 exact-sketch
+            # discipline as every other consumer. Only the radial-mode
+            # computation keeps the legacy `mode="invalid"` (a crossing-axis
+            # PROFILE is a value-domain rejection, not a resolution failure).
+            sk = resolve_consumed_sketch(features, f)
+            prims = sk.get("adapter_payload", {}).get("primitives", [])
             rect = next((p for p in prims if p.get("type") == "rectangle"), None)
             try:
                 mode = geometry.revolve_radial_mode(rect, axis) if rect is not None else None
             except TransactionError:
-                mode = "invalid"  # a crossing recipe; the evaluator rejects it separately
+                mode = "invalid"  # a crossing-axis profile; the evaluator rejects it separately
             entry["axis"] = axis
             entry["mode"] = mode
         skeleton.append(entry)
@@ -388,13 +417,21 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
 
 def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
     """Pull the stable, recipe-derived anchors used for role correlation:
-    the sketch feature id + rectangle/circle primitive ids & geometry, and the
-    extrude feature id + direction (+ resolved depth)."""
-    sketch = _last(features, "sketch")
-    if sketch is None:
-        raise TransactionError(
-            "mechanical.display: recipe has no sketch feature"
-        )
+    the CONSUMED sketch (EP2, Codex1 B2 — resolved by the base feature's
+    `sketch_feature_id`, never "the last sketch") + its plane frame, the
+    profile primitive ids & geometry, and the base feature id + direction."""
+    extrude = _last(features, "extrude")
+    revolve = _last(features, "revolve")
+    base = extrude if extrude is not None else revolve
+    if base is not None:
+        sketch = resolve_consumed_sketch(features, base)
+    else:
+        sketch = _last(features, "sketch")
+        if sketch is None:
+            raise TransactionError(
+                "mechanical.display: recipe has no sketch feature"
+            )
+    frame = effective_plane_frame(sketch)
     sketch_id = sketch["id"]
     prims = sketch.get("adapter_payload", {}).get("primitives", [])
     rectangle = next((p for p in prims if p.get("type") == "rectangle"), None)
@@ -407,8 +444,12 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
 
     # Revolve base (arc 20260622-4): a different topology family than the extrude
     # box, so the recipe carries its base kind and the correlation dispatches.
-    revolve = _last(features, "revolve")
     if revolve is not None:
+        if frame.orientation != "xy":
+            raise TransactionError(
+                "mechanical.display: v1 revolve requires the consumed sketch on "
+                f"the principal xy plane; it is on {frame.orientation!r}"
+            )
         if rectangle is None:
             raise TransactionError(
                 "mechanical.display: revolve v1 requires a rectangle profile "
@@ -422,9 +463,9 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
             "rectangle": rectangle,
             "axis": axis,
             "mode": geometry.revolve_radial_mode(rectangle, axis),
+            "frame": frame,
         }
 
-    extrude = _last(features, "extrude")
     direction = "z+"
     depth = None
     extrude_id = None
@@ -441,7 +482,12 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
         "extrude_id": extrude_id,
         "direction": direction,
         "depth": depth,
-        "sign": 1.0 if direction == "z+" else -1.0,
+        # EP2: the sign normalizes normal±/legacy-z± against THIS frame — the
+        # same rule the evaluator applies (one implementation, recipe.py).
+        "sign": extrude_sign(direction, frame, op_kind="mechanical.display")
+        if extrude is not None
+        else 1.0,
+        "frame": frame,
     }
     # arc 20260711-11 slice E: a contour outer profile is a different (N-side)
     # topology family; the recipe carries the kind so correlation dispatches.
@@ -486,6 +532,7 @@ def _correlate_faces(
     extrude_id = recipe["extrude_id"]
     rect = recipe["rectangle"]
     circle = recipe["circle"]
+    frame: PlaneFrame = recipe["frame"]  # EP2 — the consumed sketch's frame
     # Codex2 B1 (arc 20260609-1): the display id source MUST be a real
     # engine-minted anchor, never a placeholder — fail loud before any id mints.
     rect_skp = require_skp_id(rect, "rectangle")
@@ -521,9 +568,10 @@ def _correlate_faces(
             roles[i] = f"{feat_prefix}/{circle_skp}:face:hole_wall"
             continue
 
-        if stype == GeomAbs_Plane and abs(normal[2]) >= _AXIS_DOT:
-            # A cap: distinguish base (sketch plane, z≈0) vs top (swept end).
-            if abs(centroid[2]) <= 1e-6:
+        if stype == GeomAbs_Plane and abs(_dot3(normal, frame.normal)) >= _AXIS_DOT:
+            # A cap: base (the sketch plane, normal-coordinate ≈ 0) vs top (the
+            # swept end — either sign of the sweep).
+            if abs(frame.normal_coord(centroid)) <= 1e-6:
                 roles[i] = f"{feat_prefix}:face:cap_base"
             else:
                 roles[i] = f"{feat_prefix}:face:cap_top"
@@ -531,8 +579,8 @@ def _correlate_faces(
 
         if stype == GeomAbs_Plane:
             # A side wall — correlate to the originating sketch edge by the
-            # closest rectangle-edge midpoint (the sketch-edge anchor).
-            suffix = _nearest_wall(centroid, rect_edges)
+            # closest rectangle-edge midpoint IN THE SKETCH PLANE (u, v).
+            suffix = _nearest_wall(frame.project_uv(centroid), rect_edges)
             if suffix is None or suffix in used_wall_suffixes:
                 raise TransactionError(
                     f"mechanical.display: could not uniquely "
@@ -548,6 +596,10 @@ def _correlate_faces(
             f"{stype} on face {i}; v0.0.1 supports plane + cylinder only"
         )
     return roles
+
+
+def _dot3(a, b) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def _correlate_revolve_faces(
@@ -624,6 +676,7 @@ def _correlate_contour_faces(
     every wall role, while a segment insert/delete (a skeleton change) changes
     them. Fail-loud on an unmatched/duplicated wall (no positional fallback)."""
     contour = recipe["contour"]
+    frame: PlaneFrame = recipe["frame"]  # EP2 — the consumed sketch's frame
     feat_prefix = recipe["extrude_id"] if recipe.get("extrude_id") is not None else recipe["sketch_id"]
     seg_mids = _contour_segment_midpoints(contour)
     roles: dict[int, str] = {}
@@ -635,15 +688,15 @@ def _correlate_contour_faces(
         face = TopoDS.Face_s(face_map.FindKey(i))
         stype = BRepAdaptor_Surface(face).GetType()
         centroid, normal = _face_centroid_normal(face)
-        if stype == GeomAbs_Plane and abs(normal[2]) >= _AXIS_DOT:
+        if stype == GeomAbs_Plane and abs(_dot3(normal, frame.normal)) >= _AXIS_DOT:
             roles[i] = (
                 f"{feat_prefix}:face:cap_base"
-                if abs(centroid[2]) <= 1e-6
+                if abs(frame.normal_coord(centroid)) <= 1e-6
                 else f"{feat_prefix}:face:cap_top"
             )
             continue
         if stype == GeomAbs_Plane:
-            seg_id = _nearest_segment(centroid, seg_mids)
+            seg_id = _nearest_segment(frame.project_uv(centroid), seg_mids)
             if seg_id is None or seg_id in used_segments:
                 raise TransactionError(
                     f"mechanical.display: could not uniquely correlate side face {i} "
@@ -691,22 +744,26 @@ def _contour_segment_midpoints(contour: dict[str, Any]) -> list[tuple[str, float
     return out
 
 
-def _nearest_segment(centroid, seg_mids) -> str | None:
+def _nearest_segment(centroid_uv, seg_mids) -> str | None:
+    """Nearest contour-segment midpoint in the SKETCH PLANE (u, v)."""
     best = None
     best_d = None
     for sid, mx, my in seg_mids:
-        d = math.hypot(centroid[0] - mx, centroid[1] - my)
+        d = math.hypot(centroid_uv[0] - mx, centroid_uv[1] - my)
         if best_d is None or d < best_d:
             best_d = d
             best = sid
     return best
 
 
-def _nearest_wall(centroid, rect_edges) -> str | None:
+def _nearest_wall(centroid_uv, rect_edges) -> str | None:
+    """Nearest rectangle-edge midpoint in the SKETCH PLANE (u, v). The wall
+    suffixes (`x_min`… — historically named) are sketch-LOCAL edge anchors,
+    not global-axis claims (EP2)."""
     best = None
     best_d = None
     for suffix, mx, my in rect_edges:
-        d = math.hypot(centroid[0] - mx, centroid[1] - my)
+        d = math.hypot(centroid_uv[0] - mx, centroid_uv[1] - my)
         if best_d is None or d < best_d:
             best_d = d
             best = suffix

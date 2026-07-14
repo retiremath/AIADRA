@@ -12,13 +12,13 @@
 # engine feature semantics version with their engine (adapter schema), Ring 2
 # command semantics version with core.
 
-kb_version: "0.5.0"   # + the contour outer profile (arbitrary closed-ring extrude,
-                      #   arc 20260711-11 slice E); 0.4.0 = revolve; 0.3.0 = chamfer;
-                      #   0.2.0 = hole; 0.1.0 = fillet
+kb_version: "0.6.0"   # + the sketch-plane binding (principal planes + normal± directions,
+                      #   arc 20260714-2 EP2); 0.5.0 = contour; 0.4.0 = revolve;
+                      #   0.3.0 = chamfer; 0.2.0 = hole; 0.1.0 = fillet
 
 compatible:
-  aiadra_core: ">=0.13.0,<0.14.0"
-  aiadra_mechanical_adapter_schema_version: ">=0.1.6,<0.2.0"
+  aiadra_core: ">=0.14.0,<0.15.0"
+  aiadra_mechanical_adapter_schema_version: ">=0.1.7,<0.2.0"
 
 source_refs:
   adrs: ["ADR/0037", "ADR/0038", "ADR/0035", "ADR/0031", "ADR/0029"]
@@ -29,6 +29,7 @@ source_refs:
     - "aiadra-mechanical/tests/test_chamfer_feature.py"
     - "aiadra-mechanical/tests/test_revolve_feature.py"
     - "aiadra-mechanical/tests/test_contour_extrude.py"
+    - "aiadra-mechanical/tests/test_sketch_plane_matrix.py"
 
 contents:
   feature_semantics:
@@ -37,20 +38,23 @@ contents:
     - features/chamfer.md
     - features/revolve.md
     - features/contour.md
+    - features/sketch-plane.md
   golden_recipes:
     - golden-recipes/fillet-box.md
     - golden-recipes/hole-box.md
     - golden-recipes/chamfer-box.md
     - golden-recipes/revolve-tube.md
     - golden-recipes/contour-l-bracket.md
+    - golden-recipes/sketch-yz-plate.md
   traces:
     - traces/fillet-negative-repair.md
     - traces/hole-negative-repair.md
     - traces/chamfer-negative-repair.md
     - traces/revolve-crossing-axis-repair.md
     - traces/contour-negative-repair.md
+    - traces/sketch-plane-negative.md
 
-retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, contour, closed-ring, profile, segment, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm]
+retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, contour, closed-ring, profile, segment, sketch-plane, principal-plane, frame, normal, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm]
 
 firewall:
   # ADR/0037 D3 — original-content discipline (clean-room-style). Every shippable

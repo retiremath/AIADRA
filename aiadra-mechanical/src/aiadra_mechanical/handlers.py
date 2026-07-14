@@ -37,11 +37,20 @@ from .adapter_payload import (
     require_simple_cap_fit,
 )
 from .kernel import compute_recipe_bytes, vault_ref_for_bytes
+from .recipe import effective_plane_frame, extrude_sign
 
 if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.7 (arc 20260714-2 EP2): the sketch-plane binding — sketches carry a
+# discriminated `plane: {kind: "principal", orientation: xy|yz|zx}` (absent ≡
+# xy; datum/offset reserved); base features resolve EXACTLY their named sketch
+# (`recipe.resolve_consumed_sketch` — the last-sketch shortcut is gone); the
+# extrude direction is canonically `normal±` (legacy `z±` accepted only on xy,
+# never rewritten on disk); geometry/topology generalize over the (u,v,n) frame.
+# 0.1.6 (arc 20260711-11 slice E): the `contour` outer profile — an arbitrary
+# CLOSED RING of typed line segments with per-segment `skp` anchors.
 # 0.1.5 (arc 20260622-4): adds the revolve feature — the first non-referencing
 # CREATION feature since extrude (sketch → extrude XOR revolve); a revolve solid
 # (tube/washer or solid cylinder) correlated recipe-first into outer/inner-wall +
@@ -54,7 +63,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.6"
+ADAPTER_SCHEMA_VERSION = "0.1.7"
 
 
 # =============================================================================
@@ -65,6 +74,9 @@ ADAPTER_SCHEMA_VERSION = "0.1.6"
 def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
     part_number = _require_param(params, "part_number", str, "mechanical.add_sketch_feature")
     primitives = _require_param(params, "primitives", list, "mechanical.add_sketch_feature")
+    # The sketch-plane binding (arc 20260714-2 EP2): optional discriminated
+    # record; absent ≡ principal xy. Validated exactly in build_sketch_payload.
+    plane = params.get("plane")
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
 
@@ -77,7 +89,7 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
         "feature_type": "sketch",
         "engine": ENGINE_ID,
         "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
-        "adapter_payload": build_sketch_payload(primitives),
+        "adapter_payload": build_sketch_payload(primitives, plane),
         "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
     }
     sidecar = copy.deepcopy(sidecar)
@@ -146,6 +158,14 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
             f"mechanical.add_extrude_feature: Part {part_number} already has a revolve "
             f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
         )
+
+    # EP2 direction rule (Codex1 B3): the handler holds the resolved sketch, so
+    # the write-time gate lives here — legacy `z±` is valid ONLY on a
+    # principal-xy sketch, and NEW writes always store canonical `normal±`.
+    frame = effective_plane_frame(sketch_feature)
+    extrude_sign(direction, frame, op_kind="mechanical.add_extrude_feature")
+    if direction in ("z+", "z-"):
+        direction = "normal+" if direction == "z+" else "normal-"
 
     feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
     depth_param_id = _next_id_within_parameters(sidecar.get("feature", []), prefix="featp_")
@@ -242,6 +262,15 @@ def handle_add_revolve_feature(context: "NativeEngineContext", params: dict[str,
         raise TransactionError(
             f"mechanical.add_revolve_feature: Part {part_number} already has an extrude "
             f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
+        )
+    # EP2 (Codex1 D-P4): revolve is principal-xy-only in v1 — its axis
+    # vocabulary is the global x/y in the sketch plane. Enforced on the EXACT
+    # consumed sketch here and re-checked in the evaluator.
+    if effective_plane_frame(sketch_feature).orientation != "xy":
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: v1 revolve requires the sketch on "
+            f"the principal xy plane; sketch {sketch_feature_id!r} is on "
+            f"{effective_plane_frame(sketch_feature).orientation!r}"
         )
     # Codex1 B2 (early-error path): exactly one rectangle, no circles/lines/extras.
     # The SAME check runs inside the evaluator fold (geometry._evaluate), so a

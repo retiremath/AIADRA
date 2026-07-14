@@ -21,6 +21,8 @@ from typing import Any
 
 from aiadra_core.transaction.boundary import TransactionError
 
+from .recipe import EXTRUDE_DIRECTIONS, validate_plane_record
+
 # Sketch primitive shapes carried in feature.adapter_payload["primitives"]:
 #   {"type": "rectangle", "x_mm": float, "y_mm": float, "width_mm": float, "height_mm": float}
 #   {"type": "circle", "cx_mm": float, "cy_mm": float, "radius_mm": float}
@@ -48,7 +50,9 @@ _SEGMENT_REQUIRED_KEYS = {"line": {"kind", "x1_mm", "y1_mm", "x2_mm", "y2_mm"}}
 _CONTOUR_TOL = 1e-6
 
 
-def build_sketch_payload(primitives: list[dict[str, Any]]) -> dict[str, Any]:
+def build_sketch_payload(
+    primitives: list[dict[str, Any]], plane: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Build (and domain-validate) the adapter_payload for a sketch feature.
 
     Per arc 20260609-1 Codex1 B2: each primitive is assigned a **stable,
@@ -82,7 +86,14 @@ def build_sketch_payload(primitives: list[dict[str, Any]]) -> dict[str, Any]:
             # the signature skeleton (D-E2); there is no unanchored implicit edge.
             prim["segments"] = _mint_segment_ids(prim["id"], prim["segments"])
         out.append(prim)
-    return {"primitives": out}
+    payload: dict[str, Any] = {"primitives": out}
+    # The sketch-plane binding (arc 20260714-2 EP2; Codex1 B3): a discriminated
+    # record, validated EXACTLY at write time; stored faithfully as passed.
+    # Absent ≡ principal xy (legacy semantics preserved byte-for-byte).
+    if plane is not None:
+        orientation = validate_plane_record(plane, op_kind="mechanical.add_sketch_feature")
+        payload["plane"] = {"kind": "principal", "orientation": orientation}
+    return payload
 
 
 def _mint_segment_ids(contour_id: str, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -107,9 +118,14 @@ def build_extrude_payload(
     `depth_mm` lives in `feature.parameters[]`; this payload references the
     parameter id so the kernel can correlate it.
     """
-    if direction not in ("z+", "z-"):
+    # EP2 (Codex1 B3): `normal±` is the canonical vocabulary; legacy `z±`
+    # remains accepted here structurally — the HANDLER gates z± to principal-xy
+    # sketches (it holds the resolved sketch) and stores canonical `normal±`
+    # for new writes; the evaluator re-gates on every regeneration.
+    if direction not in EXTRUDE_DIRECTIONS:
         raise TransactionError(
-            f"mechanical.add_extrude_feature: direction must be 'z+' or 'z-', got {direction!r}"
+            f"mechanical.add_extrude_feature: direction must be one of "
+            f"{list(EXTRUDE_DIRECTIONS)}, got {direction!r}"
         )
     if not depth_parameter_id.startswith("featp_"):
         raise TransactionError(
