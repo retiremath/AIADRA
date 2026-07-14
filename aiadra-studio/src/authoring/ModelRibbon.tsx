@@ -19,17 +19,15 @@
  * stabilize.
  */
 import type { ReactNode } from 'react'
-import { EXTRUDE_DEFAULTS } from './FeatureDashboard'
-import { useFeatureSession, type FeatureSessionStore } from './featureSession'
 
 type RibbonFeature = {
   kind: string
   label: string
   group: 'Datum' | 'Shapes' | 'Engineering'
   icon: ReactNode
-  /** Present + a working dashboard → enabled. */
-  defaults?: Record<string, number>
-  /** Tooltip shown when the feature has no dashboard yet. */
+  /** Has a working surface → enabled. */
+  enabled: boolean
+  /** Tooltip shown when the feature is not built yet. */
   soon?: string
 }
 
@@ -56,18 +54,16 @@ const IconFillet = svg(<path d="M5 16 L5 10 A5 5 0 0 1 10 5 L16 5" />)
 const IconChamfer = svg(<path d="M5 16 L5 9.5 L9.5 5 L16 5" />)
 
 const MODEL_FEATURES: RibbonFeature[] = [
-  { kind: 'sketch', label: 'Sketch', group: 'Datum', icon: IconSketch, soon: 'Standalone sketch step — arrives with the stepwise Sketch→Extrude flow (next slice)' },
-  { kind: 'extrude', label: 'Extrude', group: 'Shapes', icon: IconExtrude, defaults: EXTRUDE_DEFAULTS },
-  { kind: 'fillet', label: 'Fillet', group: 'Engineering', icon: IconFillet, soon: 'Round an edge — pick an edge → radius (next slice)' },
-  { kind: 'chamfer', label: 'Chamfer', group: 'Engineering', icon: IconChamfer, soon: 'Bevel an edge — pick an edge → distance (next slice)' },
+  { kind: 'sketch', label: 'Sketch', group: 'Datum', icon: IconSketch, enabled: true },
+  { kind: 'extrude', label: 'Extrude', group: 'Shapes', icon: IconExtrude, enabled: true },
+  { kind: 'fillet', label: 'Fillet', group: 'Engineering', icon: IconFillet, enabled: false, soon: 'Round an edge — pick an edge → radius (next slice)' },
+  { kind: 'chamfer', label: 'Chamfer', group: 'Engineering', icon: IconChamfer, enabled: false, soon: 'Bevel an edge — pick an edge → distance (next slice)' },
 ]
 
 const GROUP_ORDER: RibbonFeature['group'][] = ['Datum', 'Shapes', 'Engineering']
 
-export function ModelRibbon({ store }: { store: FeatureSessionStore }) {
-  const s = useFeatureSession(store)
-  const sessionOpen = s.active // one feature at a time — finish/cancel the current op first
-
+/** `busy` = an authoring session (sketch or feature) is already active. */
+export function ModelRibbon({ onStart, busy }: { onStart: (kind: string) => void; busy: boolean }) {
   return (
     <div className="ribbon" role="toolbar" aria-label="Model ribbon">
       <div className="ribbon-tab">Model</div>
@@ -75,11 +71,10 @@ export function ModelRibbon({ store }: { store: FeatureSessionStore }) {
         <div key={group} className="ribbon-group">
           <div className="ribbon-btns">
             {MODEL_FEATURES.filter((f) => f.group === group).map((f) => {
-              const available = !!f.defaults
-              const disabled = !available || sessionOpen
+              const disabled = !f.enabled || busy
               const title = f.soon
                 ? f.soon
-                : sessionOpen
+                : busy
                   ? 'Finish or cancel the current operation first'
                   : `${f.label} a feature`
               return (
@@ -89,7 +84,7 @@ export function ModelRibbon({ store }: { store: FeatureSessionStore }) {
                   className="rb-btn"
                   disabled={disabled}
                   title={title}
-                  onClick={() => available && store.start(f.kind, f.defaults!)}
+                  onClick={() => f.enabled && onStart(f.kind)}
                 >
                   <span className="rb-ico">{f.icon}</span>
                   <span className="rb-lbl">{f.label}</span>

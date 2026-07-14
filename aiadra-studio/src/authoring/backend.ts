@@ -7,6 +7,7 @@
  * the real engine can produce (a plain extruded box).
  */
 import type { DisplaySource } from '../display/displaySource'
+import { pointsToSegments, type Pt } from '../sketch/contour'
 
 /** A single feature op: an allowlisted Ring-2 kind + its (main-validated) params. */
 export interface FeatureOp {
@@ -63,6 +64,34 @@ export function buildExtrudeOps(
       params: {
         part_number: partNumber,
         primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: widthMm, height_mm: heightMm }],
+      },
+    },
+    {
+      kind: 'mechanical.add_extrude_feature',
+      params: { part_number: partNumber, sketch_feature_id: 'feat_0001', depth_mm: depthMm, direction: 'z+' },
+    },
+  ]
+}
+
+/**
+ * Build the op sequence for "sketch a DRAWN contour + extrude it" (arc
+ * 20260711-11 slice S/X). The `contour` outer profile is the engine primitive
+ * slice E added — an ordered closed ring of line segments. A fresh Part; the
+ * sketch is feat_0001.
+ */
+export function buildContourOps(
+  partNumber: string,
+  name: string,
+  points: Pt[],
+  depthMm: number,
+): FeatureOp[] {
+  return [
+    { kind: 'create_part', params: { number: partNumber, name } },
+    {
+      kind: 'mechanical.add_sketch_feature',
+      params: {
+        part_number: partNumber,
+        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
       },
     },
     {

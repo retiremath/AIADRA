@@ -7,11 +7,13 @@ import { useCandidatePreview } from './operation/previewController'
 import { SessionPill } from './operation/SessionPill'
 import { Dock } from './dock/Dock'
 import { createFeatureSessionStore, useFeatureSession, type FeatureSessionStore } from './authoring/featureSession'
-import { FeatureDashboard } from './authoring/FeatureDashboard'
+import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard'
 import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
 import type { AuthoringBackend } from './authoring/backend'
+import { createSketchStore, useSketch, type SketchStore } from './sketch/sketchStore'
+import { SketchPad } from './sketch/SketchPad'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
@@ -370,6 +372,7 @@ function Workbench({
   selectionStore,
   operationStore,
   featureStore,
+  sketchStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
@@ -377,9 +380,20 @@ function Workbench({
   selectionStore: SelectionStore
   operationStore: OperationStore
   featureStore: FeatureSessionStore
+  sketchStore: SketchStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
+  // Authoring dispatch (arc 20260711-11): the Model ribbon starts either the
+  // sketch pad (draw a contour) or the extrude feature session. One at a time.
+  const featureActive = useFeatureSession(featureStore).active
+  const sketchActive = useSketch(sketchStore).active
+  const authoringBusy = featureActive || sketchActive
+  const onStartFeature = (kind: string) => {
+    if (authoringBusy) return
+    if (kind === 'sketch') sketchStore.start()
+    else if (kind === 'extrude') featureStore.start('extrude', EXTRUDE_DEFAULTS)
+  }
   // Manual authoring lane (arc 20260711-11 slice 1c): the write bridge in the
   // Electron+workspace lane, the deterministic mock in dev:web (Codex B2).
   const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null)
@@ -494,7 +508,7 @@ function Workbench({
         <span className="muted small">Modeling workspace</span>
         {fixtureBadge && <span className="ref-badge small">{fixtureBadge}</span>}
       </header>
-      <ModelRibbon store={featureStore} />
+      <ModelRibbon onStart={onStartFeature} busy={authoringBusy} />
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel api={viewportApi} onWorkspaceOpen={setOpenWorkspaceId} />
@@ -534,6 +548,12 @@ function Workbench({
             viewportApi={viewportApi}
             onClose={restoreBase}
           />
+          <SketchPad
+            store={sketchStore}
+            backend={featureBackend}
+            viewportApi={viewportApi}
+            onClose={restoreBase}
+          />
           <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
         {dockOpen && (
@@ -564,6 +584,7 @@ export default function App() {
   const selectionStoreRef = useRef<SelectionStore | null>(null)
   const operationStoreRef = useRef<OperationStore | null>(null)
   const featureStoreRef = useRef<FeatureSessionStore | null>(null)
+  const sketchStoreRef = useRef<SketchStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -595,6 +616,9 @@ export default function App() {
 
   if (!featureStoreRef.current) featureStoreRef.current = createFeatureSessionStore()
   const featureStore = featureStoreRef.current
+
+  if (!sketchStoreRef.current) sketchStoreRef.current = createSketchStore()
+  const sketchStore = sketchStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -634,6 +658,7 @@ export default function App() {
         selectionStore={selectionStore}
         operationStore={operationStore}
         featureStore={featureStore}
+        sketchStore={sketchStore}
       />
     </SettingsProvider>
   )

@@ -6,9 +6,10 @@
  * feature session (source of truth) and OWNS the async side effects (the
  * AuthoringBackend begin→simulate→commit + the viewport setDisplaySource).
  */
-import { useEffect, useRef, type MutableRefObject } from 'react'
+import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import type { ViewportApi } from '../Viewport'
 import { buildExtrudeOps, type AuthoringBackend } from './backend'
+import { createSessionLifecycle } from './sessionLifecycle'
 import { useFeatureSession, type FeatureSessionStore } from './featureSession'
 
 const EXTRUDE_PARAMS = [
@@ -51,62 +52,32 @@ export function FeatureDashboard({
   }, [active])
 
   const seq = useRef(0)
-  // Codex3 B1: retain the active backend session id across commit/error/cancel
-  // (a failed commit's session must remain rollbackable), and a stale-async
-  // token so a closed dashboard can never update the viewport/session from an
-  // in-flight result.
-  const sessionRef = useRef<string | null>(null)
-  const genRef = useRef(0)
+  // Codex3 B1 → Codex6 B1: the begin→simulate→commit orchestration (retained
+  // session id, retry cleanup, uninterruptible terminal commit, stale-async
+  // token) lives in ONE shared module used by every authoring surface.
+  const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
   const busy = s.phase === 'busy'
 
   if (!active) return null
 
   const close = () => {
-    if (busy) return // the terminal commit is uninterruptible (Codex3 B1)
-    genRef.current++ // invalidate any in-flight async result
-    const sid = sessionRef.current
-    sessionRef.current = null
-    if (sid) void backend.rollback(sid).catch(() => {}) // roll back a retained (e.g. failed-commit) session
+    if (!lifecycle.cancel()) return // the terminal commit is uninterruptible
     store.cancel()
     onClose()
   }
 
   const commit = async () => {
     if (busy) return
-    const gen = genRef.current
-    // A retained session from a prior failed attempt is stale — discard it first.
-    if (sessionRef.current) {
-      const stale = sessionRef.current
-      sessionRef.current = null
-      await backend.rollback(stale).catch(() => {})
-    }
-    store.setPhase('busy', 'committing…')
     const num = `P-${String((seq.current++ + Math.floor(performance.now())) % 1000000).padStart(6, '0')}`
     const ops = buildExtrudeOps(num, `Extrude ${num}`, s.params.width_mm, s.params.height_mm, s.params.depth_mm)
-    try {
-      const sid = await backend.begin(ops)
-      if (gen !== genRef.current) {
-        await backend.rollback(sid).catch(() => {}) // cancelled mid-begin
-        return
-      }
-      sessionRef.current = sid
-      const sim = await backend.simulate(sid)
-      if (gen !== genRef.current || !sim.valid) {
-        sessionRef.current = null
-        await backend.rollback(sid).catch(() => {})
-        if (gen === genRef.current) store.setPhase('error', sim.message ?? 'validation failed')
-        return
-      }
-      const res = await backend.commit(sid, num)
-      sessionRef.current = null // committed — the backend closed the session
-      if (gen !== genRef.current) return // dashboard closed mid-commit; the Part is committed, leave the viewport
-      void viewportApi.current?.setDisplaySource(res.display)
-      store.setCommitted(res.objectRef)
-    } catch (e) {
-      // The backend session may still be open; sessionRef keeps the handle so the
-      // user can retry (rolls back the stale one) or cancel (rolls it back).
-      if (gen === genRef.current) store.setPhase('error', e instanceof Error ? e.message : String(e))
-    }
+    await lifecycle.run(ops, num, {
+      onBusy: () => store.setPhase('busy', 'committing…'),
+      onError: (m) => store.setPhase('error', m),
+      onSuccess: (res) => {
+        void viewportApi.current?.setDisplaySource(res.display)
+        store.setCommitted(res.objectRef)
+      },
+    })
   }
   return (
     <div className="feature-dash">
