@@ -1271,12 +1271,25 @@ def display_representation(
         raise ObjectNotFoundError(object_ref)
 
     sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+
+    # The EMPTY-Part branch (arc 20260714-2 EP0; ADR/0035 A4): a Part with NO
+    # features and NO authoring geometry has no producing engine — Core emits
+    # the reserved empty package locally (kernel-neutral, read-only), validated
+    # through the same contract gate as any engine output. Mixed states fail
+    # loud — never masquerading as empty.
+    from .empty_display import build_empty_display, is_empty_part, require_consistent_for_display
+
+    require_consistent_for_display(sidecar, object_ref)
+    number = sidecar.get("object", {}).get("number", "")
+    if is_empty_part(sidecar):
+        return DisplayRepresentation.from_engine_dict(build_empty_display(uuid, number))
+
     engine_id = _resolve_producing_engine(sidecar, object_ref)
     kind = f"{engine_id}.display_representation"
 
     params: dict[str, Any] = {
         "object_uuid": uuid,
-        "object_number": sidecar.get("object", {}).get("number", ""),
+        "object_number": number,
     }
     if tolerance is not None:
         params["tolerance"] = tolerance
@@ -1336,12 +1349,25 @@ def display_hlr(
         raise ObjectNotFoundError(object_ref)
 
     sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+
+    # The EMPTY-Part branch (EP0/A4): the requested views come back with zero
+    # segments under the standard identity echo — Studio's attach gate works
+    # unchanged. Same exact-state rule as display_representation.
+    from .empty_display import build_empty_hlr, is_empty_part, require_consistent_for_display
+
+    require_consistent_for_display(sidecar, object_ref)
+    number = sidecar.get("object", {}).get("number", "")
+    if is_empty_part(sidecar):
+        return ViewDependentPayload.from_engine_dict(
+            build_empty_hlr(uuid, number, views, algorithm)
+        )
+
     engine_id = _resolve_producing_engine(sidecar, object_ref)
     kind = f"{engine_id}.display_hlr"
 
     params: dict[str, Any] = {
         "object_uuid": uuid,
-        "object_number": sidecar.get("object", {}).get("number", ""),
+        "object_number": number,
         "views": views,
         "algorithm": algorithm,
     }

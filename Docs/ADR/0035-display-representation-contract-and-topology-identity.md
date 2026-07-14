@@ -70,3 +70,24 @@ Edges are classified from OCCT continuity across adjacent faces: **seam** (same 
 - [ADR/0031](0031-aiadra-mechanical-v0.0.1-scope.md) — `aiadra-mechanical` v0.0.1 (the recipe + validity-gate the display generator reuses).
 - [Research/Creo10-Display-Benchmark.md](../Research/Creo10-Display-Benchmark.md) — the acceptance bar (tangent edges; `F12(ROUND_5)` selection identity).
 - [Manifesto](../Manifesto.md) P11 — local-first, no hosted service; narrow bridge.
+
+---
+
+## Amendment A4 — the EMPTY-Part display state (arc 20260714-2 EP0; aiadra-core 0.14.0)
+
+**Context.** The empty-Part paradigm (Creo-benchmarked, arc 20260714-2) commits a Part at New with ZERO features. Such a Part has no `authoring_geometry`, therefore no producing Native Engine — engine resolution cannot run, and the v1/v1.1 identity promise (`geometry_ref` = the recipe-hash vault ref) has no referent. This amendment defines the empty state as a first-class, Core-owned display state rather than an error or a faked engine dispatch.
+
+**A4.1 — Owner.** `aiadra-core` owns the featureless-Part display: a kernel-neutral branch in `display_representation()` / `display_hlr()` taken after canonical Object resolution (module `aiadra_core.protocol.empty_display`). It emits no geometry, imports no kernel and no engine, and is validated through the SAME contract gates (`from_engine_dict`) as engine output. Core describes mathematical emptiness; it never acquires kernel behavior.
+
+**A4.2 — The exact empty state.** The branch applies iff the Part has NO features AND NO active `authoring_geometry`. Mixed states fail loud: features-without-geometry raises an INCONSISTENT-sidecar error (never masquerades as empty); geometry-without-features fails inside engine resolution as before.
+
+**A4.3 — The reserved empty identity.**
+- `geometry_ref = "empty:v1"` — a RESERVED value, explicitly NOT a vault ref; a Part carries it iff it has no authoring geometry. The recipe-hash promise for non-empty state is unchanged.
+- `topology_signature` = the deterministic hash of the empty topology skeleton: `"topo_" + sha256(b"[]")[:16]` (= `topo_4f53cda18c2baa0c`). The canonical bytes are pinned as `json.dumps([], sort_keys=True)` — byte-equivalent to the engine-side signature of zero features, computed by a Core-local helper (no engine import). Committing the first feature changes it exactly like any skeleton change.
+- `cache_key = "empty:v1|<object_uuid>|<display contract version>"`.
+
+**A4.4 — Payload + invalidation.** Render arrays empty; bbox `[0,0,0]/[0,0,0]`; deflections `0.0`; counters zero; selection `{id_space: "canonical", pickable_kinds: [], names: {}}`; `view_dependent: null`. Invalidation is machine-readable and identical to the engine's: `stale_when: ["geometry_ref_changed", "cache_key_changed"]`, `selection_invalid_when: "topology_signature_changed"`.
+
+**A4.5 — Empty HLR.** `display_hlr()` on an empty Part returns the REQUESTED views (validated structurally; projector frames orthonormalized Core-locally), each with zero segments and zero counters, under the standard six-field `identity_echo` carrying the A4.3 identity — Studio's attach gate works unchanged.
+
+**Consequence.** The first committed feature flips `geometry_ref`, `cache_key`, and `topology_signature` in one step; the empty selection state invalidates under the standard signature gate. Additive public-behavior change: `aiadra-core` 0.13.0 → 0.14.0. No schema-bundle change (display is not Product Truth).
