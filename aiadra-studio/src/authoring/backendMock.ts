@@ -12,14 +12,20 @@
  * for the parametric-rectangle path it falls back to the baked `extrude-box`.
  */
 import { loadExtrudeBoxSource } from '../dev/fixtureSource'
-import { proceduralContourSource } from '../sketch/proceduralExtrude'
+import {
+  emptyMockSource,
+  proceduralContourSource,
+  type PlaneOrientation,
+} from '../sketch/proceduralExtrude'
 import { contourProblem, type Pt } from '../sketch/contour'
 import type { AuthoringBackend, CommitResult, FeatureOp, SimulateResult } from './backend'
 
 type Seg = { x1_mm: number; y1_mm: number }
 
-/** Pull the drawn contour points + depth out of an op sequence, if it is one. */
-function contourFromOps(ops: FeatureOp[]): { points: Pt[]; depthMm: number } | null {
+/** Pull the drawn contour points + depth + plane out of an op sequence. */
+function contourFromOps(
+  ops: FeatureOp[],
+): { points: Pt[]; depthMm: number; plane: PlaneOrientation } | null {
   const sketch = ops.find((o) => o.kind === 'mechanical.add_sketch_feature')
   const extrude = ops.find((o) => o.kind === 'mechanical.add_extrude_feature')
   const prims = (sketch?.params.primitives as Array<{ type?: string; segments?: Seg[] }>) ?? []
@@ -27,7 +33,14 @@ function contourFromOps(ops: FeatureOp[]): { points: Pt[]; depthMm: number } | n
   if (!contour?.segments?.length) return null
   const points: Pt[] = contour.segments.map((s) => ({ x: Number(s.x1_mm), y: Number(s.y1_mm) }))
   const depthMm = Number(extrude?.params.depth_mm ?? 6)
-  return { points, depthMm }
+  const planeRec = sketch?.params.plane as { orientation?: PlaneOrientation } | undefined
+  const plane: PlaneOrientation = planeRec?.orientation ?? 'xy'
+  return { points, depthMm, plane }
+}
+
+/** An op sequence that ONLY creates a Part (EP1 commit-at-New). */
+function isCreateOnly(ops: FeatureOp[]): boolean {
+  return ops.length === 1 && ops[0].kind === 'create_part'
 }
 
 export function createMockAuthoringBackend(): AuthoringBackend {
@@ -63,9 +76,13 @@ export function createMockAuthoringBackend(): AuthoringBackend {
       if (!ops) throw new Error('mock: no open session')
       const badge = `${objectRef} — dev mock (procedural, not a real Part)`
       const contour = contourFromOps(ops)
-      const display = contour
-        ? proceduralContourSource(contour.points, contour.depthMm, badge)
-        : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
+      const display = isCreateOnly(ops)
+        ? // EP1 commit-at-New: the empty Part displays as emptiness (the dev
+          // mirror of core's A4 empty state).
+          emptyMockSource(objectRef, `${objectRef} — dev mock (empty Part, not Truth)`)
+        : contour
+          ? proceduralContourSource(contour.points, contour.depthMm, badge, contour.plane)
+          : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
       if (!display) throw new Error('mock: display unavailable')
       open.delete(sessionId)
       return { objectRef, display }

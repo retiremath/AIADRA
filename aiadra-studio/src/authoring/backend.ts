@@ -63,6 +63,36 @@ export function suggestPartNumber(rand: () => number = Math.random): string {
   return `P-${String(Math.floor(rand() * 1_000_000)).padStart(6, '0')}`
 }
 
+// ---- The authoring-target policy (EP1; Codex5 B2 — fail closed) ------------
+
+/**
+ * May a sketch START, given the lane and the trust state of the authoring
+ * target? The REAL lane refuses without a trustworthy active Part (created
+ * this session with a known feature count) — never the fresh-Part fallback
+ * against a hidden/different Part. The badged browser-dev lane keeps the
+ * fresh-Part flow (it writes no Truth).
+ */
+export function sketchAuthoringGate(
+  isRealLane: boolean,
+  hasTrustedTarget: boolean,
+): string | null {
+  if (!isRealLane || hasTrustedTarget) return null
+  return 'Create a Part with New… first — sketching an existing Part arrives with the S2 slice'
+}
+
+/**
+ * Reconcile the authoring target when a canonical Part LOADS into the viewport
+ * (Codex5 B2): if the displayed Part is not the target, the target is no
+ * longer trustworthy — clear it (fail closed) rather than author against a
+ * hidden Part.
+ */
+export function reconcileLoadedPart<T extends { number: string }>(
+  active: T | null,
+  loadedNumber: string,
+): T | null {
+  return active && active.number === loadedNumber ? active : null
+}
+
 // ---- Backend lane selection (arc 20260714-1; Codex1 B2) --------------------
 
 export type BackendLane = 'mock' | 'bridge' | 'unavailable'
@@ -129,30 +159,73 @@ export function buildExtrudeOps(
   ]
 }
 
+/** The three principal sketch planes (EP2). Studio labels follow the Creo
+ *  convention; the ENGINE speaks geometry — labels never cross the wire. */
+export type PlaneOrientation = 'xy' | 'yz' | 'zx'
+export const PLANE_LABELS: Record<PlaneOrientation, string> = {
+  xy: 'FRONT',
+  yz: 'RIGHT',
+  zx: 'TOP',
+}
+/** Stable overlay-lane ids (arc 20260714-2 Codex1 — never leaked into Truth). */
+export const INTRINSIC_PLANE_IDS: Record<PlaneOrientation, string> = {
+  xy: 'intrinsic-plane:xy',
+  yz: 'intrinsic-plane:yz',
+  zx: 'intrinsic-plane:zx',
+}
+export const INTRINSIC_CSYS_ID = 'intrinsic-csys:origin'
+
+/** The op that commits an EMPTY Part (EP1 commit-at-New — displayable via
+ *  the EP0 empty-state contract). */
+export function buildCreatePartOps(partNumber: string, name: string): FeatureOp[] {
+  return [{ kind: 'create_part', params: { number: partNumber, name } }]
+}
+
+/** Sketch + extrude feature ops targeting an EXISTING Part (EP1: features are
+ *  edits to the active Part, never a new Part per commit). `sketchFeatureId`
+ *  must be the id the engine will mint for the sketch in THIS draft. */
+export function buildContourFeatureOps(
+  partNumber: string,
+  points: Pt[],
+  depthMm: number,
+  plane: PlaneOrientation,
+  sketchFeatureId: string,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_sketch_feature',
+      params: {
+        part_number: partNumber,
+        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
+        plane: { kind: 'principal', orientation: plane },
+      },
+    },
+    {
+      kind: 'mechanical.add_extrude_feature',
+      params: {
+        part_number: partNumber,
+        sketch_feature_id: sketchFeatureId,
+        depth_mm: depthMm,
+        direction: 'normal+',
+      },
+    },
+  ]
+}
+
 /**
- * Build the op sequence for "sketch a DRAWN contour + extrude it" (arc
- * 20260711-11 slice S/X). The `contour` outer profile is the engine primitive
- * slice E added — an ordered closed ring of line segments. A fresh Part; the
- * sketch is feat_0001.
+ * Build the op sequence for "sketch a DRAWN contour + extrude it" on a FRESH
+ * Part (the workspace-less dev flow; arc 20260711-11 slice S/X + the EP2
+ * plane). The sketch is feat_0001 on a fresh Part.
  */
 export function buildContourOps(
   partNumber: string,
   name: string,
   points: Pt[],
   depthMm: number,
+  plane: PlaneOrientation = 'xy',
 ): FeatureOp[] {
   return [
     { kind: 'create_part', params: { number: partNumber, name } },
-    {
-      kind: 'mechanical.add_sketch_feature',
-      params: {
-        part_number: partNumber,
-        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
-      },
-    },
-    {
-      kind: 'mechanical.add_extrude_feature',
-      params: { part_number: partNumber, sketch_feature_id: 'feat_0001', depth_mm: depthMm, direction: 'z+' },
-    },
+    ...buildContourFeatureOps(partNumber, points, depthMm, plane, 'feat_0001'),
   ]
 }

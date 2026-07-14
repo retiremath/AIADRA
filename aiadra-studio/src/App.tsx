@@ -16,10 +16,24 @@ import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard
 import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
-import { chooseBackendLane, createUnavailableBackend, type AuthoringBackend } from './authoring/backend'
+import {
+  buildCreatePartOps,
+  chooseBackendLane,
+  createUnavailableBackend,
+  INTRINSIC_CSYS_ID,
+  INTRINSIC_PLANE_IDS,
+  PLANE_LABELS,
+  reconcileLoadedPart,
+  sketchAuthoringGate,
+  type AuthoringBackend,
+  type PlaneOrientation,
+} from './authoring/backend'
+import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { createSketchStore, useSketch, type SketchStore } from './sketch/sketchStore'
 import { SketchPad } from './sketch/SketchPad'
+import { PlanePicker } from './sketch/PlanePicker'
+import type { DisplaySource } from './display/displaySource'
 import { createImporter, type Importer } from './import/importController'
 import { createImportSession, type ImportSession } from './import/importSession'
 import { spawnImportWorker } from './import/defaultWorker'
@@ -52,6 +66,8 @@ function EnginePanel({
   ws,
   onOpen,
   gate,
+  refresh = 0,
+  onPartLoaded,
 }: {
   api: MutableRefObject<ViewportApi | null>
   /** The ONE Workbench-owned current workspace (Codex1 B1) — this panel is a
@@ -62,6 +78,11 @@ function EnginePanel({
   onOpen: (ws: OpenedWorkspace) => Promise<string | null>
   /** Human-readable switch-gate reason while an operation is active, else null. */
   gate: string | null
+  /** Bump to re-list parts (EP1: a commit created/changed a Part). */
+  refresh?: number
+  /** Codex5 B2: report every canonical Part LOAD so the Workbench can
+   *  reconcile (or fail-close) the authoring target. */
+  onPartLoaded?: (partNumber: string) => void
 }) {
   const [version, setVersion] = useState<string | null>(null)
   const [parts, setParts] = useState<PartRow[]>([])
@@ -84,6 +105,7 @@ function EnginePanel({
       await api.current?.setDisplaySource(createBridgeSource(workspaceId, part.object_number))
       setLoadedPart(part.object_number)
       setNote('')
+      onPartLoaded?.(part.object_number) // Codex5 B2 — the target must reconcile
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e))
     }
@@ -118,7 +140,7 @@ function EnginePanel({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.workspaceId])
+  }, [ws?.workspaceId, refresh])
 
   const open = async () => {
     if (!window.aiadra) return
@@ -380,17 +402,41 @@ function AppearancePanel() {
   )
 }
 
-// ---- Model tree (arc 20260711-11 / slice A — the Creo-shaped shell) ----
-// For now it reflects the ACTIVE feature op; the persistent per-Part feature
-// list arrives with the stepwise Sketch→Extrude flow (slice B).
-function ModelTreePanel({ store }: { store: FeatureSessionStore }) {
+// ---- Model tree (arc 20260714-2 EP1 — the Creo-paradigm scaffold) ----
+// The active Part header + the three intrinsic principal planes + the origin
+// csys (stable overlay ids — Codex1: labeled intrinsic, never Truth features;
+// user-CREATED datums become real features in EP3) + the active feature op.
+// The Truth-fed persistent feature list arrives with S2.
+function ModelTreePanel({
+  store,
+  part,
+}: {
+  store: FeatureSessionStore
+  part: { number: string; name: string } | null
+}) {
   const s = useFeatureSession(store)
   const kindLabel = s.featureKind ? s.featureKind[0].toUpperCase() + s.featureKind.slice(1) : null
   return (
     <ul className="tree model-tree">
-      {!s.active && (
-        <li className="muted small">No features yet — start with Extrude in the Model ribbon.</li>
+      {part && (
+        <li className="feat-row part-head">
+          <span className="feat-glyph">■</span>
+          <span className="feat-name">{part.name}</span>
+          <span className="muted small feat-state">{part.number}</span>
+        </li>
       )}
+      {(['xy', 'yz', 'zx'] as const).map((ori) => (
+        <li key={ori} className="feat-row intrinsic" data-intrinsic-id={INTRINSIC_PLANE_IDS[ori]}>
+          <span className="feat-glyph">▱</span>
+          <span className="feat-name">{PLANE_LABELS[ori]}</span>
+          <span className="muted small feat-state">intrinsic</span>
+        </li>
+      ))}
+      <li className="feat-row intrinsic" data-intrinsic-id={INTRINSIC_CSYS_ID}>
+        <span className="feat-glyph">⌖</span>
+        <span className="feat-name">Origin</span>
+        <span className="muted small feat-state">intrinsic</span>
+      </li>
       {s.active && (
         <li className={`feat-row ${s.phase}`}>
           <span className="feat-glyph">{s.phase === 'committed' ? '▸' : '◐'}</span>
@@ -454,8 +500,15 @@ function Workbench({
   // Codex3 B1: the transition state is PUBLISHED and joins every operation-
   // start gate — an op must not start against A while A→B awaits retirement.
   const [wsTransition, setWsTransition] = useState(false)
+  // Commit-at-New is a REAL operation (Codex5 B1): its busy state joins the
+  // SAME gate as every authoring/AI start AND the workspace switcher.
+  const [createBusy, setCreateBusy] = useState(false)
   const switchGate =
-    authoringBusy || opActive ? 'Finish or cancel the active operation first' : null
+    authoringBusy || opActive || createBusy
+      ? createBusy
+        ? 'Part creation is in flight'
+        : 'Finish or cancel the active operation first'
+      : null
   const gateRef = useRef<string | null>(null)
   gateRef.current = switchGate
   const switcher = useMemo(
@@ -468,6 +521,7 @@ function Workbench({
           selectionStore.clearSelected()
           setFixtureBadge(null)
           sampleRef.current = false
+          setActivePart(null) // the active Part belongs to the old workspace (EP1)
         },
         // Codex2 B3 + Codex3 B1: retirement is AWAITED and only counts on the
         // TYPED acknowledgement (ok && result.closed === true).
@@ -488,12 +542,43 @@ function Workbench({
   // The COMBINED gate for every operation start + open/close control (Codex3
   // B1): active work OR an in-flight workspace transition.
   const uiGate = switchGate ?? (wsTransition ? 'A workspace transition is in flight' : null)
+  // The active Part of this modeling session (EP1 commit-at-New): set when New
+  // commits the empty Part; sketches then ADD FEATURES to it. `featureCount`
+  // tracks the engine's minted feature ids so a follow-up sketch on the same
+  // Part references the right id (a fresh empty Part starts at 0; each
+  // sketch+extrude commit adds 2).
+  const [activePart, setActivePart] = useState<{
+    number: string
+    name: string
+    featureCount: number
+  } | null>(null)
+  const [partsRefresh, setPartsRefresh] = useState(0)
+
   // Authoring dispatch — gated on the COMBINED gate (Codex3 B1): no op may
-  // start while a workspace transition owns the shell.
+  // start while a workspace transition owns the shell. Sketch begins by
+  // PICKING A PLANE (EP1 — Petre's pinned semantics; all three live via EP2).
+  const [planePickerOpen, setPlanePickerOpen] = useState(false)
   const onStartFeature = (kind: string) => {
     if (uiGate) return
-    if (kind === 'sketch') sketchStore.start()
-    else if (kind === 'extrude') featureStore.start('extrude', EXTRUDE_DEFAULTS)
+    if (kind === 'sketch') {
+      // Codex5 B2 (fail closed): the REAL lane refuses to sketch without a
+      // trustworthy active Part — never the fresh-Part fallback against a
+      // hidden/different Part. The badged dev lane keeps the fresh-Part flow.
+      const refusal = sketchAuthoringGate(!!window.aiadra && !!currentWs, activePart !== null)
+      if (refusal) {
+        setShellNote(refusal)
+        return
+      }
+      setPlanePickerOpen(true)
+    } else if (kind === 'extrude') featureStore.start('extrude', EXTRUDE_DEFAULTS)
+  }
+  const onPlanePicked = (plane: PlaneOrientation) => {
+    setPlanePickerOpen(false)
+    if (uiGate) return
+    sketchStore.start({
+      plane,
+      targetPart: activePart ? { number: activePart.number, name: activePart.name } : null,
+    })
   }
   /** The ONE adoption path — returns the refusal reason (null = adopted). */
   const switchWorkspace = async (ws: OpenedWorkspace): Promise<string | null> => {
@@ -512,12 +597,11 @@ function Workbench({
     setAppSession('home')
   }
 
-  // ONE generic "New" (Petre's steer — Creo's New pattern): a dialog picks the
-  // Type/Sub-type/Number/Name; OK runs the REAL Part path (Codex1 B2): the
-  // desktop obtains a live workspace capability first (the native-dialog
-  // grant), then enters modeling and starts the promised sketch. The metadata
-  // is installed on the SKETCH SESSION only after the grant + transition
-  // succeed, and dies with that session (Codex2 B1 — never ambient state).
+  // ONE generic "New" (Creo's New pattern) → COMMIT-AT-NEW (EP1, Petre's pin):
+  // OK COMMITS the empty Part through Ring 2 immediately — it exists in Truth
+  // with its Number and DISPLAYS as emptiness (the EP0/A4 contract) under the
+  // datum scaffold. NO auto sketch pad — Sketch is the user's next move.
+  // A Number collision surfaces verbatim (core's ADR/0004 Reservation).
   const [newDialogOpen, setNewDialogOpen] = useState(false)
   const requestNew = () => {
     if (!uiGate) setNewDialogOpen(true)
@@ -526,18 +610,71 @@ function Workbench({
     setNewDialogOpen(false)
     setShellNote(null)
     if (uiGate) return // Codex3 B1: incl. an in-flight workspace transition
-    if (window.aiadra && !switcher.current()) {
+    let wsId = switcher.current()?.workspaceId ?? null
+    if (window.aiadra && wsId === null) {
       const r = await window.aiadra.chooseWorkspace()
-      if (!r.ok) return // chooser cancelled/failed — nothing installed anywhere
+      if (!r.ok) return // chooser cancelled/failed — nothing committed anywhere
       const reason = await switcher.adopt(r.result)
       if (reason !== null) {
         setShellNote(reason) // the fresh capability was retired by the switcher
         return
       }
+      wsId = r.result.workspaceId
     }
-    setAppSession('modeling')
-    sketchStore.start({ partName: choice.name, partNumber: choice.number })
+    // Commit the empty Part through the SAME lanes as every authoring op
+    // (desktop = the real bridge; dev:web = the badged mock; never mixed).
+    const lane = chooseBackendLane(!!window.aiadra, wsId)
+    const backend =
+      lane === 'bridge'
+        ? createBridgeAuthoringBackend(wsId!)
+        : lane === 'mock'
+          ? createMockAuthoringBackend()
+          : createUnavailableBackend()
+    // Codex5 B1: a globally GATED, cleanup-owning one-shot — its busy state
+    // sits in the same operation gate (createBusy → switchGate/uiGate), every
+    // terminal failure AWAITS its rollback, and a stale result (the context
+    // changed underneath) installs NOTHING.
+    setCreateBusy(true)
+    setShellNote(`creating ${choice.number}…`)
+    try {
+      const startWs = wsId
+      const outcome = await runOneShotCommit(
+        backend,
+        buildCreatePartOps(choice.number, choice.name),
+        choice.number,
+        () => (switcher.current()?.workspaceId ?? null) !== startWs,
+      )
+      if (outcome.status === 'failed') {
+        setShellNote(outcome.reason) // e.g. a Number collision, verbatim
+        return
+      }
+      if (outcome.status === 'committed-stale') {
+        // The Part exists in Truth, but this context is gone — report, do not install.
+        setShellNote(`${choice.number} was created, but the workspace changed — open it from the parts list`)
+        return
+      }
+      setShellNote(null)
+      setActivePart({ number: choice.number, name: choice.name, featureCount: 0 })
+      setPartsRefresh((n) => n + 1)
+      setAppSession('modeling')
+      // The viewport may not be mounted yet on the FIRST modeling entry —
+      // defer the (empty) display to the mount effect below.
+      if (viewportApi.current) void viewportApi.current.setDisplaySource(outcome.result.display)
+      else pendingDisplayRef.current = outcome.result.display
+    } finally {
+      setCreateBusy(false)
+    }
   }
+  // Apply a display that arrived before the viewport mounted (commit-at-New on
+  // the first modeling entry).
+  const pendingDisplayRef = useRef<DisplaySource | null>(null)
+  useEffect(() => {
+    if (appSession !== 'modeling' || !ready) return
+    const src = pendingDisplayRef.current
+    if (!src) return
+    pendingDisplayRef.current = null
+    void viewportApi.current?.setDisplaySource(src)
+  }, [appSession, ready, viewportApi, partsRefresh])
   const openSample = () => {
     setSampleWanted(true)
     setAppSession('modeling')
@@ -597,6 +734,7 @@ function Workbench({
       reset: () => viewportApi.current?.reset(),
       setMode: (m) => viewStore.setMode(m),
       toggleGrid: () => viewStore.setGridVisible(!viewStore.getSnapshot().gridVisible),
+      toggleDatums: () => viewStore.setDatumsVisible(!viewStore.getSnapshot().datumsVisible),
       standardView: (id) => viewportApi.current?.standardView(id),
       toggleFilterKind: (k) => selectionStore.toggleFilterKind(k),
       clearSelection: () => selectionStore.clearSelected(),
@@ -741,11 +879,18 @@ function Workbench({
       <ModelRibbon onStart={onStartFeature} busy={!!uiGate} />
       <div className="workbench">
         <aside className="sidebar">
-          <EnginePanel api={viewportApi} ws={currentWs} onOpen={switchWorkspace} gate={uiGate} />
+          <EnginePanel
+            api={viewportApi}
+            ws={currentWs}
+            onOpen={switchWorkspace}
+            gate={uiGate}
+            refresh={partsRefresh}
+            onPartLoaded={(n) => setActivePart((p) => reconcileLoadedPart(p, n))}
+          />
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
-          <ModelTreePanel store={featureStore} />
+          <ModelTreePanel store={featureStore} part={activePart} />
           <div className="muted small pad">
             Create features from the <b>Model</b> ribbon above. The persistent
             per-Part tree arrives with the stepwise Sketch→Extrude flow.
@@ -777,12 +922,32 @@ function Workbench({
             backend={featureBackend}
             viewportApi={viewportApi}
             onClose={restoreBase}
+            onCommitted={(info) => {
+              // Codex5 B2: the standalone extrude's fresh Part BECOMES the
+              // authoring target (its known feature count is 2).
+              setActivePart({ number: info.number, name: info.name, featureCount: 2 })
+              setPartsRefresh((n) => n + 1)
+            }}
           />
           <SketchPad
             store={sketchStore}
             backend={featureBackend}
             viewportApi={viewportApi}
             onClose={restoreBase}
+            targetFeatureCount={activePart?.featureCount ?? 0}
+            onCommitted={(info) => {
+              // Codex5 B2: reconcile the target on EVERY commit — features onto
+              // the active Part advance its count; a fresh dev-lane Part
+              // BECOMES the target (2 features: sketch + extrude).
+              setActivePart((p) =>
+                info.createdFresh
+                  ? { number: info.number, name: info.name, featureCount: 2 }
+                  : p
+                    ? { ...p, featureCount: p.featureCount + 2 }
+                    : p,
+              )
+              setPartsRefresh((n) => n + 1)
+            }}
           />
           <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
@@ -814,6 +979,7 @@ function Workbench({
         </span>
       </div>
       <NewDialog open={newDialogOpen} onCancel={() => setNewDialogOpen(false)} onCreate={(c) => void createNew(c)} />
+      <PlanePicker open={planePickerOpen} onPick={onPlanePicked} onCancel={() => setPlanePickerOpen(false)} />
     </div>
   )
 }
@@ -844,6 +1010,7 @@ export default function App() {
     viewStoreRef.current = createViewStateStore({
       mode: registry.get('defaultDisplayMode') as DisplayMode,
       gridVisible: registry.get('gridVisibleDefault') as boolean,
+      datumsVisible: true, // the empty-part scaffold shows by default (EP1)
       hasCanonicalPart: false,
       hasReferenceGeometry: false,
     })

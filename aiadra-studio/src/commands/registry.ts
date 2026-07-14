@@ -53,6 +53,11 @@ export const COMMANDS: Command[] = [
     run: (a) => a.setMode(m),
   })),
   { id: 'scene.grid', group: 'scene', kind: 'toggle', label: 'Grid', iconKey: 'grid', shortcut: 'g', isEnabled: () => true, isActive: (c) => c.gridVisible, run: (a) => a.toggleGrid() },
+  // The datum overlay (arc 20260714-2 EP1) — the empty-part scaffold's
+  // visibility toggle (origin triad + the three principal planes). Always
+  // available, like the grid (datums are useful with no geometry — that IS
+  // the empty-part paradigm).
+  { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'Datum planes', shortLabel: 'Datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
   // Selection filters + clear (arc 20260625-1 / 6c). Selection is canonical-only,
   // so these gate on `hasCanonicalPart`. Vertex selection is deferred (no vertex
   // markers rendered yet) — like the `operations` reserved slot.

@@ -25,11 +25,15 @@ export function FeatureDashboard({
   backend,
   viewportApi,
   onClose,
+  onCommitted,
 }: {
   store: FeatureSessionStore
   backend: AuthoringBackend
   viewportApi: MutableRefObject<ViewportApi | null>
   onClose: () => void
+  /** Codex5 B2: the standalone extrude creates a FRESH Part — report it so the
+   *  shell reconciles the authoring target (its known feature count is 2). */
+  onCommitted?: (info: { number: string; name: string }) => void
 }) {
   const s = useFeatureSession(store)
   const active = s.active && s.featureKind === 'extrude'
@@ -76,6 +80,7 @@ export function FeatureDashboard({
       onSuccess: (res) => {
         void viewportApi.current?.setDisplaySource(res.display)
         store.setCommitted(res.objectRef)
+        onCommitted?.({ number: num, name: `Extrude ${num}` }) // Codex5 B2
       },
     })
   }

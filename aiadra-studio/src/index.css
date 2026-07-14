@@ -616,3 +616,32 @@ body { background: var(--bg); overflow: hidden; }
   font: inherit;
 }
 .nd-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); }
+
+/* The sketch-plane picker (EP1) */
+.pp-dialog { width: min(420px, 92vw); }
+.pp-body { display: flex; gap: 10px; padding: 14px; }
+.pp-plane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-h);
+  font: inherit;
+  cursor: pointer;
+}
+.pp-plane:hover { border-color: var(--accent); background: var(--panel-2); }
+.pp-name { font-weight: 600; letter-spacing: 0.4px; }
+.pp-xy .pp-name { color: #6b9bd1; }
+.pp-yz .pp-name { color: #c98f6b; }
+.pp-zx .pp-name { color: #7bbf7b; }
+.pp-note { border-top: 1px solid var(--border); }
+
+/* Model-tree intrinsic rows (EP1 — the datum scaffold) */
+.feat-row.part-head .feat-name { font-weight: 600; }
+.feat-row.intrinsic .feat-glyph { color: var(--muted); }
+.feat-row.intrinsic .feat-name { color: var(--text); }

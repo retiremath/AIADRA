@@ -30,6 +30,8 @@ export interface CommandContext {
   hasRenderableScene: boolean // canonical OR reference
   mode: DisplayMode
   gridVisible: boolean
+  /** The datum overlay (arc 20260714-2 EP1). */
+  datumsVisible: boolean
   /** Selection filter + selection presence (arc 20260625-1 / 6c). */
   filter: { face: boolean; edge: boolean }
   hasSelection: boolean
@@ -41,6 +43,7 @@ export interface CommandActions {
   reset(): void
   setMode(mode: DisplayMode): void
   toggleGrid(): void
+  toggleDatums(): void
   /** Orient the main camera to a standard view (arc 20260625-1 / 6c). */
   standardView(id: StandardViewId): void
   toggleFilterKind(kind: SelectableKind): void

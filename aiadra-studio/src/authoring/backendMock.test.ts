@@ -58,6 +58,53 @@ describe('backend lane selection (Codex1 B2 — the desktop NEVER mocks)', () =>
   })
 })
 
+describe('EP1 — commit-at-New + plane threading through the mock lane', () => {
+  it('a create_part-only commit yields the EMPTY display (the dev mirror of A4)', async () => {
+    const { buildCreatePartOps } = await import('./backend')
+    const mock = createMockAuthoringBackend()
+    const sid = await mock.begin(buildCreatePartOps('P-000123', 'Bracket'))
+    expect((await mock.simulate(sid)).valid).toBe(true)
+    const res = await mock.commit(sid, 'P-000123')
+    const display = await res.display.getDisplay()
+    expect(display.render.faces).toHaveLength(0) // emptiness, not a canned box
+    expect(display.identity.object_number).toBe('P-000123')
+  })
+
+  it('feature ops on an existing Part carry the picked plane into the display orientation', async () => {
+    const { buildContourFeatureOps } = await import('./backend')
+    const mock = createMockAuthoringBackend()
+    const ops = buildContourFeatureOps('P-000123', L, 10, 'yz', 'feat_0001')
+    expect(ops).toHaveLength(2) // NO create_part — features on the ACTIVE Part
+    expect(ops[0].params.plane).toEqual({ kind: 'principal', orientation: 'yz' })
+    expect(ops[1].params.direction).toBe('normal+') // EP2 canonical vocabulary
+    const sid = await mock.begin(ops)
+    const res = await mock.commit(sid, 'P-000123')
+    const display = await res.display.getDisplay()
+    // The yz frame sweeps along +X: the drawn L (u≤60, v≤50) lands on y/z.
+    expect(display.render.bbox_max[0]).toBeCloseTo(10) // the depth, along +X
+    expect(display.render.bbox_max[1]).toBeCloseTo(60) // u → +Y
+    expect(display.render.bbox_max[2]).toBeCloseTo(50) // v → +Z
+  })
+})
+
+describe('the fail-closed authoring target (Codex5 B2)', () => {
+  it('the REAL lane refuses to sketch without a trustworthy target; the dev lane never does', async () => {
+    const { sketchAuthoringGate } = await import('./backend')
+    expect(sketchAuthoringGate(true, false)).toMatch(/Create a Part with New/)
+    expect(sketchAuthoringGate(true, true)).toBeNull()
+    expect(sketchAuthoringGate(false, false)).toBeNull() // the badged dev lane
+    expect(sketchAuthoringGate(false, true)).toBeNull()
+  })
+
+  it('loading a DIFFERENT canonical Part clears the target; the SAME Part keeps it', async () => {
+    const { reconcileLoadedPart } = await import('./backend')
+    const active = { number: 'P-000001', name: 'A', featureCount: 2 }
+    expect(reconcileLoadedPart(active, 'P-000002')).toBeNull() // fail closed
+    expect(reconcileLoadedPart(active, 'P-000001')).toBe(active)
+    expect(reconcileLoadedPart(null, 'P-000002')).toBeNull()
+  })
+})
+
 describe('provisional part numbers (Codex2 B2)', () => {
   it('suggestions are well-formed P-NNNNNN across the whole random range', () => {
     expect(suggestPartNumber(() => 0)).toBe('P-000000')

@@ -11,7 +11,13 @@
  */
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import type { ViewportApi } from '../Viewport'
-import { buildContourOps, suggestPartNumber, type AuthoringBackend } from '../authoring/backend'
+import {
+  buildContourFeatureOps,
+  buildContourOps,
+  PLANE_LABELS,
+  suggestPartNumber,
+  type AuthoringBackend,
+} from '../authoring/backend'
 import { createSessionLifecycle } from '../authoring/sessionLifecycle'
 import { contourProblem, dist, type Pt } from './contour'
 import { useSketch, type SketchStore } from './sketchStore'
@@ -39,11 +45,20 @@ export function SketchPad({
   backend,
   viewportApi,
   onClose,
+  targetFeatureCount = 0,
+  onCommitted,
 }: {
   store: SketchStore
   backend: AuthoringBackend
   viewportApi: MutableRefObject<ViewportApi | null>
   onClose: () => void
+  /** The active Part's current feature count (EP1) — the engine mints the next
+   *  sketch id from it, so the extrude references the RIGHT sketch. */
+  targetFeatureCount?: number
+  /** Fired after EVERY successful commit (Codex5 B2) so the shell reconciles
+   *  the authoring target: onto the active Part (`createdFresh: false`) or a
+   *  fresh Part in the badged dev lane (`createdFresh: true`). */
+  onCommitted?: (info: { number: string; name: string; createdFresh: boolean }) => void
 }) {
   const s = useSketch(store)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -103,16 +118,25 @@ export function SketchPad({
 
   const extrude = async () => {
     if (busy || problem) return
-    // The session's meta (Codex2 B1 — scoped, never ambient). The number is
-    // PROVISIONAL either way: core validates + reserves it at commit (ADR/0004)
-    // and a collision fails loudly through the lifecycle's error path (B2).
-    const num = s.partNumber ?? suggestPartNumber()
-    const ops = buildContourOps(num, s.partName ?? `Sketch ${num}`, s.points, depthMm)
+    // EP1: with an ACTIVE Part (commit-at-New), the sketch+extrude are ADDED
+    // as features to it — the engine mints the next sketch id from the Part's
+    // current feature count. Without one (the plain dev flow), a fresh Part is
+    // created; its number stays PROVISIONAL either way: core validates +
+    // reserves it at commit (ADR/0004) and a collision fails loudly.
+    const target = s.targetPart
+    const num = target?.number ?? s.partNumber ?? suggestPartNumber()
+    const name = target?.name ?? s.partName ?? `Sketch ${num}`
+    const sketchId = `feat_${String(targetFeatureCount + 1).padStart(4, '0')}`
+    const ops = target
+      ? buildContourFeatureOps(target.number, s.points, depthMm, s.plane, sketchId)
+      : buildContourOps(num, name, s.points, depthMm, s.plane)
     await lifecycle.run(ops, num, {
       onBusy: () => store.setPhase('busy', 'extruding…'),
       onError: (m) => store.setPhase('error', m),
       onSuccess: (res) => {
         void viewportApi.current?.setDisplaySource(res.display)
+        // Codex5 B2: EVERY successful commit reconciles the authoring target.
+        onCommitted?.({ number: num, name, createdFresh: !target })
         // Success: close the pad and KEEP the drawn solid in the viewport. Do
         // NOT call onClose — that is the CANCEL path (it restores the base
         // display, which would overwrite the solid we just showed).
@@ -127,7 +151,10 @@ export function SketchPad({
   return (
     <div className="sketchpad">
       <div className="sp-head">
-        <span className="sp-title">Sketch — XY plane</span>
+        <span className="sp-title">
+          Sketch — {PLANE_LABELS[s.plane]} ({s.plane})
+          {s.targetPart && <span className="muted"> · {s.targetPart.number}</span>}
+        </span>
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
         <button type="button" className="fd-x" title="Cancel (Esc)" onClick={cancel} disabled={busy}>✕</button>
       </div>

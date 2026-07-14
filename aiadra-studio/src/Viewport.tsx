@@ -17,6 +17,7 @@ import {
 import { checkAttachHlr } from './display/attachHlr'
 import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
+import { createDatumOverlay } from './datums/datumOverlay'
 import type { DisplaySource } from './display/displaySource'
 import { modeFlags, type DisplayMode } from './display/modes'
 import {
@@ -225,6 +226,14 @@ export default function Viewport({
     ;(axes.material as THREE.Material).depthWrite = false
     axes.visible = gridVisible
     scene.add(axes)
+
+    // ---- The datum overlay (arc 20260714-2 EP1): the origin triad + the three
+    // labeled translucent principal planes — the Creo-paradigm empty-part
+    // scaffold. An OVERLAY lane: intrinsic ids only, never canonical identity,
+    // never a pick target (it lives outside the canonical part group).
+    const datums = createDatumOverlay()
+    datums.setVisible(viewStore.getSnapshot().datumsVisible)
+    scene.add(datums.group)
 
     const paperMaterial = new THREE.MeshBasicMaterial({
       color: liveTheme.paperBody,
@@ -610,10 +619,15 @@ export default function Viewport({
       axes.visible = v
     }
 
+    let datumsVisible = viewStore.getSnapshot().datumsVisible
     const unsubStore = viewStore.subscribe(() => {
       const s = viewStore.getSnapshot()
       if (s.mode !== currentMode) applyModeChange(s.mode)
       if (s.gridVisible !== gridVisible) applyGridVisible(s.gridVisible)
+      if (s.datumsVisible !== datumsVisible) {
+        datumsVisible = s.datumsVisible
+        datums.setVisible(datumsVisible)
+      }
     })
 
     // ---- Selection + hover (arc 20260625-1 / 6c; Codex1 B2). Canonical faces /
@@ -903,6 +917,8 @@ export default function Viewport({
       importGroups.clear()
       ;(grid.material as THREE.Material).dispose()
       grid.geometry.dispose()
+      scene.remove(datums.group)
+      datums.dispose()
       paperMaterial.dispose()
       renderer.dispose()
       apiRef.current = null

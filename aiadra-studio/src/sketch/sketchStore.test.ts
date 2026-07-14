@@ -34,4 +34,15 @@ describe('sketch session metadata scoping (Codex2 B1)', () => {
     expect(s.getSnapshot().partName).toBeNull()
     expect(s.getSnapshot().partNumber).toBeNull()
   })
+
+  it('carries the picked plane + the active target Part for ONE session (EP1)', () => {
+    const s = createSketchStore()
+    s.start({ plane: 'yz', targetPart: { number: 'P-000123', name: 'Bracket' } })
+    expect(s.getSnapshot().plane).toBe('yz')
+    expect(s.getSnapshot().targetPart?.number).toBe('P-000123')
+    s.cancel()
+    s.start() // a plain session defaults back to FRONT (xy), no target
+    expect(s.getSnapshot().plane).toBe('xy')
+    expect(s.getSnapshot().targetPart).toBeNull()
+  })
 })

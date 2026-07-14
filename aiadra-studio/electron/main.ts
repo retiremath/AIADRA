@@ -427,10 +427,23 @@ function registerIpc(): void {
         return typeof p.number === 'string' && typeof p.name === 'string'
           ? null
           : 'create_part requires string number + name'
-      case 'mechanical.add_sketch_feature':
-        return typeof p.part_number === 'string' && Array.isArray(p.primitives)
-          ? null
-          : 'add_sketch_feature requires part_number + primitives[]'
+      case 'mechanical.add_sketch_feature': {
+        if (typeof p.part_number !== 'string' || !Array.isArray(p.primitives)) {
+          return 'add_sketch_feature requires part_number + primitives[]'
+        }
+        // EP1/EP2: the optional discriminated plane record — structural check
+        // at the boundary; the engine's exact validator is the authority.
+        if (p.plane !== undefined) {
+          const pl = p.plane as { kind?: unknown; orientation?: unknown } | null
+          const ok =
+            pl !== null &&
+            typeof pl === 'object' &&
+            pl.kind === 'principal' &&
+            (pl.orientation === 'xy' || pl.orientation === 'yz' || pl.orientation === 'zx')
+          if (!ok) return "add_sketch_feature plane must be {kind:'principal', orientation:'xy'|'yz'|'zx'}"
+        }
+        return null
+      }
       case 'mechanical.add_extrude_feature':
         return typeof p.part_number === 'string' &&
           typeof p.sketch_feature_id === 'string' &&

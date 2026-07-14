@@ -21,6 +21,11 @@ export interface SketchMeta {
   /** The PROVISIONAL Part number (validated/reserved by core at commit —
    *  Codex2 B2); null → suggest one at extrude time. */
   partNumber?: string | null
+  /** The picked sketch plane (EP1/EP2); defaults to 'xy' (FRONT). */
+  plane?: 'xy' | 'yz' | 'zx'
+  /** The ACTIVE Part this sketch edits (EP1 commit-at-New) — when set, the
+   *  extrude adds features TO it instead of creating a fresh Part. */
+  targetPart?: { number: string; name: string } | null
 }
 
 export interface SketchState {
@@ -34,6 +39,8 @@ export interface SketchState {
   objectRef: string | null
   partName: string | null
   partNumber: string | null
+  plane: 'xy' | 'yz' | 'zx'
+  targetPart: { number: string; name: string } | null
 }
 
 export interface SketchStore {
@@ -60,6 +67,8 @@ const IDLE: SketchState = {
   objectRef: null,
   partName: null,
   partNumber: null,
+  plane: 'xy',
+  targetPart: null,
 }
 
 export function createSketchStore(): SketchStore {
@@ -82,6 +91,8 @@ export function createSketchStore(): SketchStore {
         active: true,
         partName: meta?.partName?.trim() || null,
         partNumber: meta?.partNumber?.trim() || null,
+        plane: meta?.plane ?? 'xy',
+        targetPart: meta?.targetPart ?? null,
       }),
     addPoint: (p) => {
       if (!state.active || state.closed || busy()) return
