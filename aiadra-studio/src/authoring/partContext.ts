@@ -13,7 +13,19 @@
  *    eligibility — a tree/target is only trustworthy in `ready`;
  *  - the store is the one writer; callers get an immutable snapshot.
  */
-import { decodeInspectedPart, type InspectedPart } from './inspectDecode'
+import { decodeInspectedPart, stackingRefusal, type InspectedPart } from './inspectDecode'
+
+/** Generation-bound facts about the CURRENT canonical display (arc
+ *  20260715-1 D-R8 / Codex1 B1): what the topology-selection features may
+ *  capture against. Derived at display INSTALL inside the ONE transition;
+ *  they die with the generation — a selector id from an older display can
+ *  never qualify. */
+export interface SelectorFacts {
+  /** display edge_id → its contract `kind` (sharp/tangent/seam/…). */
+  edgeKinds: ReadonlyMap<string, string>
+  /** The face ids present on THIS display. */
+  faceIds: ReadonlySet<string>
+}
 
 export type Inspection =
   | { status: 'idle' }
@@ -26,6 +38,8 @@ export interface PartContextState {
   partNumber: string | null
   generation: number
   inspection: Inspection
+  /** null until THIS generation's display installed and published its facts. */
+  selectorFacts: SelectorFacts | null
 }
 
 /** Fetch the raw inspect view for a Part (the lane decides how). */
@@ -65,12 +79,21 @@ export interface PartContextStore {
   setPart(workspaceId: string | null, partNumber: string, io: PartAdoptionIO): Promise<void>
   /** Re-run the transition for the CURRENT Part (after a commit). */
   refresh(io: PartAdoptionIO): Promise<void>
+  /** Publish the INSTALLED display's selector facts under the transition's
+   *  generation (a stale publication is dropped silently). */
+  publishSelectorFacts(generation: number, facts: SelectorFacts): void
   /** Drop the context (workspace switch / close). Invalidates in-flight loads. */
   clear(): void
 }
 
 export function createPartContextStore(): PartContextStore {
-  let state: PartContextState = { workspaceId: null, partNumber: null, generation: 0, inspection: { status: 'idle' } }
+  let state: PartContextState = {
+    workspaceId: null,
+    partNumber: null,
+    generation: 0,
+    inspection: { status: 'idle' },
+    selectorFacts: null,
+  }
   const listeners = new Set<() => void>()
   const set = (next: PartContextState) => {
     state = next
@@ -129,7 +152,7 @@ export function createPartContextStore(): PartContextStore {
       // — all before any async work can observe the old world.
       io.onTransitionStart?.()
       const gen = state.generation + 1
-      set({ workspaceId, partNumber, generation: gen, inspection: { status: 'loading' } })
+      set({ workspaceId, partNumber, generation: gen, inspection: { status: 'loading' }, selectorFacts: null })
       await run(gen, partNumber, io)
     },
 
@@ -138,12 +161,23 @@ export function createPartContextStore(): PartContextStore {
       if (partNumber === null) return
       io.onTransitionStart?.()
       const gen = state.generation + 1
-      set({ ...state, generation: gen, inspection: { status: 'loading' } })
+      set({ ...state, generation: gen, inspection: { status: 'loading' }, selectorFacts: null })
       await run(gen, partNumber, io)
     },
 
+    publishSelectorFacts(generation, facts) {
+      if (state.generation !== generation) return // a stale display's facts die
+      set({ ...state, selectorFacts: facts })
+    },
+
     clear() {
-      set({ workspaceId: null, partNumber: null, generation: state.generation + 1, inspection: { status: 'idle' } })
+      set({
+        workspaceId: null,
+        partNumber: null,
+        generation: state.generation + 1,
+        inspection: { status: 'idle' },
+        selectorFacts: null,
+      })
     },
   }
 }
@@ -202,6 +236,54 @@ export function authoringStartRefusal(s: PartContextState): string | null {
   if (s.partNumber === null) return null // idle / no target — the dev flow
   if (s.inspection.status === 'ready') return null
   return 'The Part context is not ready — resolve or reopen it before authoring'
+}
+
+/** A topology-selection capture (D-R8): everything an edge/face feature
+ *  session OWNS from its start — the authority tuple, the selector, and the
+ *  matched operation fact. A later selection change never retargets. */
+export interface SelectorCapture {
+  target: AuthoringTarget
+  selector: { kind: 'edge' | 'face'; id: string }
+  /** The matched fact at capture time (edge: its contract kind). */
+  edgeKind: string | null
+}
+
+/**
+ * Capture the live selection as an operation target (D-R8, fail closed):
+ * refuses unless the context is READY, the base is an EXTRUDE (the engine's
+ * fold rejects referencing features on a revolve), the id exists on the
+ * CURRENT generation's display facts, and (for edges) the edge is SHARP.
+ * Returns the capture or the refusal reason.
+ */
+export function captureSelectorTarget(
+  s: PartContextState,
+  selection: { kind: string; id: string } | null,
+  need: 'sharp-edge' | 'face',
+): SelectorCapture | string {
+  const target = captureAuthoringTarget(s)
+  if (target === null) return 'the Part context is not ready'
+  if (s.inspection.status !== 'ready') return 'the Part context is not ready'
+  const part = s.inspection.part
+  if (!part.hasExtrudeBase || part.hasRevolveBase) {
+    return 'this feature needs an EXTRUDED base (v1 does not reference revolve geometry)'
+  }
+  // Codex3 B1.1 (defense in depth behind the ribbon): the known-unsupported
+  // stacking sequence refuses at command start too.
+  const stacking = stackingRefusal(part)
+  if (stacking) return stacking
+  const facts = s.selectorFacts
+  if (facts === null) return 'the canonical display has not installed yet'
+  if (selection === null) return need === 'sharp-edge' ? 'select an edge first' : 'select a face first'
+  if (need === 'sharp-edge') {
+    if (selection.kind !== 'edge') return 'select an EDGE (the current selection is not an edge)'
+    const kind = facts.edgeKinds.get(selection.id)
+    if (kind === undefined) return 'the selected edge is not on the current display (stale selection)'
+    if (kind !== 'sharp') return `the selected edge is ${kind} — Round/Chamfer need a SHARP edge`
+    return { target, selector: { kind: 'edge', id: selection.id }, edgeKind: kind }
+  }
+  if (selection.kind !== 'face') return 'select a FACE (the current selection is not a face)'
+  if (!facts.faceIds.has(selection.id)) return 'the selected face is not on the current display (stale selection)'
+  return { target, selector: { kind: 'face', id: selection.id }, edgeKind: null }
 }
 
 /** The fail-closed authoring facts every surface derives from (B2/B3):

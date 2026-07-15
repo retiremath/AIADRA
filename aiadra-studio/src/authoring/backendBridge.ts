@@ -24,6 +24,26 @@ function unwrap<T>(env: { ok: true; result: T } | { ok: false; error: { message:
   return env.result
 }
 
+/** P2 (arc 20260715-1): surface the FIRST failed outcome's details verbatim
+ *  instead of collapsing every invalid report to a generic string. The
+ *  generic wording remains ONLY as the named fallback when a failed report
+ *  carries no extractable detail. */
+export function simulateFailureMessage(report: Record<string, unknown>): string {
+  const outcomes = report.outcomes
+  if (Array.isArray(outcomes)) {
+    const fail = (outcomes as Array<Record<string, unknown>>).find(
+      (o) => String(o.result ?? o.status ?? '').toUpperCase() === 'FAIL',
+    )
+    if (fail) {
+      const details = fail.details
+      if (typeof details === 'string' && details.length > 0) return details
+      const check = fail.check_name
+      if (typeof check === 'string' && check.length > 0) return `validation failed: ${check}`
+    }
+  }
+  return 'validation failed'
+}
+
 export function createBridgeAuthoringBackend(workspaceId: string): AuthoringBackend {
   const b = window.aiadra
   if (!b?.opBegin || !b.opAdd || !b.opSimulate || !b.opCommit || !b.opRollback) {
@@ -70,7 +90,7 @@ export function createBridgeAuthoringBackend(workspaceId: string): AuthoringBack
     },
     async simulate(sessionId: string): Promise<SimulateResult> {
       const { report } = unwrap(await b.opSimulate!(sessionId))
-      return { valid: report.valid, message: report.valid ? undefined : 'validation failed' }
+      return { valid: report.valid, message: report.valid ? undefined : simulateFailureMessage(report) }
     },
     async commit(sessionId: string, objectRef: string): Promise<CommitResult> {
       const r = unwrap(await b.opCommit!(sessionId, objectRef))

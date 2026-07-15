@@ -20,8 +20,10 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { Pt } from '../sketch/contour'
-import type { PlaneOrientation } from './backend'
-import type { AuthoringTarget } from './partContext'
+import type { PlaneOrientation, RectDims } from './backend'
+import { normalizeRectangle } from './backend'
+import type { AuthoringTarget, SelectorCapture } from './partContext'
+import type { EditableParameter } from './inspectDecode'
 
 export type SketchPhase = 'drawing' | 'closed' | 'busy' | 'committed' | 'error'
 export type ExtrudePhase = 'editing' | 'busy' | 'error'
@@ -32,11 +34,23 @@ export type ExtrudePhase = 'editing' | 'busy' | 'error'
 export type ExtrudeSource =
   | { kind: 'committed'; sketchId: string }
   | { kind: 'pending'; plane: PlaneOrientation; points: Pt[] }
+  /** The chained RECTANGLE hand-back (R3/D-R9) — revolve's create-in-place
+   *  path; plane pinned xy (the engine's v1 bound). */
+  | { kind: 'pending_rectangle'; rect: RectDims }
+
+/** The DISCRIMINATED sketch tool (arc 20260715-1 Codex2 N2): contour drawing
+ *  state and rectangle two-click state cannot mix — invalid cross-tool fields
+ *  are unrepresentable. */
+export type SketchTool =
+  | { kind: 'contour'; points: Pt[]; cursor: Pt | null; closed: boolean }
+  | { kind: 'rectangle'; anchor: Pt | null; cursor: Pt | null; rect: RectDims | null }
 
 export interface SketchMeta {
   partName?: string | null
   partNumber?: string | null
   plane?: PlaneOrientation
+  /** Which tool the pad opens with (default contour). */
+  tool?: SketchTool['kind']
   targetPart?: { number: string; name: string } | null
   /** The SIGNED authority tuple captured at start (Codex4 B1.4) — must be
    *  present whenever `targetPart` is; the terminal commit revalidates it. */
@@ -45,12 +59,14 @@ export interface SketchMeta {
 
 interface SketchSubstate {
   mode: 'sketch'
-  /** Chained = launched from the Extrude select step; OK returns the rings to
-   *  the extrude session instead of committing the sketch alone. */
+  /** Chained = launched from the base-feature select step; OK returns the
+   *  drawing to that session instead of committing the sketch alone. */
   chainToExtrude: boolean
-  points: Pt[]
-  cursor: Pt | null
-  closed: boolean
+  /** The chained base-feature session's shape (restored at hand-back). */
+  chainedFeature: 'extrude' | 'revolve'
+  chainedDepthMm: number
+  chainedAxis: 'x' | 'y'
+  tool: SketchTool
   phase: SketchPhase
   message: string | null
   objectRef: string | null
@@ -63,6 +79,11 @@ interface SketchSubstate {
 
 interface ExtrudeSubstate {
   mode: 'extrude'
+  /** The base-feature discriminant (arc 20260715-1 R3; Codex2 Q1): ONE
+   *  session shape for extrude AND revolve — shared capture/cancel/lifecycle/
+   *  source-selection; the feature selects the parameter editor (depth vs
+   *  axis). Sweep stays out until its own contract exists. */
+  feature: 'extrude' | 'revolve'
   step: 'select' | 'depth'
   source: ExtrudeSource | null
   /** The FULL authority tuple captured at session start (Codex3 B2 / Codex4
@@ -71,11 +92,60 @@ interface ExtrudeSubstate {
    *  (or generations), even past an accidental gate bypass. */
   target: AuthoringTarget | null
   depthMm: number
+  /** Revolve only: the chosen axis (engine vocabulary, structural). */
+  axis: 'x' | 'y'
   phase: ExtrudePhase
   message: string | null
 }
 
-export type AuthoringSessionState = ({ mode: 'idle' } | SketchSubstate | ExtrudeSubstate) & {
+/** A topology-selection feature session (arc 20260715-1 R4): Round (fillet)
+ *  or Chamfer over a CAPTURED sharp edge. The capture is session state — a
+ *  later UI selection change never retargets (D-R8). */
+interface EdgeFeatureSubstate {
+  mode: 'edgeFeature'
+  feature: 'fillet' | 'chamfer'
+  capture: SelectorCapture
+  /** radius_mm (fillet) / distance_mm (chamfer). */
+  valueMm: number
+  phase: ExtrudePhase
+  message: string | null
+}
+
+/** The Hole session (R5): a CAPTURED face + the through-hole parameters.
+ *  Wall-vs-cap is engine-authoritative pre-commit (P2's named limitation). */
+interface HoleFeatureSubstate {
+  mode: 'holeFeature'
+  capture: SelectorCapture
+  diameterMm: number
+  centerXMm: number
+  centerYMm: number
+  phase: ExtrudePhase
+  message: string | null
+}
+
+/** The edit-dimension session (R6): ONE catalogued parameter of ONE
+ *  committed feature (identity-preserving records — Codex2 N3); the engine's
+ *  regenerating `adjust_feature_parameter` is the authority. */
+interface EditParameterSubstate {
+  mode: 'editParameter'
+  target: AuthoringTarget
+  featureId: string
+  parameters: EditableParameter[]
+  /** The chosen catalogued parameter name (the mutation addresses by name). */
+  paramName: string
+  value: number
+  phase: ExtrudePhase
+  message: string | null
+}
+
+export type AuthoringSessionState = (
+  | { mode: 'idle' }
+  | SketchSubstate
+  | ExtrudeSubstate
+  | EdgeFeatureSubstate
+  | HoleFeatureSubstate
+  | EditParameterSubstate
+) & {
   /** The tree-selected unconsumed sketch (survives idle — it is what makes
    *  Extrude entry A possible). Cleared when consumed or deselected. */
   selectedSketchId: string | null
@@ -93,18 +163,43 @@ export interface AuthoringSessionStore {
   undoPoint(): void
   closeRing(): void
   reopen(): void
+  /** Switch the sketch tool (contour <-> rectangle); resets the drawing. */
+  switchTool(kind: SketchTool['kind']): void
+  /** Rectangle tool: place the anchor, then the opposite corner (normalized). */
+  placeRectCorner(p: Pt): void
   setSketchPhase(phase: SketchPhase, message?: string | null): void
-  // -- extrude mode --
+  // -- the base-feature mode (extrude | revolve) --
   startExtrude(
     preselectedSketchId: string | null,
     target?: AuthoringTarget | null,
     defaultDepthMm?: number,
+    feature?: 'extrude' | 'revolve',
   ): void
   chooseCommittedSketch(sketchId: string): void
-  beginChainedSketch(plane: PlaneOrientation, target: { number: string; name: string } | null): void
+  beginChainedSketch(
+    plane: PlaneOrientation,
+    target: { number: string; name: string } | null,
+    tool?: SketchTool['kind'],
+  ): void
   /** Chained sketch OK: carry the drawn rings back into the extrude session. */
   finishChainedSketch(): void
+  // -- the edit-dimension mode --
+  startEditParameter(target: AuthoringTarget, featureId: string, parameters: EditableParameter[]): void
+  chooseEditParameter(paramName: string): void
+  setEditValue(value: number): void
+  setEditPhase(phase: ExtrudePhase, message?: string | null): void
+  // -- the hole mode --
+  startHoleFeature(capture: SelectorCapture, defaults?: { diameterMm?: number }): void
+  setHoleParam(name: 'diameterMm' | 'centerXMm' | 'centerYMm', value: number): void
+  setHolePhase(phase: ExtrudePhase, message?: string | null): void
+  // -- the edge-feature mode (Round | Chamfer) --
+  startEdgeFeature(feature: 'fillet' | 'chamfer', capture: SelectorCapture, defaultValueMm?: number): void
+  setEdgeValue(valueMm: number): void
+  setEdgeFeaturePhase(phase: ExtrudePhase, message?: string | null): void
   setDepth(depthMm: number): void
+  /** Revolve: choose the axis (the panel greys crossing axes from the
+   *  decoded rectangle — the engine's straddle rule stays authoritative). */
+  setAxis(axis: 'x' | 'y'): void
   setExtrudePhase(phase: ExtrudePhase, message?: string | null): void
   /** End the session (any mode) → idle. The surfaces own backend rollback. */
   cancel(): void
@@ -114,15 +209,17 @@ const IDLE: AuthoringSessionState = { mode: 'idle', selectedSketchId: null }
 
 const SKETCH_DEFAULTS = {
   mode: 'sketch' as const,
-  points: [] as Pt[],
-  cursor: null,
-  closed: false,
   phase: 'drawing' as SketchPhase,
   message: null,
   objectRef: null,
   partName: null,
   partNumber: null,
 }
+
+const freshTool = (kind: SketchTool['kind']): SketchTool =>
+  kind === 'rectangle'
+    ? { kind: 'rectangle', anchor: null, cursor: null, rect: null }
+    : { kind: 'contour', points: [], cursor: null, closed: false }
 
 export function createAuthoringSessionStore(): AuthoringSessionStore {
   let state = IDLE
@@ -151,6 +248,10 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       emit({
         ...SKETCH_DEFAULTS,
         chainToExtrude: false,
+        chainedFeature: 'extrude',
+        chainedDepthMm: 10,
+        chainedAxis: 'x',
+        tool: freshTool(meta?.tool ?? 'contour'),
         plane: meta?.plane ?? 'xy',
         partName: meta?.partName?.trim() || null,
         partNumber: meta?.partNumber?.trim() || null,
@@ -161,28 +262,59 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
     },
     addPoint: (p) => {
       const s = sketch()
-      if (!s || s.closed || s.phase === 'busy') return
-      emit({ ...s, points: [...s.points, p], message: null })
+      if (!s || s.tool.kind !== 'contour' || s.tool.closed || s.phase === 'busy') return
+      emit({ ...s, tool: { ...s.tool, points: [...s.tool.points, p] }, message: null })
     },
     setCursor: (p) => {
       const s = sketch()
-      if (!s || s.closed) return
-      emit({ ...s, cursor: p })
+      if (!s) return
+      if (s.tool.kind === 'contour') {
+        if (s.tool.closed) return
+        emit({ ...s, tool: { ...s.tool, cursor: p } })
+      } else {
+        if (s.tool.rect !== null) return
+        emit({ ...s, tool: { ...s.tool, cursor: p } })
+      }
     },
     undoPoint: () => {
       const s = sketch()
-      if (!s || s.phase === 'busy' || s.points.length === 0) return
-      emit({ ...s, points: s.points.slice(0, -1), message: null })
+      if (!s || s.tool.kind !== 'contour' || s.phase === 'busy' || s.tool.points.length === 0) return
+      emit({ ...s, tool: { ...s.tool, points: s.tool.points.slice(0, -1) }, message: null })
     },
     closeRing: () => {
       const s = sketch()
-      if (!s || s.phase === 'busy' || s.points.length < 3) return
-      emit({ ...s, closed: true, cursor: null, phase: 'closed', message: null })
+      if (!s || s.tool.kind !== 'contour' || s.phase === 'busy' || s.tool.points.length < 3) return
+      emit({ ...s, tool: { ...s.tool, closed: true, cursor: null }, phase: 'closed', message: null })
     },
     reopen: () => {
       const s = sketch()
       if (!s || s.phase === 'busy') return
-      emit({ ...s, closed: false, phase: 'drawing', message: null })
+      if (s.tool.kind === 'contour') {
+        emit({ ...s, tool: { ...s.tool, closed: false }, phase: 'drawing', message: null })
+      } else {
+        emit({ ...s, tool: { kind: 'rectangle', anchor: null, cursor: null, rect: null }, phase: 'drawing', message: null })
+      }
+    },
+    switchTool: (kind) => {
+      const s = sketch()
+      if (!s || s.phase === 'busy' || s.tool.kind === kind) return
+      emit({ ...s, tool: freshTool(kind), phase: 'drawing', message: null })
+    },
+    placeRectCorner: (p) => {
+      const s = sketch()
+      if (!s || s.tool.kind !== 'rectangle' || s.phase === 'busy' || s.tool.rect !== null) return
+      if (s.tool.anchor === null) {
+        emit({ ...s, tool: { ...s.tool, anchor: p }, message: null })
+        return
+      }
+      // The second click NORMALIZES (Codex2 N1): min-corner + abs dims; a
+      // degenerate dimension refuses and keeps the anchor for a retry.
+      const rect = normalizeRectangle(s.tool.anchor, p)
+      if (rect === null) {
+        emit({ ...s, message: 'zero-size rectangle — click a different opposite corner' })
+        return
+      }
+      emit({ ...s, tool: { ...s.tool, rect, cursor: null }, phase: 'closed', message: null })
     },
     setSketchPhase: (phase, message = null) => {
       const s = sketch()
@@ -191,14 +323,16 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       emit({ ...s, phase, message })
     },
 
-    startExtrude: (preselectedSketchId, target = null, defaultDepthMm = 10) => {
+    startExtrude: (preselectedSketchId, target = null, defaultDepthMm = 10, feature = 'extrude') => {
       if (state.mode !== 'idle') return
       emit({
         mode: 'extrude',
+        feature,
         step: preselectedSketchId ? 'depth' : 'select',
         source: preselectedSketchId ? { kind: 'committed', sketchId: preselectedSketchId } : null,
         target,
         depthMm: defaultDepthMm,
+        axis: 'x',
         phase: 'editing',
         message: null,
         selectedSketchId: state.selectedSketchId,
@@ -209,15 +343,21 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (!e || e.phase === 'busy') return
       emit({ ...e, step: 'depth', source: { kind: 'committed', sketchId }, message: null })
     },
-    beginChainedSketch: (plane, target) => {
+    beginChainedSketch: (plane, target, tool = 'contour') => {
       const e = extrude()
       if (!e || e.phase === 'busy') return
-      // The extrude session HANDS OFF to the sketch surface; OK hands back.
-      // The authority tuple is the EXTRUDE session's capture (Codex4 B1.4) —
-      // never re-read live at the hand-off.
+      // The base-feature session HANDS OFF to the sketch surface; OK hands
+      // back. The authority tuple is the SESSION's capture (Codex4 B1.4) —
+      // never re-read live at the hand-off. Revolve pins tool=rectangle and
+      // plane=xy at the caller (D-R9); the chained feature survives via
+      // chainedFeature so the hand-back restores the SAME session shape.
       emit({
         ...SKETCH_DEFAULTS,
         chainToExtrude: true,
+        chainedFeature: e.feature,
+        chainedDepthMm: e.depthMm,
+        chainedAxis: e.axis,
+        tool: freshTool(tool),
         plane,
         targetPart: target,
         targetAuth: e.target,
@@ -226,23 +366,109 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
     },
     finishChainedSketch: () => {
       const s = sketch()
-      if (!s || !s.chainToExtrude || !s.closed) return
+      if (!s || !s.chainToExtrude) return
+      const source: ExtrudeSource | null =
+        s.tool.kind === 'contour' && s.tool.closed
+          ? { kind: 'pending', plane: s.plane, points: s.tool.points }
+          : s.tool.kind === 'rectangle' && s.tool.rect !== null
+            ? { kind: 'pending_rectangle', rect: s.tool.rect }
+            : null
+      if (source === null) return // the drawing is not complete
       emit({
         mode: 'extrude',
+        feature: s.chainedFeature,
         step: 'depth',
-        source: { kind: 'pending', plane: s.plane, points: s.points },
+        source,
         // The captured TUPLE survives the sketch hand-off (Codex4 B1.4).
         target: s.targetAuth,
-        depthMm: 10,
+        depthMm: s.chainedDepthMm,
+        axis: s.chainedAxis,
         phase: 'editing',
         message: null,
         selectedSketchId: s.selectedSketchId,
       })
     },
+    startEditParameter: (target, featureId, parameters) => {
+      if (state.mode !== 'idle' || parameters.length === 0) return
+      emit({
+        mode: 'editParameter',
+        target,
+        featureId,
+        parameters,
+        paramName: parameters[0].name,
+        value: parameters[0].value,
+        phase: 'editing',
+        message: null,
+        selectedSketchId: state.selectedSketchId,
+      })
+    },
+    chooseEditParameter: (paramName) => {
+      if (state.mode !== 'editParameter' || state.phase === 'busy') return
+      const p = state.parameters.find((x) => x.name === paramName)
+      if (!p) return // only CATALOGUED names are addressable (N3)
+      emit({ ...state, paramName, value: p.value, phase: 'editing', message: null })
+    },
+    setEditValue: (value) => {
+      if (state.mode !== 'editParameter' || state.phase === 'busy') return
+      emit({ ...state, value, phase: 'editing', message: null })
+    },
+    setEditPhase: (phase, message = null) => {
+      if (state.mode !== 'editParameter') return
+      if (state.phase === phase && state.message === message) return
+      emit({ ...state, phase, message })
+    },
+    startHoleFeature: (capture, defaults) => {
+      if (state.mode !== 'idle') return
+      emit({
+        mode: 'holeFeature',
+        capture,
+        diameterMm: defaults?.diameterMm ?? 5,
+        centerXMm: 0,
+        centerYMm: 0,
+        phase: 'editing',
+        message: null,
+        selectedSketchId: state.selectedSketchId,
+      })
+    },
+    setHoleParam: (name, value) => {
+      if (state.mode !== 'holeFeature' || state.phase === 'busy') return
+      emit({ ...state, [name]: value, phase: 'editing', message: null })
+    },
+    setHolePhase: (phase, message = null) => {
+      if (state.mode !== 'holeFeature') return
+      if (state.phase === phase && state.message === message) return
+      emit({ ...state, phase, message })
+    },
+    startEdgeFeature: (feature, capture, defaultValueMm = 2) => {
+      if (state.mode !== 'idle') return
+      emit({
+        mode: 'edgeFeature',
+        feature,
+        capture,
+        valueMm: defaultValueMm,
+        phase: 'editing',
+        message: null,
+        selectedSketchId: state.selectedSketchId,
+      })
+    },
+    setEdgeValue: (valueMm) => {
+      if (state.mode !== 'edgeFeature' || state.phase === 'busy') return
+      emit({ ...state, valueMm, phase: 'editing', message: null })
+    },
+    setEdgeFeaturePhase: (phase, message = null) => {
+      if (state.mode !== 'edgeFeature') return
+      if (state.phase === phase && state.message === message) return
+      emit({ ...state, phase, message })
+    },
     setDepth: (depthMm) => {
       const e = extrude()
       if (!e || e.phase === 'busy') return
       emit({ ...e, depthMm, phase: 'editing', message: null })
+    },
+    setAxis: (axis) => {
+      const e = extrude()
+      if (!e || e.phase === 'busy') return
+      emit({ ...e, axis, phase: 'editing', message: null })
     },
     setExtrudePhase: (phase, message = null) => {
       const e = extrude()

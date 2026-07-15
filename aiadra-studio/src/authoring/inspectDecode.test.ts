@@ -89,7 +89,7 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
   it('B1: a FOREIGN-engine "sketch" stays GENERIC — payload never interpreted', () => {
     const foreign = { ...SKETCH_CONTOUR, engine: 'electrical' }
     const p = decodeInspectedPart(view([foreign]))
-    expect(p.features[0]).toEqual({ kind: 'other', id: 'feat_0001', featureType: 'sketch' })
+    expect(p.features[0]).toEqual({ kind: 'other', id: 'feat_0001', featureType: 'sketch', mechanical: false, parameters: [] })
     expect(unconsumedSketches(p)).toEqual([]) // no wire, no Extrude candidate
     // A foreign "extrude" must not fabricate one-base eligibility either.
     const foreignExtrude = { ...EXTRUDE, engine: 'electrical' }
@@ -104,8 +104,36 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
       adapter_payload: { anything: true },
     })
     const p = decodeInspectedPart(view([unknown]))
-    expect(p.features[0]).toEqual({ kind: 'other', id: 'feat_0009', featureType: 'thread' })
+    expect(p.features[0]).toEqual({ kind: 'other', id: 'feat_0009', featureType: 'thread', mechanical: true, parameters: [] })
     expect(buildTreeRows(p)[0].label).toBe('Thread 1') // visible generically
+  })
+
+  it('Codex3-B2: editable catalogues honor the adapter series — a FUTURE fillet/hole stays opaque (no editable params, no throw)', () => {
+    const filletNew = feat({ id: 'feat_0005', feature_type: 'fillet', adapter_schema_version: '0.2.0',
+      parameters: [{ id: 'p1', name: 'radius_mm', value: 2, unit: 'mm' }], adapter_payload: {} })
+    const holeNew = feat({ id: 'feat_0006', feature_type: 'hole', adapter_schema_version: '1.0.0',
+      parameters: [{ id: 'p2', name: 'diameter_mm', value: 6, unit: 'mm' }], adapter_payload: {} })
+    const p = decodeInspectedPart(view([filletNew, holeNew]))
+    expect(p.features.map((f) => f.kind === 'other' && f.parameters)).toEqual([[], []]) // OPAQUE rows
+    // The SUPPORTED series exposes the catalogue (identity-preserving).
+    const filletOk = feat({ id: 'feat_0007', feature_type: 'fillet', adapter_schema_version: '0.1.8',
+      parameters: [{ id: 'p3', name: 'radius_mm', value: 2, unit: 'mm' }], adapter_payload: {} })
+    const holeOk = feat({ id: 'feat_0008', feature_type: 'hole', adapter_schema_version: '0.1.8',
+      parameters: [
+        { id: 'p4', name: 'diameter_mm', value: 6, unit: 'mm' },
+        { id: 'p5', name: 'evil_field', value: 1, unit: 'mm' },
+      ], adapter_payload: {} })
+    const p2 = decodeInspectedPart(view([filletOk, holeOk]))
+    const [f, h] = p2.features
+    expect(f.kind === 'other' && f.parameters).toEqual([{ id: 'p3', name: 'radius_mm', value: 2, unit: 'mm' }])
+    expect(h.kind === 'other' && h.parameters).toEqual([{ id: 'p4', name: 'diameter_mm', value: 6, unit: 'mm' }]) // only CATALOGUED names
+    // The stacking fact derives from referencing features.
+    expect(p2.hasReferencingFeature).toBe(true)
+    // Codex4 polish: a FOREIGN-engine "fillet" must NOT trip the containment.
+    const foreignFillet = { id: 'feat_0009', feature_type: 'fillet', engine: 'electrical',
+      adapter_schema_version: '0.1.8', adapter_payload: {} }
+    const p3 = decodeInspectedPart(view([foreignFillet]))
+    expect(p3.hasReferencingFeature).toBe(false)
   })
 
   it('B1: a supported mechanical record still decodes normally under the guard', () => {

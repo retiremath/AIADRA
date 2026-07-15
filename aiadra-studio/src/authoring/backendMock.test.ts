@@ -98,6 +98,95 @@ describe('the fail-closed authoring target (Codex5 B2)', () => {
 
 })
 
+describe('normalizeRectangle (arc 20260715-1 Codex2 N1 — byte-equivalent both lanes)', () => {
+  it('all FOUR drag directions produce the SAME semantic record; degenerate dims refuse', async () => {
+    const { normalizeRectangle } = await import('./backend')
+    const want = { x_mm: 5, y_mm: 10, width_mm: 20, height_mm: 30 }
+    expect(normalizeRectangle({ x: 5, y: 10 }, { x: 25, y: 40 })).toEqual(want) // down-right
+    expect(normalizeRectangle({ x: 25, y: 10 }, { x: 5, y: 40 })).toEqual(want) // down-left
+    expect(normalizeRectangle({ x: 5, y: 40 }, { x: 25, y: 10 })).toEqual(want) // up-right
+    expect(normalizeRectangle({ x: 25, y: 40 }, { x: 5, y: 10 })).toEqual(want) // up-left
+    expect(normalizeRectangle({ x: 5, y: 10 }, { x: 5, y: 40 })).toBeNull() // zero width
+    expect(normalizeRectangle({ x: 5, y: 10 }, { x: 25, y: 10 })).toBeNull() // zero height
+  })
+})
+
+describe('the RECTANGLE sketch through the mirror and the REAL decoder (R2/D-R9)', () => {
+  it('a stepwise rectangle commit decodes with the EXACT simple_rectangle profile', async () => {
+    const { buildRectangleSketchOps, buildCreatePartOps } = await import('./backend')
+    const { decodeInspectedPart, unconsumedSketches } = await import('./inspectDecode')
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(buildCreatePartOps('P-1', 'R'))
+    await mock.commit(s1.sessionId, 'P-1')
+    const rect = { x_mm: 5, y_mm: 10, width_mm: 20, height_mm: 30 }
+    const s2 = await mock.begin(buildRectangleSketchOps('P-1', rect, 'xy'))
+    await mock.commit(s2.sessionId, 'P-1')
+    const part = decodeInspectedPart(mock.inspectRaw('P-1'))
+    const [sk] = unconsumedSketches(part)
+    expect(sk.plane).toBe('xy')
+    expect(sk.profile).toEqual({ kind: 'simple_rectangle', rectangle: rect })
+    expect(sk.rings[0]).toHaveLength(4) // the wire overlay renders it
+  })
+})
+
+describe('REVOLVE through the mirror and the decoder (R3/D-R9 — mock lathe parity)', () => {
+  it('entry A: committed rectangle → revolve → Revolve 1 → Section 1 + a TUBE display', async () => {
+    const { buildCreatePartOps, buildRectangleSketchOps, buildRevolveOnSketchOps } = await import('./backend')
+    const { decodeInspectedPart, buildTreeRows, unconsumedSketches } = await import('./inspectDecode')
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(buildCreatePartOps('P-9', 'W'))
+    await mock.commit(s1.sessionId, 'P-9')
+    // Offset from the x-axis (y from 10) → a TUBE around X.
+    const rect = { x_mm: 0, y_mm: 10, width_mm: 20, height_mm: 5 }
+    const s2 = await mock.begin(buildRectangleSketchOps('P-9', rect, 'xy'))
+    const sketchId = s2.createdFeatureIds[0][0]
+    await mock.commit(s2.sessionId, 'P-9')
+    const s3 = await mock.begin(buildRevolveOnSketchOps('P-9', sketchId, 'x'))
+    const res = await mock.commit(s3.sessionId, 'P-9')
+    const display = await res.display.getDisplay()
+    // tube: outer wall + inner wall + two caps
+    expect(display.render.faces.map((f) => f.face_id)).toEqual([
+      'mock:revolve:outer_wall', 'mock:revolve:inner_wall', 'mock:revolve:cap_lo', 'mock:revolve:cap_hi',
+    ])
+    const part = decodeInspectedPart(mock.inspectRaw('P-9'))
+    expect(buildTreeRows(part).map((r) => r.label)).toEqual(['Revolve 1', 'Section 1'])
+    expect(unconsumedSketches(part)).toHaveLength(0)
+    expect(part.hasRevolveBase).toBe(true)
+  })
+
+  it('the CHAINED one-draft rectangle revolve produces a SOLID when the profile touches the axis', async () => {
+    const { buildCreatePartOps, buildRectangleRevolveOps } = await import('./backend')
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(buildCreatePartOps('P-8', 'S'))
+    await mock.commit(s1.sessionId, 'P-8')
+    // y from 0 → touches the x-axis → SOLID (no inner wall).
+    const ops = buildRectangleRevolveOps('P-8', { x_mm: 0, y_mm: 0, width_mm: 15, height_mm: 8 }, 'x')
+    const s2 = await mock.begin(ops)
+    expect(s2.createdFeatureIds).toEqual([[ 'feat_0001' ], ['feat_0002']]) // $fromOp resolved
+    const res = await mock.commit(s2.sessionId, 'P-8')
+    const display = await res.display.getDisplay()
+    expect(display.render.faces.map((f) => f.face_id)).toEqual([
+      'mock:revolve:outer_wall', 'mock:revolve:cap_lo', 'mock:revolve:cap_hi',
+    ])
+  })
+
+  it('the mock one-base mirror refuses a base after a REVOLVE too', async () => {
+    const { buildCreatePartOps, buildRectangleRevolveOps, buildSketchOnlyOps, buildExtrudeOnSketchOps } = await import('./backend')
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(buildCreatePartOps('P-7', 'B'))
+    await mock.commit(s1.sessionId, 'P-7')
+    const s2 = await mock.begin(buildRectangleRevolveOps('P-7', { x_mm: 0, y_mm: 2, width_mm: 5, height_mm: 3 }, 'x'))
+    await mock.commit(s2.sessionId, 'P-7')
+    const s3 = await mock.begin(buildSketchOnlyOps('P-7', L, 'xy'))
+    const skId = s3.createdFeatureIds[0][0]
+    await mock.commit(s3.sessionId, 'P-7')
+    const s4 = await mock.begin(buildExtrudeOnSketchOps('P-7', skId, 5))
+    const sim = await mock.simulate(s4.sessionId)
+    expect(sim.valid).toBe(false)
+    expect(sim.message).toMatch(/one-base/)
+  })
+})
+
 describe('the mock Truth mirror feeds the REAL decoder (Codex3 B1 fallout)', () => {
   it("Petre's walk in dev:web: sketch-only commit → the decoded sketch is MECHANICAL (wire + selectable + Extrude candidate), then entry A consumes it", async () => {
     const { buildCreatePartOps, buildSketchOnlyOps, buildExtrudeOnSketchOps } = await import('./backend')

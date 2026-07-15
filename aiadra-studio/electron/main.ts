@@ -416,8 +416,11 @@ function registerIpc(): void {
     'create_part',
     'mechanical.add_sketch_feature',
     'mechanical.add_extrude_feature',
+    'mechanical.add_revolve_feature',
     'mechanical.add_fillet_feature',
     'mechanical.add_chamfer_feature',
+    'mechanical.add_hole_feature',
+    'mechanical.adjust_feature_parameter',
   ])
   const posNum = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v > 0
   const validateAuthoringParams = (kind: string, params: unknown): string | null => {
@@ -451,16 +454,43 @@ function registerIpc(): void {
           posNum(p.depth_mm)
           ? null
           : 'add_extrude_feature requires part_number + sketch_feature_id + depth_mm(>0)'
-      // Codex2 non-blocking: tighten the value param before slice 2 uses targets.
-      // The `target_*` field is added when the selection→target slice lands.
+      case 'mechanical.add_revolve_feature':
+        // Arc 20260715-1 R3: axis is structural x|y; the engine's rectangle/
+        // crossing validators are the authority.
+        return typeof p.part_number === 'string' &&
+          typeof p.sketch_feature_id === 'string' &&
+          (p.axis === 'x' || p.axis === 'y')
+          ? null
+          : "add_revolve_feature requires part_number + sketch_feature_id + axis 'x'|'y'"
+      // Arc 20260715-1 R4: the selection→target slice — target_edge is the
+      // ADR/0038 INPUT vocabulary (the engine re-anchors it).
       case 'mechanical.add_fillet_feature':
-        return typeof p.part_number === 'string' && posNum(p.radius_mm)
+        return typeof p.part_number === 'string' && posNum(p.radius_mm) &&
+          typeof p.target_edge_id === 'string'
           ? null
-          : 'add_fillet_feature requires part_number + radius_mm(>0)'
+          : 'add_fillet_feature requires part_number + target_edge_id + radius_mm(>0)'
       case 'mechanical.add_chamfer_feature':
-        return typeof p.part_number === 'string' && posNum(p.distance_mm)
+        return typeof p.part_number === 'string' && posNum(p.distance_mm) &&
+          typeof p.target_edge_id === 'string'
           ? null
-          : 'add_chamfer_feature requires part_number + distance_mm(>0)'
+          : 'add_chamfer_feature requires part_number + target_edge_id + distance_mm(>0)'
+      case 'mechanical.add_hole_feature':
+        // Codex3 N2: structured clone can carry NaN/Infinity — centers must
+        // be FINITE numbers at the allowlist boundary.
+        return typeof p.part_number === 'string' &&
+          typeof p.target_face_id === 'string' &&
+          posNum(p.diameter_mm) &&
+          typeof p.center_x_mm === 'number' && Number.isFinite(p.center_x_mm) &&
+          typeof p.center_y_mm === 'number' && Number.isFinite(p.center_y_mm)
+          ? null
+          : 'add_hole_feature requires part_number + target_face_id + diameter_mm(>0) + finite center_x_mm/center_y_mm'
+      case 'mechanical.adjust_feature_parameter':
+        return typeof p.part_number === 'string' &&
+          typeof p.feature_id === 'string' &&
+          typeof p.parameter_name === 'string' &&
+          typeof p.new_value === 'number' && Number.isFinite(p.new_value)
+          ? null
+          : 'adjust_feature_parameter requires part_number + feature_id + parameter_name + numeric new_value'
       default:
         return `feature kind not allowed: ${kind}`
     }

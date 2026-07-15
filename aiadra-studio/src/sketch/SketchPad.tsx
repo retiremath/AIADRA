@@ -13,7 +13,9 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { DisplaySource } from '../display/displaySource'
 import {
+  buildCreateWithRectangleOps,
   buildCreateWithSketchOps,
+  buildRectangleSketchOps,
   buildSketchOnlyOps,
   PLANE_LABELS,
   suggestPartNumber,
@@ -73,8 +75,13 @@ export function SketchPad({
   // authoring surface — retained session, retry cleanup, uninterruptible commit.
   const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
   const busy = s?.phase === 'busy'
-  const problem = s ? contourProblem(s.points) : null
-  const nearStart = s?.cursor && s.points.length >= 3 && dist(s.cursor, s.points[0]) <= CLOSE_MM
+  // The DISCRIMINATED tool (arc 20260715-1 Codex2 N2): contour drawing state
+  // and rectangle two-click state never mix.
+  const ct = s?.tool.kind === 'contour' ? s.tool : null
+  const rt = s?.tool.kind === 'rectangle' ? s.tool : null
+  const problem = ct ? contourProblem(ct.points) : null
+  const done = ct ? ct.closed : (rt?.rect ?? null) !== null
+  const nearStart = ct?.cursor && ct.points.length >= 3 && dist(ct.cursor, ct.points[0]) <= CLOSE_MM
 
   // Esc cancels; Enter closes a valid ring; Backspace undoes — guarded off inputs.
   useEffect(() => {
@@ -83,8 +90,8 @@ export function SketchPad({
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
       if (e.key === 'Escape') { cancel(); e.preventDefault() }
-      else if (e.key === 'Enter' && s.phase === 'drawing' && !problem) { store.closeRing(); e.preventDefault() }
-      else if (e.key === 'Backspace' && s.phase === 'drawing') { store.undoPoint(); e.preventDefault() }
+      else if (e.key === 'Enter' && s.phase === 'drawing' && s.tool.kind === 'contour' && !problem) { store.closeRing(); e.preventDefault() }
+      else if (e.key === 'Backspace' && s.phase === 'drawing' && s.tool.kind === 'contour') { store.undoPoint(); e.preventDefault() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -94,19 +101,26 @@ export function SketchPad({
   if (!s) return null
 
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (s.closed || busy || !svgRef.current) return
+    if (done || busy || !svgRef.current) return
     store.setCursor(clientToMm(svgRef.current, e.clientX, e.clientY))
   }
   const onClick = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (s.closed || busy || !svgRef.current) return
+    if (done || busy || !svgRef.current) return
     const m = clientToMm(svgRef.current, e.clientX, e.clientY)
-    if (s.points.length >= 3 && dist(m, s.points[0]) <= CLOSE_MM) {
+    const p = { x: snap(m.x), y: snap(m.y) }
+    if (rt) {
+      // The rectangle tool: anchor, then the opposite corner (normalized
+      // min-corner + abs dims — Codex2 N1; a degenerate pick refuses).
+      store.placeRectCorner(p)
+      return
+    }
+    if (!ct) return
+    if (ct.points.length >= 3 && dist(m, ct.points[0]) <= CLOSE_MM) {
       store.closeRing()
     } else {
-      const p = { x: snap(m.x), y: snap(m.y) }
       // Ignore a click that lands on the last placed point (grid snap makes a
       // double-click an exact duplicate → a zero-length segment, Codex6 B2).
-      const last = s.points[s.points.length - 1]
+      const last = ct.points[ct.points.length - 1]
       if (last && dist(p, last) === 0) return
       store.addPoint(p)
     }
@@ -123,7 +137,7 @@ export function SketchPad({
 
   /** OK — the stepwise sketch commit (or the chained hand-back). */
   const ok = async () => {
-    if (busy || problem) return
+    if (busy || problem || !done) return
     if (s.chainToExtrude) {
       // The chained in-place sketch: NO commit here — the rings return to the
       // extrude session and the pair commits as ONE draft ($fromOp).
@@ -145,9 +159,14 @@ export function SketchPad({
     }
     const num = target?.number ?? s.partNumber ?? suggestPartNumber()
     const name = target?.name ?? s.partName ?? `Sketch ${num}`
-    const ops = target
-      ? buildSketchOnlyOps(target.number, s.points, s.plane)
-      : buildCreateWithSketchOps(num, name, s.points, s.plane)
+    const rect = rt?.rect ?? null
+    const ops = rect
+      ? target
+        ? buildRectangleSketchOps(target.number, rect, s.plane)
+        : buildCreateWithRectangleOps(num, name, rect, s.plane)
+      : target
+        ? buildSketchOnlyOps(target.number, ct!.points, s.plane)
+        : buildCreateWithSketchOps(num, name, ct!.points, s.plane)
     await lifecycle.run(ops, num, {
       onBusy: () => store.setSketchPhase('busy', 'committing sketch…'),
       onError: (m) => store.setSketchPhase('error', m),
@@ -160,14 +179,25 @@ export function SketchPad({
     })
   }
 
-  const rubber = s.cursor && s.points.length > 0 && !s.closed
+  const rubber = ct ? ct.cursor && ct.points.length > 0 && !ct.closed : false
   const hint =
     problem ??
-    (s.closed
+    (done
       ? s.chainToExtrude
-        ? 'Ring closed — OK returns to Extrude.'
-        : 'Ring closed — OK commits the sketch.'
-      : 'Click the first point to close the ring.')
+        ? 'Ready — OK returns to Extrude.'
+        : 'Ready — OK commits the sketch.'
+      : rt
+        ? rt.anchor
+          ? 'Click the opposite corner.'
+          : 'Click the first corner of the rectangle.'
+        : 'Click the first point to close the ring.')
+  // The live rectangle preview: committed rect, or anchor->cursor rubber.
+  const previewRect = rt
+    ? rt.rect ?? (rt.anchor && rt.cursor
+        ? { x_mm: Math.min(rt.anchor.x, rt.cursor.x), y_mm: Math.min(rt.anchor.y, rt.cursor.y),
+            width_mm: Math.abs(rt.cursor.x - rt.anchor.x), height_mm: Math.abs(rt.cursor.y - rt.anchor.y) }
+        : null)
+    : null
 
   return (
     <div className="sketchpad">
@@ -177,6 +207,16 @@ export function SketchPad({
           {s.targetPart && <span className="muted"> · {s.targetPart.number}</span>}
           {s.chainToExtrude && <span className="muted"> · for Extrude</span>}
         </span>
+        {!s.chainToExtrude && (
+          <span className="sp-tools">
+            <button type="button" className={`btn small${ct ? ' primary' : ''}`} disabled={busy}
+              title="Draw a closed contour (click points; close the ring)"
+              onClick={() => store.switchTool('contour')}>Contour</button>
+            <button type="button" className={`btn small${rt ? ' primary' : ''}`} disabled={busy}
+              title="Draw a rectangle (two clicks) — the native profile for Revolve/Hole"
+              onClick={() => store.switchTool('rectangle')}>Rectangle</button>
+          </span>
+        )}
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
         <button type="button" className="fd-x" title="Cancel (Esc)" onClick={cancel} disabled={busy}>✕</button>
       </div>
@@ -198,34 +238,49 @@ export function SketchPad({
         <line x1={-HALF_W} y1={0} x2={HALF_W} y2={0} className="sp-axis" />
         <line x1={0} y1={-HALF_H} x2={0} y2={HALF_H} className="sp-axis" />
 
-        {/* the ring (closed → filled; open → polyline) */}
-        {s.points.length > 0 && (
+        {/* contour: the ring (closed → filled; open → polyline) */}
+        {ct && ct.points.length > 0 && (
           <polyline
-            className={`sp-ring ${s.closed ? 'closed' : ''}`}
-            points={s.points.map(plot).join(' ') + (s.closed ? ' ' + plot(s.points[0]) : '')}
+            className={`sp-ring ${ct.closed ? 'closed' : ''}`}
+            points={ct.points.map(plot).join(' ') + (ct.closed ? ' ' + plot(ct.points[0]) : '')}
           />
         )}
-        {rubber && <line className="sp-rubber" x1={s.points[s.points.length - 1].x} y1={-s.points[s.points.length - 1].y} x2={s.cursor!.x} y2={-s.cursor!.y} />}
+        {ct && rubber && <line className="sp-rubber" x1={ct.points[ct.points.length - 1].x} y1={-ct.points[ct.points.length - 1].y} x2={ct.cursor!.x} y2={-ct.cursor!.y} />}
+        {ct &&
+          ct.points.map((p, i) => (
+            <circle key={i} className={`sp-vert ${i === 0 && nearStart ? 'snap' : ''}`} cx={p.x} cy={-p.y} r={i === 0 && nearStart ? 2.4 : 1.6} />
+          ))}
 
-        {/* placed vertices; the start point highlights when it can close */}
-        {s.points.map((p, i) => (
-          <circle key={i} className={`sp-vert ${i === 0 && nearStart ? 'snap' : ''}`} cx={p.x} cy={-p.y} r={i === 0 && nearStart ? 2.4 : 1.6} />
-        ))}
+        {/* rectangle: the committed rect (filled) or the anchor→cursor rubber */}
+        {previewRect && (
+          <rect
+            className={`sp-ring ${rt?.rect ? 'closed' : ''}`}
+            x={previewRect.x_mm}
+            y={-(previewRect.y_mm + previewRect.height_mm)}
+            width={previewRect.width_mm}
+            height={previewRect.height_mm}
+          />
+        )}
+        {rt?.anchor && <circle className="sp-vert" cx={rt.anchor.x} cy={-rt.anchor.y} r={1.8} />}
       </svg>
 
       <div className="sp-foot">
-        <span className={`sp-hint ${problem && s.points.length >= 3 ? 'warn' : ''}`}>{hint}</span>
+        <span className={`sp-hint ${problem && ct && ct.points.length >= 3 ? 'warn' : ''}`}>{hint}</span>
         <span className="grow" />
         {s.phase === 'error' && <span className="sp-hint warn">{s.message}</span>}
-        {!s.closed ? (
-          <>
-            <button type="button" className="btn small" onClick={() => store.undoPoint()} disabled={busy || s.points.length === 0}>Undo</button>
-            <button type="button" className="btn small" onClick={() => store.closeRing()} disabled={busy || !!problem}>Close ring</button>
-          </>
+        {!done ? (
+          ct ? (
+            <>
+              <button type="button" className="btn small" onClick={() => store.undoPoint()} disabled={busy || ct.points.length === 0}>Undo</button>
+              <button type="button" className="btn small" onClick={() => store.closeRing()} disabled={busy || !!problem}>Close ring</button>
+            </>
+          ) : (
+            <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy || !rt?.anchor}>Restart</button>
+          )
         ) : (
           <>
             <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy}>Reopen</button>
-            <button type="button" className="btn primary" onClick={ok} disabled={busy || !!problem}>{busy ? '…' : 'OK'}</button>
+            <button type="button" className="btn primary" onClick={ok} disabled={busy || !!problem || !done}>{busy ? '…' : 'OK'}</button>
           </>
         )}
         <button type="button" className="btn small" onClick={cancel} disabled={busy}>Cancel</button>

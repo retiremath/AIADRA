@@ -17,6 +17,9 @@ import {
   type AuthoringSessionStore,
 } from './authoring/authoringSession'
 import { ExtrudePanel } from './authoring/ExtrudePanel'
+import { EdgeFeaturePanel } from './authoring/EdgeFeaturePanel'
+import { HolePanel } from './authoring/HolePanel'
+import { EditParameterPanel } from './authoring/EditParameterPanel'
 import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
@@ -35,12 +38,14 @@ import {
   authoringFacts,
   authoringStartRefusal,
   captureAuthoringTarget,
+  captureSelectorTarget,
   createPartContextStore,
   type InspectFetcher,
   type PartContextStore,
+  type SelectorFacts,
 } from './authoring/partContext'
 import { createPendingDisplayCoordinator } from './authoring/pendingDisplay'
-import { buildTreeRows, unconsumedSketches } from './authoring/inspectDecode'
+import { buildTreeRows, holeBaseRefusal, revolveSketchRefusal, unconsumedSketches } from './authoring/inspectDecode'
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { SketchPad } from './sketch/SketchPad'
@@ -437,9 +442,13 @@ const TREE_GLYPHS: Record<string, string> = {
 function ModelTreePanel({
   session,
   context,
+  onEditFeature,
 }: {
   session: AuthoringSessionStore
   context: PartContextStore
+  /** R6: open the edit-dimension session for a committed feature (null =
+   *  the affordance is unavailable, with the reason as tooltip). */
+  onEditFeature?: { start: (featureId: string) => void; gate: string | null }
 }) {
   const s = useAuthoringSession(session)
   const pc = useSyncExternalStore(context.subscribe, context.getSnapshot)
@@ -512,6 +521,27 @@ function ModelTreePanel({
               <span className="feat-glyph">{TREE_GLYPHS[row.kind] ?? '▪'}</span>
               <span className="feat-name">{row.label}</span>
               <span className="muted small feat-state">{row.featureId}</span>
+              {onEditFeature &&
+                row.depth === 0 &&
+                (() => {
+                  const feat = part.features.find((f) => f.id === row.featureId)
+                  const params = feat && feat.kind !== 'sketch' ? feat.parameters : []
+                  if (params.length === 0) return null
+                  return (
+                    <button
+                      type="button"
+                      className="link-btn small"
+                      disabled={onEditFeature.gate !== null}
+                      title={onEditFeature.gate ?? `Edit ${params.map((x) => x.name).join(', ')}`}
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        onEditFeature.start(row.featureId)
+                      }}
+                    >
+                      ✎
+                    </button>
+                  )
+                })()}
             </li>
           )
         })}
@@ -547,6 +577,13 @@ function Workbench({
   // sketch pad (draw a contour) or the extrude feature session. One at a time.
   const authoringSession = useAuthoringSession(authoringStore)
   const authoringBusy = authoringSession.mode !== 'idle'
+  // The live canonical selection (transient UI state — enablement only; the
+  // capture happens at session start, D-R8).
+  const selectionSnap = useSyncExternalStore(selectionStore.subscribe, selectionStore.getSnapshot)
+  const liveSelection =
+    selectionSnap.selected && (selectionSnap.selected.kind === 'edge' || selectionSnap.selected.kind === 'face')
+      ? { kind: selectionSnap.selected.kind as 'edge' | 'face', id: selectionSnap.selected.id }
+      : null
 
   // ---- The two application states (arc 20260714-1; D-H1 — the Creo paradigm).
   // `home` at boot: NO viewport, the Home surface (workspace browser + recents
@@ -664,17 +701,36 @@ function Workbench({
    *  B1.1 — the deferral is a real joined promise, and a cleared or
    *  superseded adoption can never install its deferred source after mount).
    *  The viewport's own load token stays as defense in depth. */
+  /** ONE generation-guarded install + fact publication for BOTH the
+   *  immediate and the deferred (pre-mount) paths (Codex3 N1). */
+  const installAndPublishFacts = useCallback(
+    async (src: DisplaySource, stillCurrent: () => boolean) => {
+      const api = viewportApi.current
+      if (!api) throw new Error('viewport unavailable for the display install')
+      const display = await api.setDisplaySource(src)
+      // D-R8: the INSTALLED display's selector facts publish under THIS
+      // transition's generation — edge kinds + face ids die with it.
+      if (display && stillCurrent()) {
+        const gen = partContext.getSnapshot().generation
+        const edgeKinds = new Map<string, string>()
+        for (const ed of display.render.edges) edgeKinds.set(ed.edge_id, ed.kind)
+        const faceIds = new Set<string>(display.render.faces.map((f) => f.face_id))
+        partContext.publishSelectorFacts(gen, { edgeKinds, faceIds } satisfies SelectorFacts)
+      }
+    },
+    [viewportApi, partContext],
+  )
   const installIntoViewport = useCallback(
     (src: DisplaySource) => async (stillCurrent: () => boolean) => {
       if (!stillCurrent()) return
-      if (viewportApi.current) await viewportApi.current.setDisplaySource(src)
+      if (viewportApi.current) await installAndPublishFacts(src, stillCurrent)
       // Pre-mount (commit-at-New from Home): the deferred install stays part
       // of the transition JOIN — this promise settles only when the mounted
       // viewport installs (or fails), so partContext cannot publish `ready`
       // on a merely-queued display (Codex5 B1.1).
       else await pendingDisplay.defer(src, stillCurrent)
     },
-    [viewportApi, pendingDisplay],
+    [viewportApi, pendingDisplay, installAndPublishFacts],
   )
   /** The synchronous transition-start boundary (Codex4 B1.3): canonical
    *  face/edge selection and the tree's selected sketch die BEFORE any async
@@ -723,6 +779,45 @@ function Workbench({
   // The picker serves BOTH the stepwise sketch and Extrude's chained
   // "New sketch…" (D-S3 entry B) — the purpose decides where the plane goes.
   const [planePicker, setPlanePicker] = useState<null | 'sketch' | 'chained'>(null)
+  /** R6: the tree's edit-dimension entry — real lane only (the dev mock does
+   *  not model mutation/regeneration, Codex2 N4); captures the authority
+   *  tuple + the feature's CATALOGUED parameters at start. */
+  const editFeatureEntry = {
+    gate:
+      authoringGate ??
+      (!window.aiadra ? 'requires the desktop real-engine lane (the dev mock does not model mutation/regeneration)' : null),
+    start: (featureId: string) => {
+      if (authoringGate || !window.aiadra) return
+      const tuple = captureAuthoringTarget(partContext.getSnapshot())
+      const part = partFacts.readyPart
+      if (!tuple || !part) {
+        setShellNote('the Part context is not ready')
+        return
+      }
+      const feat = part.features.find((f) => f.id === featureId)
+      const parameters = feat && feat.kind !== 'sketch' ? feat.parameters : []
+      if (parameters.length === 0) {
+        setShellNote('this feature has no catalogued editable dimensions')
+        return
+      }
+      authoringStore.startEditParameter(tuple, featureId, parameters)
+    },
+  }
+  /** Entry B per feature (R3): extrude picks a plane then chains the contour
+   *  pad; revolve pins plane=xy + tool=rectangle (the engine's v1 bounds) and
+   *  skips the picker entirely. */
+  const onNewChainedSketch = (feature: 'extrude' | 'revolve') => {
+    if (feature === 'revolve') {
+      const target = partFacts.readyPart
+      authoringStore.beginChainedSketch(
+        'xy',
+        target ? { number: target.number, name: target.name } : null,
+        'rectangle',
+      )
+    } else {
+      setPlanePicker('chained')
+    }
+  }
   const onStartFeature = (kind: string) => {
     // Codex4 B1.2 → Codex5 B1.2: the ONE shared authoring-start gate —
     // active work, workspace/Part transitions, AND a targeted-but-not-ready
@@ -742,7 +837,7 @@ function Workbench({
         return
       }
       setPlanePicker('sketch')
-    } else if (kind === 'extrude') {
+    } else if (kind === 'extrude' || kind === 'revolve') {
       // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
       // without a ready context or when the one-base rule already holds.
       if (window.aiadra || partFacts.readyPart) {
@@ -762,15 +857,56 @@ function Workbench({
       // depth (entry A); otherwise the select step offers pick-or-create.
       const sel = authoringSession.selectedSketchId
       const part = partFacts.readyPart
+      // Entry A per feature: extrude accepts any unconsumed selected sketch;
+      // revolve requires the EXACT decoded eligibility (P1 — simple_rectangle
+      // + xy + a non-crossing axis); an ineligible selection falls to entry B.
+      const selectedSketch =
+        sel !== null && part !== null ? unconsumedSketches(part).find((sk) => sk.id === sel) : undefined
       const selectedIsUnconsumed =
-        sel !== null && part !== null && unconsumedSketches(part).some((sk) => sk.id === sel)
+        selectedSketch !== undefined &&
+        (kind === 'extrude' || revolveSketchRefusal(selectedSketch) === null)
       // Codex3 B2 / Codex4 B1.4: the session CAPTURES the FULL authority
       // tuple {workspaceId, partNumber, generation} at start; the terminal
       // commit revalidates the exact tuple against the live context.
       authoringStore.startExtrude(
         selectedIsUnconsumed ? sel : null,
         captureAuthoringTarget(partContext.getSnapshot()),
+        10,
+        kind as 'extrude' | 'revolve',
       )
+    } else if (kind === 'round' || kind === 'chamfer') {
+      // R4 (D-R8): the session CAPTURES {tuple, selector, fact} at start by
+      // resolving the LIVE selection against the CURRENT generation's facts —
+      // fail closed; a later selection change never retargets.
+      const captured = captureSelectorTarget(
+        partContext.getSnapshot(),
+        selectionStore.getSnapshot().selected,
+        'sharp-edge',
+      )
+      if (typeof captured === 'string') {
+        setShellNote(captured)
+        return
+      }
+      authoringStore.startEdgeFeature(kind === 'round' ? 'fillet' : 'chamfer', captured)
+    } else if (kind === 'hole') {
+      // R5: the P1 base-domain predicate FIRST (a derived refusal, never a
+      // doomed dashboard), then the face capture (D-R8).
+      const part = partFacts.readyPart
+      const baseRefusal = part ? holeBaseRefusal(part) : 'Hole needs an inspected Part context'
+      if (baseRefusal) {
+        setShellNote(baseRefusal)
+        return
+      }
+      const captured = captureSelectorTarget(
+        partContext.getSnapshot(),
+        selectionStore.getSnapshot().selected,
+        'face',
+      )
+      if (typeof captured === 'string') {
+        setShellNote(captured)
+        return
+      }
+      authoringStore.startHoleFeature(captured)
     }
   }
   const onPlanePicked = (plane: PlaneOrientation) => {
@@ -886,12 +1022,10 @@ function Workbench({
   // promise either way (success → ready; failure → fail-closed error).
   useEffect(() => {
     if (appSession !== 'modeling' || !ready) return
-    void pendingDisplay.drain(async (src) => {
-      const api = viewportApi.current
-      if (!api) throw new Error('viewport unavailable for the deferred display')
-      await api.setDisplaySource(src)
-    })
-  }, [appSession, ready, viewportApi, partsRefresh, pendingDisplay])
+    // Codex3 N1: the DEFERRED install publishes its selector facts under the
+    // SAME generation guard as the immediate path (one helper, both paths).
+    void pendingDisplay.drain(installAndPublishFacts)
+  }, [appSession, ready, viewportApi, partsRefresh, pendingDisplay, installAndPublishFacts])
 
   // The sketch-wire overlay (S2 D-S2): committed-but-unconsumed sketches show
   // as wires on their planes — derived from the SAME decoded Truth as the
@@ -1110,7 +1244,17 @@ function Workbench({
       )}
       {appSession === 'modeling' && (
         <>
-      <ModelRibbon onStart={onStartFeature} busy={!!authoringGate} />
+      <ModelRibbon
+        inputs={{
+          realLane: !!window.aiadra,
+          authoringGate,
+          pc,
+          selection: liveSelection,
+          edgeKind: (id) => pc.selectorFacts?.edgeKinds.get(id) ?? null,
+          faceExists: (id) => pc.selectorFacts?.faceIds.has(id) ?? false,
+        }}
+        onStart={onStartFeature}
+      />
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel
@@ -1124,7 +1268,7 @@ function Workbench({
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
-          <ModelTreePanel session={authoringStore} context={partContext} />
+          <ModelTreePanel session={authoringStore} context={partContext} onEditFeature={editFeatureEntry} />
           <div className="muted small pad">
             Create features from the <b>Model</b> ribbon above.
           </div>
@@ -1162,7 +1306,37 @@ function Workbench({
               refreshPartContext(display)
               setPartsRefresh((n) => n + 1)
             }}
-            onNewSketch={() => setPlanePicker('chained')}
+            onNewSketch={onNewChainedSketch}
+          />
+          <EdgeFeaturePanel
+            store={authoringStore}
+            backend={featureBackend}
+            context={partContext}
+            onClose={restoreBase}
+            onCommitted={(display) => {
+              refreshPartContext(display)
+              setPartsRefresh((n) => n + 1)
+            }}
+          />
+          <HolePanel
+            store={authoringStore}
+            backend={featureBackend}
+            context={partContext}
+            onClose={restoreBase}
+            onCommitted={(display) => {
+              refreshPartContext(display)
+              setPartsRefresh((n) => n + 1)
+            }}
+          />
+          <EditParameterPanel
+            store={authoringStore}
+            backend={featureBackend}
+            context={partContext}
+            onClose={restoreBase}
+            onCommitted={(display) => {
+              refreshPartContext(display)
+              setPartsRefresh((n) => n + 1)
+            }}
           />
           <SketchPad
             store={authoringStore}

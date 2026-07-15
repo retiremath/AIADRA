@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   authoringFacts,
   captureAuthoringTarget,
+  captureSelectorTarget,
   createPartContextStore,
   guardTerminalTarget,
   type InspectFetcher,
@@ -263,6 +264,63 @@ describe('the transition JOIN + boundary (Codex4 B1)', () => {
     expect(captured!()).toBe(true) // still the current transition
     store.clear() // workspace switch before the viewport mounted
     expect(captured!()).toBe(false) // the deferred install is now a no-op
+  })
+})
+
+describe('captureSelectorTarget (R4 D-R8 — generation-bound, fail-closed capture)', () => {
+  const FACTS = {
+    edgeKinds: new Map([['e:sharp', 'sharp'], ['e:tang', 'tangent']]),
+    faceIds: new Set(['f:cap']),
+  }
+  const ready = async () => {
+    const store = createPartContextStore()
+    await store.setPart('ws-1', 'P-1', { fetchInspect: async () => RAW('P-1', EXTRUDE_PAIR) })
+    store.publishSelectorFacts(store.getSnapshot().generation, FACTS)
+    return store
+  }
+
+  it('captures {tuple, selector, fact} for a SHARP edge on the current display', async () => {
+    const store = await ready()
+    const cap = captureSelectorTarget(store.getSnapshot(), { kind: 'edge', id: 'e:sharp' }, 'sharp-edge')
+    expect(cap).toMatchObject({
+      selector: { kind: 'edge', id: 'e:sharp' },
+      edgeKind: 'sharp',
+      target: { workspaceId: 'ws-1', partNumber: 'P-1' },
+    })
+  })
+
+  it('Codex3-B1.1 (defense in depth): the capture refuses on a Part with an existing referencing feature', async () => {
+    const WITH_FILLET = [...EXTRUDE_PAIR,
+      { id: 'feat_0003', feature_type: 'fillet', engine: 'mechanical', adapter_schema_version: '0.1.8',
+        adapter_payload: {} }]
+    const store = createPartContextStore()
+    await store.setPart('ws-1', 'P-1', { fetchInspect: async () => RAW('P-1', WITH_FILLET) })
+    store.publishSelectorFacts(store.getSnapshot().generation, FACTS)
+    expect(captureSelectorTarget(store.getSnapshot(), { kind: 'edge', id: 'e:sharp' }, 'sharp-edge')).toMatch(
+      /stacked referencing features/,
+    )
+  })
+
+  it('refuses: not ready · revolve base · absent id · non-sharp · facts not yet published', async () => {
+    const idle = createPartContextStore()
+    expect(captureSelectorTarget(idle.getSnapshot(), { kind: 'edge', id: 'e' }, 'sharp-edge')).toMatch(/not ready/)
+    const store = await ready()
+    expect(captureSelectorTarget(store.getSnapshot(), { kind: 'edge', id: 'nope' }, 'sharp-edge')).toMatch(/stale selection/)
+    expect(captureSelectorTarget(store.getSnapshot(), { kind: 'edge', id: 'e:tang' }, 'sharp-edge')).toMatch(/tangent/)
+    expect(captureSelectorTarget(store.getSnapshot(), null, 'sharp-edge')).toMatch(/select an edge/)
+    // a NEW transition kills the facts — the capture refuses until re-publish
+    const p = store.refresh({ fetchInspect: async () => RAW('P-1', EXTRUDE_PAIR) })
+    expect(store.getSnapshot().selectorFacts).toBeNull()
+    await p
+    expect(captureSelectorTarget(store.getSnapshot(), { kind: 'edge', id: 'e:sharp' }, 'sharp-edge')).toMatch(/display has not installed/)
+  })
+
+  it('stale facts publication is DROPPED (generation moved on)', async () => {
+    const store = await ready()
+    const oldGen = store.getSnapshot().generation
+    await store.refresh({ fetchInspect: async () => RAW('P-1', EXTRUDE_PAIR) })
+    store.publishSelectorFacts(oldGen, FACTS) // a late publish from the old display
+    expect(store.getSnapshot().selectorFacts).toBeNull()
   })
 })
 

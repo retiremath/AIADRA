@@ -53,8 +53,11 @@ export type ViewportApi = {
   reset: () => void
   /** Live re-theming (arc 20260619-1 / 6a). */
   applyTheme: (theme: Theme) => void
-  /** Load (or clear) the canonical lane from a display source (arc 20260610-1). */
-  setDisplaySource: (source: DisplaySource | null) => Promise<void>
+  /** Load (or clear) the canonical lane from a display source (arc 20260610-1).
+   *  R4: resolves with the LOADED payload (null when cleared/superseded) so the
+   *  Part transition can derive generation-bound selector facts without a
+   *  second display fetch. */
+  setDisplaySource: (source: DisplaySource | null) => Promise<import('./display/contract').DisplayRepresentation | null>
   /** Snap the camera to a pregenerated standard view (fixture lane). */
   snapToView: (viewId: string) => void
   /** Orient the main camera to a client-computed standard view (arc 20260625-1 / 6c). */
@@ -497,10 +500,10 @@ export default function Viewport({
         source = null
         removePart()
         setSnapIds([])
-        return
+        return null
       }
       const fresh = await next.getDisplay()
-      if (token !== loadToken) return
+      if (token !== loadToken) return null // superseded (defense in depth)
       removePart()
       source = next
       display = fresh
@@ -512,6 +515,7 @@ export default function Viewport({
       } else {
         machine.cameraMoved()
       }
+      return fresh
     }
 
     // ---- View helpers ----

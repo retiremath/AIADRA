@@ -1,31 +1,40 @@
 /**
- * The dual-entry Extrude (S2; arc 20260714-3 D-S3) — Creo's extrude semantics:
+ * The BASE-FEATURE dashboard (S2 D-S3 → arc 20260715-1 R3) — Creo's dual
+ * entry for extrude AND revolve over ONE discriminated session (Codex2 Q1:
+ * shared capture/cancel/lifecycle/source-selection shell; feature-specific
+ * parameter editors — depth vs axis):
  *
- *  - **Entry A** (a sketch is selected / picked here): choose an UNCONSUMED
- *    committed sketch → set a depth → commit ONE extrude op referencing the
- *    REAL engine id from inspected Truth.
- *  - **Entry B** (no sketch): "New sketch…" hands off to the sketch pad
- *    (chained); its rings come back PENDING and commit as ONE draft
- *    [sketch, extrude($fromOp 0)] — the engine mints the sketch id mid-draft.
+ *  - **Entry A** (a sketch selected/picked): choose an UNCONSUMED committed
+ *    sketch → parameters → ONE op referencing the REAL engine id. Revolve
+ *    lists only ELIGIBLE sketches (the exact `simple_rectangle` + xy + axis
+ *    facts — P1); ineligible ones grey with the derived reason.
+ *  - **Entry B** ("New sketch…"): the chained pad — contour for extrude,
+ *    RECTANGLE pinned to xy for revolve (D-R9) — committed as ONE draft via
+ *    the $fromOp handshake.
  *
- * A view over the ONE `authoringSession` store; commits through the ONE shared
- * sessionLifecycle. The selectable-sketch list and the eligibility both come
- * from the generation-owned partContext (inspected Truth, fail-closed) — the
- * retired rectangle dashboard's invented geometry has no successor here.
+ * Commits through the ONE sessionLifecycle; eligibility from the generation-
+ * owned partContext; terminal commits revalidate the captured authority tuple.
  */
 import { useMemo } from 'react'
 import type { DisplaySource } from '../display/displaySource'
 import {
   buildContourFeatureOps,
   buildExtrudeOnSketchOps,
+  buildRectangleRevolveOps,
+  buildRevolveOnSketchOps,
   PLANE_LABELS,
   type AuthoringBackend,
-  type PlaneOrientation,
 } from './backend'
 import { useAuthoringSession, type AuthoringSessionStore } from './authoringSession'
 import { createSessionLifecycle } from './sessionLifecycle'
 import { guardTerminalTarget, type PartContextStore } from './partContext'
-import { unconsumedSketches, type InspectedPart } from './inspectDecode'
+import {
+  revolveAxisRefusal,
+  revolveSketchRefusal,
+  unconsumedSketches,
+  type InspectedPart,
+  type RevolveAxis,
+} from './inspectDecode'
 
 export function ExtrudePanel({
   store,
@@ -48,8 +57,8 @@ export function ExtrudePanel({
   /** The commit's display source — the Workbench installs it INSIDE the same
    *  Part transition that re-reads Truth (Codex3 B2; no direct installs here). */
   onCommitted?: (display: DisplaySource) => void
-  /** Entry B: open the plane picker → chained sketch pad. */
-  onNewSketch?: () => void
+  /** Entry B: open the chained sketch (the App pins plane/tool per feature). */
+  onNewSketch?: (feature: 'extrude' | 'revolve') => void
 }) {
   const st = useAuthoringSession(store)
   const e = st.mode === 'extrude' ? st : null
@@ -57,7 +66,31 @@ export function ExtrudePanel({
 
   if (!e) return null
   const busy = e.phase === 'busy'
-  const candidates = part ? unconsumedSketches(part) : []
+  const isRevolve = e.feature === 'revolve'
+  const featureLabel = isRevolve ? 'Revolve' : 'Extrude'
+  const all = part ? unconsumedSketches(part) : []
+  // Entry A candidates: extrude takes any unconsumed sketch; revolve derives
+  // per-sketch eligibility from the EXACT decoded facts (P1) — ineligible
+  // sketches stay visible but greyed with the derived reason.
+  const candidates = all.map((sk, i) => ({
+    sk,
+    n: i + 1,
+    refusal: isRevolve ? revolveSketchRefusal(sk) : null,
+  }))
+
+  // Revolve axis eligibility for the CHOSEN source (committed or pending rect).
+  const sourceRect = (() => {
+    if (!isRevolve || !e.source) return null
+    if (e.source.kind === 'pending_rectangle') return e.source.rect
+    if (e.source.kind === 'committed') {
+      const src = e.source
+      const sk = all.find((s) => s.id === src.sketchId)
+      return sk?.profile.kind === 'simple_rectangle' ? sk.profile.rectangle : null
+    }
+    return null
+  })()
+  const axisRefusal = (axis: RevolveAxis): string | null =>
+    sourceRect ? revolveAxisRefusal(sourceRect, axis) : null
 
   const cancel = () => {
     if (!lifecycle.cancel()) return
@@ -68,23 +101,37 @@ export function ExtrudePanel({
   const commit = async () => {
     if (busy || !e.source) return
     if (!part) {
-      store.setExtrudePhase('error', 'no inspected Part context — cannot extrude')
+      store.setExtrudePhase('error', `no inspected Part context — cannot ${featureLabel.toLowerCase()}`)
       return
     }
     // Codex3 B2 / Codex4 B1.4: the terminal boundary revalidates the CAPTURED
-    // authority tuple (workspace + Part number + generation) — an accidental
-    // gate bypass fails closed, never a cross-Part/cross-generation commit.
+    // authority tuple — an accidental gate bypass fails closed.
     const refusal = guardTerminalTarget(e.target, context.getSnapshot())
     if (refusal) {
       store.setExtrudePhase('error', refusal)
       return
     }
-    const ops =
-      e.source.kind === 'committed'
+    if (isRevolve && axisRefusal(e.axis)) {
+      store.setExtrudePhase('error', axisRefusal(e.axis)!)
+      return
+    }
+    const ops = isRevolve
+      ? e.source.kind === 'committed'
+        ? buildRevolveOnSketchOps(part.number, e.source.sketchId, e.axis)
+        : e.source.kind === 'pending_rectangle'
+          ? buildRectangleRevolveOps(part.number, e.source.rect, e.axis)
+          : null
+      : e.source.kind === 'committed'
         ? buildExtrudeOnSketchOps(part.number, e.source.sketchId, e.depthMm)
-        : buildContourFeatureOps(part.number, e.source.points, e.depthMm, e.source.plane)
+        : e.source.kind === 'pending'
+          ? buildContourFeatureOps(part.number, e.source.points, e.depthMm, e.source.plane)
+          : null
+    if (ops === null) {
+      store.setExtrudePhase('error', `the drawn source does not fit ${featureLabel} — cancel and retry`)
+      return
+    }
     await lifecycle.run(ops, part.number, {
-      onBusy: () => store.setExtrudePhase('busy', 'extruding…'),
+      onBusy: () => store.setExtrudePhase('busy', `${featureLabel.toLowerCase()}…`),
       onError: (m) => store.setExtrudePhase('error', m),
       onSuccess: (res) => {
         store.selectSketch(null) // the selected sketch is consumed now
@@ -97,28 +144,35 @@ export function ExtrudePanel({
   return (
     <div className="sketchpad extrude-panel">
       <div className="sp-head">
-        <span className="sp-title">Extrude{part ? ` · ${part.number}` : ''}</span>
+        <span className="sp-title">{featureLabel}{part ? ` · ${part.number}` : ''}</span>
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
         <button type="button" className="fd-x" title="Cancel (Esc)" onClick={cancel} disabled={busy}>✕</button>
       </div>
 
       {e.step === 'select' ? (
         <div className="sp-foot" style={{ flexWrap: 'wrap' }}>
-          <span className="sp-hint">Pick a sketch to extrude:</span>
-          {candidates.map((sk, i) => (
+          <span className="sp-hint">Pick a sketch to {featureLabel.toLowerCase()}:</span>
+          {candidates.map(({ sk, n, refusal }) => (
             <button
               key={sk.id}
               type="button"
               className="btn small"
-              disabled={busy}
-              onClick={() => store.chooseCommittedSketch(sk.id)}
+              disabled={busy || refusal !== null}
+              title={refusal ?? `Sketch ${n} · ${PLANE_LABELS[sk.plane]}`}
+              onClick={() => refusal === null && store.chooseCommittedSketch(sk.id)}
             >
-              Sketch {i + 1} · {PLANE_LABELS[sk.plane]}
+              Sketch {n} · {PLANE_LABELS[sk.plane]}
             </button>
           ))}
           {candidates.length === 0 && <span className="muted small">no unconsumed sketches</span>}
           <span className="grow" />
-          <button type="button" className="btn small" disabled={busy} onClick={() => onNewSketch?.()}>
+          <button
+            type="button"
+            className="btn small"
+            disabled={busy}
+            title={isRevolve ? 'Draw a rectangle on FRONT (xy) — the v1 revolve profile' : 'Draw a contour on a picked plane'}
+            onClick={() => onNewSketch?.(e.feature)}
+          >
             New sketch…
           </button>
           <button type="button" className="btn small" onClick={cancel} disabled={busy}>Cancel</button>
@@ -128,24 +182,44 @@ export function ExtrudePanel({
           <span className="sp-hint">
             {e.source?.kind === 'committed'
               ? `sketch ${e.source.sketchId}`
-              : e.source
-                ? `drawn sketch on ${PLANE_LABELS[(e.source as { plane: PlaneOrientation }).plane]}`
-                : ''}
+              : e.source?.kind === 'pending'
+                ? `drawn sketch on ${PLANE_LABELS[e.source.plane]}`
+                : e.source
+                  ? 'drawn rectangle on FRONT (xy)'
+                  : ''}
           </span>
           {e.phase === 'error' && <span className="sp-hint warn">{e.message}</span>}
           <span className="grow" />
-          <label className="sp-depth">
-            Depth{' '}
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={e.depthMm}
-              disabled={busy}
-              onChange={(ev) => store.setDepth(Number(ev.target.value) || 1)}
-            />{' '}
-            mm
-          </label>
+          {isRevolve ? (
+            <span className="sp-depth">
+              Axis{' '}
+              {(['x', 'y'] as const).map((axis) => (
+                <button
+                  key={axis}
+                  type="button"
+                  className={`btn small${e.axis === axis ? ' primary' : ''}`}
+                  disabled={busy || axisRefusal(axis) !== null}
+                  title={axisRefusal(axis) ?? `revolve 360° around the global ${axis.toUpperCase()} axis`}
+                  onClick={() => store.setAxis(axis)}
+                >
+                  {axis.toUpperCase()}
+                </button>
+              ))}
+            </span>
+          ) : (
+            <label className="sp-depth">
+              Depth{' '}
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={e.depthMm}
+                disabled={busy}
+                onChange={(ev) => store.setDepth(Number(ev.target.value) || 1)}
+              />{' '}
+              mm
+            </label>
+          )}
           <button type="button" className="btn primary" onClick={commit} disabled={busy || !e.source}>
             {busy ? '…' : 'OK'}
           </button>

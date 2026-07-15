@@ -15,6 +15,7 @@ import { loadExtrudeBoxSource } from '../dev/fixtureSource'
 import {
   emptyMockSource,
   proceduralContourSource,
+  proceduralRevolveSource,
   type PlaneOrientation,
 } from '../sketch/proceduralExtrude'
 import { contourProblem, type Pt } from '../sketch/contour'
@@ -87,6 +88,18 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, direction: params.direction },
     }
   }
+  if (kind === 'mechanical.add_revolve_feature') {
+    // R3 mock parity (D-R10): the mirror record matches the engine's shape;
+    // the axis is structural (no editable parameters in v1).
+    return {
+      id,
+      feature_type: 'revolve',
+      engine: 'mechanical',
+      adapter_schema_version: '0.1.8',
+      depends_on_feature_ids: [params.sketch_feature_id],
+      adapter_payload: { sketch_feature_id: params.sketch_feature_id, axis: params.axis },
+    }
+  }
   return null
 }
 
@@ -96,6 +109,37 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
   // The committed mirror: partNumber → { name, features } (grows per commit,
   // ids continue across commits — same numbering behavior as the engine).
   const parts = new Map<string, { name: string; features: Record<string, unknown>[] }>()
+
+  /** R3: resolve a revolve op's rectangle — from THIS session's sketch op
+   *  (the chained path) or the mirror's committed sketch (entry A). */
+  const revolveFromOps = (
+    ops: FeatureOp[],
+    partNumber: string,
+  ): { rect: { x_mm: number; y_mm: number; width_mm: number; height_mm: number }; axis: 'x' | 'y' } | null => {
+    const rev = ops.find((o) => o.kind === 'mechanical.add_revolve_feature')
+    if (!rev) return null
+    const axis = rev.params.axis as 'x' | 'y'
+    const sessionSketch = ops.find((o) => o.kind === 'mechanical.add_sketch_feature')
+    const prim = sessionSketch
+      ? ((sessionSketch.params.primitives ?? []) as Array<Record<string, unknown>>)[0]
+      : (() => {
+          const recSk = parts
+            .get(partNumber)
+            ?.features.find((f) => f.id === rev.params.sketch_feature_id && f.feature_type === 'sketch')
+          const payload = (recSk?.adapter_payload ?? {}) as Record<string, unknown>
+          return ((payload.primitives ?? []) as Array<Record<string, unknown>>)[0]
+        })()
+    if (!prim || prim.type !== 'rectangle') return null
+    return {
+      rect: {
+        x_mm: Number(prim.x_mm),
+        y_mm: Number(prim.y_mm),
+        width_mm: Number(prim.width_mm),
+        height_mm: Number(prim.height_mm),
+      },
+      axis,
+    }
+  }
 
   /** Entry-A support: resolve the extruded COMMITTED sketch from the mirror
    *  into drawable points + plane (contour chain or rectangle corners). */
@@ -151,7 +195,15 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           const id = `feat_${String(++featSeq).padStart(4, '0')}`
           perOpIds.push([id])
           const raw = rawFeatureFromOp(op.kind, params, id)
-          if (raw) features.push(raw)
+          if (raw === null) {
+            // D-R10 (Codex1 B4): the mock REFUSES what its mirror cannot
+            // materialize — silent mock success is worse than a loud refusal.
+            // The ribbon disables these in dev:web; this is defence-in-depth.
+            throw new Error(`mock: ${op.kind} requires the desktop real-engine lane`)
+          }
+          features.push(raw)
+        } else if (op.kind.startsWith('mechanical.')) {
+          throw new Error(`mock: ${op.kind} requires the desktop real-engine lane`)
         } else {
           perOpIds.push([])
         }
@@ -184,7 +236,9 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       // real engine would reject — run the SAME pure Class-1 mirror on a drawn
       // contour (zero-length/duplicate, open, self-intersecting, collinear).
       const contour = contourFromOps(session.ops)
-      const sessionHasBase = session.ops.some((o) => o.kind === 'mechanical.add_extrude_feature')
+      const sessionHasBase = session.ops.some(
+        (o) => o.kind === 'mechanical.add_extrude_feature' || o.kind === 'mechanical.add_revolve_feature',
+      )
       if (contour) {
         const problem = contourProblem(contour.points)
         if (problem) return { valid: false, message: `mock Class-1: ${problem}` }
@@ -210,18 +264,23 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       // A session WITHOUT a base creation op produces NO solid (S2 stepwise:
       // a sketch-only commit shows as emptiness + the wire overlay — exactly
       // what the real engine's display returns for an unconsumed sketch).
-      const hasBase = ops.some((o) => o.kind === 'mechanical.add_extrude_feature')
+      const hasBase = ops.some(
+        (o) => o.kind === 'mechanical.add_extrude_feature' || o.kind === 'mechanical.add_revolve_feature',
+      )
       // Entry A (extrude a COMMITTED sketch): the session has no sketch op —
       // resolve the consumed sketch from the mirror so the mock shows the
       // DRAWN geometry, never a canned box for a real reference.
-      const mirrored = !contour && hasBase ? mirroredContour(ops, session.partNumber ?? objectRef) : null
+      const revolve = hasBase ? revolveFromOps(ops, session.partNumber ?? objectRef) : null
+      const mirrored = !contour && !revolve && hasBase ? mirroredContour(ops, session.partNumber ?? objectRef) : null
       const solid = contour ?? mirrored
       const display =
         isCreateOnly(ops) || !hasBase
           ? emptyMockSource(objectRef, `${objectRef} — dev mock (not Truth)`)
-          : solid
-            ? proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
-            : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
+          : revolve
+            ? proceduralRevolveSource(revolve.rect, revolve.axis, badge)
+            : solid
+              ? proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
+              : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
       if (!display) throw new Error('mock: display unavailable')
       // Register the commit in the mock's Truth mirror (feeds inspectRaw).
       const number = session.partNumber ?? objectRef

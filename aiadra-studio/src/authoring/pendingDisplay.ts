@@ -30,8 +30,10 @@ export interface PendingDisplayCoordinator {
    *  viewport installs (or fails), or when superseded/cancelled. */
   defer(src: DisplaySource, stillCurrent: () => boolean): Promise<void>
   /** The mount effect: install the queued source iff its transition still
-   *  holds the generation, and settle its promise either way. */
-  drain(install: (src: DisplaySource) => Promise<void>): Promise<void>
+   *  holds the generation, and settle its promise either way. The install
+   *  receives the deferring transition's `stillCurrent` so it can publish
+   *  selector facts under the SAME guard as the immediate path (Codex3 N1). */
+  drain(install: (src: DisplaySource, stillCurrent: () => boolean) => Promise<void>): Promise<void>
   /** Settle and drop any queued work (workspace clear / close-to-Home). */
   cancel(): void
   /** True when a deferred install is queued (introspection for tests). */
@@ -65,7 +67,7 @@ export function createPendingDisplayCoordinator(): PendingDisplayCoordinator {
         return
       }
       try {
-        await install(p.src)
+        await install(p.src, p.stillCurrent)
         p.resolve()
       } catch (e) {
         p.reject(e) // the transition join publishes fail-closed `error`

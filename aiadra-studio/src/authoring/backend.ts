@@ -271,6 +271,59 @@ export function buildContourOps(
   ]
 }
 
+// ---- The rectangle primitive (arc 20260715-1 R2; Codex2 N1) ---------------
+
+export interface RectDims {
+  x_mm: number
+  y_mm: number
+  width_mm: number
+  height_mm: number
+}
+
+/** Sketch epsilon shared with the contour gate: dimensions at or below this
+ *  are a refusal, mirroring the engine's positive-width/height requirement. */
+export const RECT_EPS_MM = 1e-6
+
+/** Normalize a two-click rectangle (Codex2 N1): min-corner + absolute dims —
+ *  ALL four drag directions produce the SAME semantic record, so the mock and
+ *  the real lane receive byte-equivalent primitives. Returns null when either
+ *  dimension is degenerate (at/below epsilon). */
+export function normalizeRectangle(a: Pt, b: Pt, epsMm: number = RECT_EPS_MM): RectDims | null {
+  const width = Math.abs(b.x - a.x)
+  const height = Math.abs(b.y - a.y)
+  if (width <= epsMm || height <= epsMm) return null
+  return { x_mm: Math.min(a.x, b.x), y_mm: Math.min(a.y, b.y), width_mm: width, height_mm: height }
+}
+
+/** The stepwise RECTANGLE sketch commit (D-R9): one native `rectangle`
+ *  primitive — the engine's revolve/hole vocabulary, never a contour. */
+export function buildRectangleSketchOps(
+  partNumber: string,
+  rect: RectDims,
+  plane: PlaneOrientation,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_sketch_feature',
+      params: {
+        part_number: partNumber,
+        primitives: [{ type: 'rectangle', ...rect }],
+        plane: { kind: 'principal', orientation: plane },
+      },
+    },
+  ]
+}
+
+/** The dev-lane fresh-Part rectangle flow (create + rectangle sketch). */
+export function buildCreateWithRectangleOps(
+  partNumber: string,
+  name: string,
+  rect: RectDims,
+  plane: PlaneOrientation,
+): FeatureOp[] {
+  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildRectangleSketchOps(partNumber, rect, plane)]
+}
+
 /** The STEPWISE sketch commit (S2 D-S2): the sketch alone becomes Truth —
  *  `Sketch N` in the tree + its wire in the viewport; Extrude consumes it
  *  later (dual entry A). */
@@ -300,6 +353,103 @@ export function buildCreateWithSketchOps(
   plane: PlaneOrientation,
 ): FeatureOp[] {
   return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildSketchOnlyOps(partNumber, points, plane)]
+}
+
+/** Revolve an ALREADY-COMMITTED eligible rectangle sketch (R3 entry A): one
+ *  op on the REAL inspected id; the engine's rectangle/crossing validators
+ *  stay authoritative. */
+export function buildRevolveOnSketchOps(
+  partNumber: string,
+  sketchFeatureId: string,
+  axis: 'x' | 'y',
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_revolve_feature',
+      params: { part_number: partNumber, sketch_feature_id: sketchFeatureId, axis },
+    },
+  ]
+}
+
+/** The chained one-draft revolve (R3 entry B): the rectangle sketch and the
+ *  revolve commit TOGETHER — the engine mints the sketch id mid-draft via the
+ *  $fromOp handshake. Plane pinned xy (the engine's v1 bound). */
+export function buildRectangleRevolveOps(
+  partNumber: string,
+  rect: RectDims,
+  axis: 'x' | 'y',
+): FeatureOp[] {
+  return [
+    ...buildRectangleSketchOps(partNumber, rect, 'xy'),
+    {
+      kind: 'mechanical.add_revolve_feature',
+      params: { part_number: partNumber, sketch_feature_id: opRef(0), axis },
+    },
+  ]
+}
+
+/** Round (fillet) / Chamfer over a CAPTURED sharp edge (R4): ONE op; the
+ *  display edge_id crosses as ADR/0038 INPUT vocabulary — the engine
+ *  re-anchors it as a recipe reference and stays the final authority. */
+export function buildEdgeFeatureOps(
+  feature: 'fillet' | 'chamfer',
+  partNumber: string,
+  targetEdgeId: string,
+  valueMm: number,
+): FeatureOp[] {
+  return [
+    feature === 'fillet'
+      ? {
+          kind: 'mechanical.add_fillet_feature',
+          params: { part_number: partNumber, target_edge_id: targetEdgeId, radius_mm: valueMm },
+        }
+      : {
+          kind: 'mechanical.add_chamfer_feature',
+          params: { part_number: partNumber, target_edge_id: targetEdgeId, distance_mm: valueMm },
+        },
+  ]
+}
+
+/** A circular through-hole on a CAPTURED cap face (R5): ONE op; the display
+ *  face_id is ADR/0038 INPUT vocabulary; wall-vs-cap + fit are the ENGINE's
+ *  refusals (surfaced verbatim at begin/simulate). */
+export function buildHoleOps(
+  partNumber: string,
+  targetFaceId: string,
+  diameterMm: number,
+  centerXMm: number,
+  centerYMm: number,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_hole_feature',
+      params: {
+        part_number: partNumber,
+        target_face_id: targetFaceId,
+        diameter_mm: diameterMm,
+        center_x_mm: centerXMm,
+        center_y_mm: centerYMm,
+      },
+    },
+  ]
+}
+
+/** Edit ONE catalogued dimension (R6): the engine's regenerating
+ *  `adjust_feature_parameter` — addressed by feature id + parameter NAME
+ *  (the identity-preserving record travels in the session; the engine
+ *  validates the name/value authoritatively). */
+export function buildAdjustParameterOps(
+  partNumber: string,
+  featureId: string,
+  parameterName: string,
+  newValue: number,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.adjust_feature_parameter',
+      params: { part_number: partNumber, feature_id: featureId, parameter_name: parameterName, new_value: newValue },
+    },
+  ]
 }
 
 /** Extrude an ALREADY-COMMITTED unconsumed sketch (S2 D-S3 entry A): one op,

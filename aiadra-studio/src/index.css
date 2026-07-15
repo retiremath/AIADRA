@@ -497,6 +497,7 @@ body { background: var(--bg); overflow: hidden; }
    visible while the feature is edited — Creo keeps the geometry in view under
    its dashboard. */
 .extrude-panel { inset: 52px 12px auto 12px; }
+.sp-tools { display: flex; gap: 4px; margin-left: 10px; }
 .extrude-panel .sp-foot { border-top: 0; }
 
 /* The Home state (arc 20260714-1; D-H1/D-H2 — the Creo-paradigm startup) */

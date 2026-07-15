@@ -152,9 +152,18 @@ def _report_to_dict(report: Any) -> dict[str, Any]:
     d = _to_jsonable(report)
     if not isinstance(d, dict):
         d = {"report": str(report)}
+    # Arc 20260715-1 P2 (a REAL pre-existing bug): core ValidationOutcome
+    # carries `result` ("PASS"|"FAIL"), not `status` — the old filter matched
+    # nothing, so simulate always reported valid=True through the bridge.
+    # Prefer the report's own failures_count; fall back to the result filter.
     outcomes = d.get("outcomes") or []
-    failed = [o for o in outcomes if isinstance(o, dict) and str(o.get("status", "")).upper() == "FAIL"]
-    d["valid"] = len(failed) == 0
+    failed = [
+        o for o in outcomes
+        if isinstance(o, dict)
+        and str(o.get("result", o.get("status", ""))).upper() == "FAIL"
+    ]
+    fc = d.get("failures_count")
+    d["valid"] = (int(fc) == 0) if isinstance(fc, int) else len(failed) == 0
     return d
 
 

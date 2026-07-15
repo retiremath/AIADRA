@@ -27,7 +27,7 @@ describe('authoringSession (S2 D-S4 — ONE discriminated session)', () => {
     RING.forEach((p) => s.addPoint(p))
     s.closeRing()
     const st = s.getSnapshot()
-    expect(st.mode === 'sketch' && st.closed).toBe(true)
+    expect(st.mode === 'sketch' && st.tool.kind === 'contour' && st.tool.closed).toBe(true)
   })
 
   it('dual entry A: a preselected sketch goes STRAIGHT to depth', () => {
@@ -101,6 +101,99 @@ describe('authoringSession (S2 D-S4 — ONE discriminated session)', () => {
     s.finishChainedSketch()
     const ex = s.getSnapshot()
     expect(ex.mode === 'extrude' && ex.target).toEqual(tuple)
+  })
+
+  it('R2: the rectangle tool — two clicks normalize; degenerate picks refuse; Restart resets', () => {
+    const s = createAuthoringSessionStore()
+    s.startSketch({ plane: 'xy', tool: 'rectangle' })
+    const st0 = s.getSnapshot()
+    expect(st0.mode === 'sketch' && st0.tool.kind).toBe('rectangle')
+    s.addPoint({ x: 1, y: 1 }) // contour actions no-op on the rectangle tool
+    s.placeRectCorner({ x: 30, y: 40 })
+    s.placeRectCorner({ x: 30, y: 40 }) // zero-size → refused, anchor kept
+    let st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'rectangle' && st.tool.rect).toBeNull()
+    expect(st.mode === 'sketch' && st.message).toMatch(/zero-size/)
+    s.placeRectCorner({ x: 10, y: 10 }) // drag up-left: still normalizes
+    st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'rectangle' && st.tool.rect).toEqual({
+      x_mm: 10, y_mm: 10, width_mm: 20, height_mm: 30,
+    })
+    expect(st.mode === 'sketch' && st.phase).toBe('closed')
+    s.reopen() // Restart clears the rectangle
+    st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'rectangle' && st.tool.anchor).toBeNull()
+  })
+
+  it('R2: switching tools resets the drawing; the chained sketch pins contour', () => {
+    const s = createAuthoringSessionStore()
+    s.startSketch({ plane: 'xy' })
+    s.addPoint({ x: 0, y: 0 })
+    s.switchTool('rectangle')
+    let st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind).toBe('rectangle')
+    s.switchTool('contour')
+    st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'contour' && st.tool.points).toEqual([])
+    s.cancel()
+    s.startExtrude(null)
+    s.beginChainedSketch('zx', null)
+    st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind).toBe('contour')
+  })
+
+  it('R3: the chained RECTANGLE hand-back restores the REVOLVE session (feature/axis survive)', () => {
+    const s = createAuthoringSessionStore()
+    const tuple = { workspaceId: 'ws-1', partNumber: 'P-1', generation: 3 }
+    s.startExtrude(null, tuple, 10, 'revolve')
+    s.setAxis('y')
+    s.beginChainedSketch('xy', { number: 'P-1', name: 'A' }, 'rectangle')
+    let st = s.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind).toBe('rectangle')
+    s.placeRectCorner({ x: 5, y: 5 })
+    s.placeRectCorner({ x: 25, y: 15 })
+    s.finishChainedSketch()
+    st = s.getSnapshot()
+    expect(st.mode).toBe('extrude')
+    expect(st.mode === 'extrude' && st.feature).toBe('revolve')
+    expect(st.mode === 'extrude' && st.axis).toBe('y')
+    expect(st.mode === 'extrude' && st.target).toEqual(tuple)
+    expect(st.mode === 'extrude' && st.source).toEqual({
+      kind: 'pending_rectangle',
+      rect: { x_mm: 5, y_mm: 5, width_mm: 20, height_mm: 10 },
+    })
+  })
+
+  it('R5/R6: hole + edit sessions own their capture; only catalogued names are addressable', () => {
+    const s = createAuthoringSessionStore()
+    const tuple = { workspaceId: 'ws-1', partNumber: 'P-1', generation: 4 }
+    // hole
+    s.startHoleFeature({ target: tuple, selector: { kind: 'face', id: 'f:cap' }, edgeKind: null })
+    let st = s.getSnapshot()
+    expect(st.mode === 'holeFeature' && st.capture.selector.id).toBe('f:cap')
+    s.setHoleParam('diameterMm', 8)
+    st = s.getSnapshot()
+    expect(st.mode === 'holeFeature' && st.diameterMm).toBe(8)
+    s.cancel()
+    // edit-dimension: the catalogue is the only addressable surface (N3)
+    const params = [
+      { id: 'featp_0001', name: 'depth_mm', value: 5, unit: 'mm' },
+      { id: 'featp_0002', name: 'radius_mm', value: 2, unit: 'mm' },
+    ]
+    s.startEditParameter(tuple, 'feat_0002', params)
+    st = s.getSnapshot()
+    expect(st.mode === 'editParameter' && st.paramName).toBe('depth_mm')
+    expect(st.mode === 'editParameter' && st.value).toBe(5)
+    s.chooseEditParameter('radius_mm')
+    st = s.getSnapshot()
+    expect(st.mode === 'editParameter' && st.value).toBe(2)
+    s.chooseEditParameter('evil_field') // NOT catalogued → refused
+    st = s.getSnapshot()
+    expect(st.mode === 'editParameter' && st.paramName).toBe('radius_mm')
+    s.startEditParameter(tuple, 'x', []) // no catalogued params → refuses to start
+    s.cancel()
+    s.startEditParameter(tuple, 'x', [])
+    expect(s.getSnapshot().mode).toBe('idle')
   })
 
   it('busy extrude refuses depth edits and sketch chaining', () => {

@@ -32,7 +32,7 @@ describe('the pre-mount display coordinator (Codex5 B1.1 — the deferral IS the
     const install = vi.fn(async () => {})
     await coord.drain(install)
     await done
-    expect(install).toHaveBeenCalledWith(SRC)
+    expect(install).toHaveBeenCalledWith(SRC, expect.any(Function))
     expect(store.getSnapshot().inspection.status).toBe('ready')
   })
 

@@ -156,6 +156,155 @@ export function buildContourDisplay(
 }
 
 /** A DisplaySource for the procedurally-extruded drawn contour (dev:web mock). */
+/**
+ * The dev-lane REVOLVE display (arc 20260715-1 R3 / D-R10): an xy rectangle
+ * swept 360° around the global X or Y axis — a tube (offset profile) or a
+ * solid cylinder (profile touching the axis), matching the engine's radial
+ * modes. Honest mock: only geometry the real engine produces.
+ */
+export function buildRevolveDisplay(
+  rect: { x_mm: number; y_mm: number; width_mm: number; height_mm: number },
+  axis: 'x' | 'y',
+  segments = 48,
+): DisplayRepresentation {
+  // Axial extent + radial band from the rectangle, per the engine's rule:
+  // axis x → radius from y, axial from x; axis y → radius from x, axial from y.
+  const a0 = axis === 'x' ? rect.x_mm : rect.y_mm
+  const a1 = a0 + (axis === 'x' ? rect.width_mm : rect.height_mm)
+  const rLoRaw = axis === 'x' ? rect.y_mm : rect.x_mm
+  const rHiRaw = rLoRaw + (axis === 'x' ? rect.height_mm : rect.width_mm)
+  const r0 = Math.min(Math.abs(rLoRaw), Math.abs(rHiRaw))
+  const r1 = Math.max(Math.abs(rLoRaw), Math.abs(rHiRaw))
+  const solid = r0 <= 1e-9 // the profile touches the axis
+
+  // A point at (axial u, radius r, angle t) in world coords.
+  const pt = (u: number, r: number, t: number): [number, number, number] => {
+    const c = Math.cos(t) * r
+    const sn = Math.sin(t) * r
+    return axis === 'x' ? [u, c, sn] : [sn, u, c]
+  }
+  const radial = (t: number): [number, number, number] => {
+    const c = Math.cos(t)
+    const sn = Math.sin(t)
+    return axis === 'x' ? [0, c, sn] : [sn, 0, c]
+  }
+  const axial = (sign: number): [number, number, number] =>
+    axis === 'x' ? [sign, 0, 0] : [0, sign, 0]
+
+  const faces: FaceBuffer[] = []
+  const ring = (
+    faceId: string,
+    r: number,
+    outward: boolean,
+  ) => {
+    const positions: number[] = []
+    const normals: number[] = []
+    const indices: number[] = []
+    for (let i = 0; i <= segments; i++) {
+      const t = (i / segments) * Math.PI * 2
+      const n = radial(t).map((v) => (outward ? v : -v)) as [number, number, number]
+      positions.push(...pt(a0, r, t), ...pt(a1, r, t))
+      normals.push(...n, ...n)
+    }
+    for (let i = 0; i < segments; i++) {
+      const k = i * 2
+      if (outward) indices.push(k, k + 2, k + 3, k, k + 3, k + 1)
+      else indices.push(k, k + 3, k + 2, k, k + 1, k + 3)
+    }
+    faces.push({ face_id: faceId, positions, normals, triangles: indices, appearance_slot: 'default' })
+  }
+  const cap = (faceId: string, u: number, sign: number) => {
+    const positions: number[] = []
+    const normals: number[] = []
+    const indices: number[] = []
+    const n = axial(sign)
+    const rin = solid ? 0 : r0
+    for (let i = 0; i <= segments; i++) {
+      const t = (i / segments) * Math.PI * 2
+      positions.push(...pt(u, rin, t), ...pt(u, r1, t))
+      normals.push(...n, ...n)
+    }
+    for (let i = 0; i < segments; i++) {
+      const k = i * 2
+      if (sign > 0) indices.push(k, k + 1, k + 3, k, k + 3, k + 2)
+      else indices.push(k, k + 3, k + 1, k, k + 2, k + 3)
+    }
+    faces.push({ face_id: faceId, positions, normals, triangles: indices, appearance_slot: 'default' })
+  }
+
+  ring('mock:revolve:outer_wall', r1, true)
+  if (!solid) ring('mock:revolve:inner_wall', r0, false)
+  cap('mock:revolve:cap_lo', a0, -1)
+  cap('mock:revolve:cap_hi', a1, 1)
+
+  const circleEdge = (edgeId: string, u: number, r: number): EdgePolyline => {
+    const polyline: number[] = []
+    for (let i = 0; i <= segments; i++) {
+      const t = (i / segments) * Math.PI * 2
+      polyline.push(...pt(u, r, t))
+    }
+    return { edge_id: edgeId, kind: 'sharp', polyline, faces: [] }
+  }
+  const edges: EdgePolyline[] = [
+    circleEdge('mock:revolve:e0', a0, r1),
+    circleEdge('mock:revolve:e1', a1, r1),
+  ]
+  if (!solid) edges.push(circleEdge('mock:revolve:e2', a0, r0), circleEdge('mock:revolve:e3', a1, r0))
+
+  const lo = Math.min(a0, a1)
+  const hi = Math.max(a0, a1)
+  const bboxMin: [number, number, number] = axis === 'x' ? [lo, -r1, -r1] : [-r1, lo, -r1]
+  const bboxMax: [number, number, number] = axis === 'x' ? [hi, r1, r1] : [r1, hi, r1]
+
+  return {
+    display_representation_version: DISPLAY_REPRESENTATION_VERSION,
+    identity: {
+      object_uuid: 'mock-revolve',
+      object_number: 'mock',
+      geometry_ref: 'mock:procedural-revolve',
+      cache_key: 'mock',
+      topology_signature: 'mock',
+    },
+    render: {
+      faces,
+      edges,
+      vertices: [],
+      bbox_min: bboxMin,
+      bbox_max: bboxMax,
+      linear_deflection_mm: 0.1,
+      angular_deflection_rad: 0.5,
+      buffer_encoding: 'json_arrays',
+    },
+    selection: { id_space: 'ephemeral', pickable_kinds: [], names: {} },
+    view_dependent: null,
+    invalidation: { stale_when: [], selection_invalid_when: 'topology_signature_changed' },
+    counters: {
+      face_count: faces.length,
+      edge_count_by_kind: { sharp: edges.length },
+      triangle_count: faces.reduce((n, f) => n + f.triangles.length / 3, 0),
+      vertex_count: 0,
+    },
+  } as unknown as DisplayRepresentation
+}
+
+/** Wrap the procedural revolve as a DisplaySource (badged mock). */
+export function proceduralRevolveSource(
+  rect: { x_mm: number; y_mm: number; width_mm: number; height_mm: number },
+  axis: 'x' | 'y',
+  badge: string,
+): DisplaySource {
+  const display = buildRevolveDisplay(rect, axis)
+  return {
+    kind: 'fixture',
+    badge,
+    snapViews: [],
+    getDisplay: async () => display,
+    getHlr: async () => {
+      throw new Error('mock revolve has no HLR')
+    },
+  } as unknown as DisplaySource
+}
+
 export function proceduralContourSource(
   points: Pt[],
   depthMm: number,
