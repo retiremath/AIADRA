@@ -7,7 +7,7 @@ const DISPLAY = { kind: 'fixture', badge: 't', snapViews: [], getDisplay: async 
 function fakeBackend(overrides: Partial<AuthoringBackend> = {}) {
   return {
     isReal: false,
-    begin: vi.fn(async () => 'S1'),
+    begin: vi.fn(async () => ({ sessionId: 'S1', createdFeatureIds: [] as string[][] })),
     simulate: vi.fn(async () => ({ valid: true })),
     commit: vi.fn(async (_s: string, objectRef: string): Promise<CommitResult> => ({ objectRef, display: DISPLAY })),
     rollback: vi.fn(async () => {}),
@@ -55,7 +55,7 @@ describe('the one-shot commit (Codex5 B1 — self-cleaning, stale-aware)', () =>
     const b = fakeBackend({
       begin: vi.fn(async () => {
         stale = true // e.g. a workspace switch resolved mid-flight
-        return 'S1'
+        return { sessionId: 'S1', createdFeatureIds: [] as string[][] }
       }),
     })
     const r = await runOneShotCommit(b, OPS, 'P-1', () => stale)

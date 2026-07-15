@@ -122,6 +122,16 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
             f"{ENGINE_OP_PREFIX}: a Part has BOTH an extrude and a revolve base feature; "
             f"v1 supports exactly one base creation per Part"
         )
+    # S2 (arc 20260714-3 Codex1 B3): the SAME-KIND half — a stored recipe with
+    # two extrudes (or two revolves) fails loud too, never "last one wins".
+    n_extrudes = sum(1 for f in features if f.get("feature_type") == "extrude")
+    n_revolves = sum(1 for f in features if f.get("feature_type") == "revolve")
+    if n_extrudes > 1 or n_revolves > 1:
+        raise TransactionError(
+            f"{ENGINE_OP_PREFIX}: a Part has {max(n_extrudes, n_revolves)} "
+            f"{'extrude' if n_extrudes > 1 else 'revolve'} base features; "
+            f"v1 supports exactly one base creation per Part"
+        )
     base = extrude if extrude is not None else revolve
     if base is not None:
         # EP2 (arc 20260714-2, Codex1 B2): the base feature consumes EXACTLY the

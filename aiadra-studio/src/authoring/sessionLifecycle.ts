@@ -62,7 +62,7 @@ export function createSessionLifecycle(backend: AuthoringBackend): SessionLifecy
       running = true
       hooks.onBusy()
       try {
-        const sid = await backend.begin(ops)
+        const { sessionId: sid } = await backend.begin(ops)
         if (myGen !== gen) {
           await backend.rollback(sid).catch(() => {})
           return

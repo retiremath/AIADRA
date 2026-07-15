@@ -15,6 +15,75 @@ export interface FeatureOp {
   params: Record<string, unknown>
 }
 
+// ---- Engine-owned staged identity (S2; arc 20260714-3 Codex1 B1) -----------
+
+/**
+ * A session-local reference to a PRIOR op's product: `{ $fromOp: n }` stands
+ * for "the feature id op `n` minted". Resolved INSIDE the AuthoringBackend
+ * implementations against the engine's per-op `created_feature_ids` — the
+ * alias never crosses the IPC boundary and is never persisted. This kills all
+ * renderer-side `feat_NNNN` prediction.
+ */
+export interface OpProductRef {
+  $fromOp: number
+}
+
+export const opRef = (n: number): OpProductRef => ({ $fromOp: n })
+
+export function isOpRef(v: unknown): v is OpProductRef {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const keys = Object.keys(v)
+  if (!('$fromOp' in v)) return false
+  // Codex2 bar (loud validation): a $fromOp carrying extra keys is a malformed
+  // alias, not a passthrough value — fail rather than persist it.
+  if (keys.length !== 1) throw new Error(`malformed $fromOp alias: extra keys [${keys.join(', ')}]`)
+  return true
+}
+
+/**
+ * Resolve every `{ $fromOp: n }` in an op's params against the ids minted so
+ * far (`perOpIds[n]` = op n's engine-owned created_feature_ids). LOUD on a
+ * forward/out-of-range reference and on cardinality ≠ 1 (Codex2 bar) — an
+ * alias must name exactly one product, never guess among several or none.
+ * Pure: returns a new value, never mutates the input.
+ */
+export function resolveOpAliases(value: unknown, opIndex: number, perOpIds: string[][]): unknown {
+  if (isOpRef(value)) {
+    const n = value.$fromOp
+    if (!Number.isInteger(n) || n < 0 || n >= opIndex) {
+      throw new Error(`$fromOp ${String(n)} in op ${opIndex} must reference an EARLIER op (0..${opIndex - 1})`)
+    }
+    const ids = perOpIds[n]
+    if (ids.length !== 1) {
+      throw new Error(`$fromOp ${n}: op ${n} created ${ids.length} features — an alias needs exactly 1`)
+    }
+    return ids[0]
+  }
+  if (Array.isArray(value)) return value.map((v) => resolveOpAliases(v, opIndex, perOpIds))
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, resolveOpAliases(v, opIndex, perOpIds)]),
+    )
+  }
+  return value
+}
+
+/** Validate an ids array at a trust boundary (Codex2 bar: validated response
+ *  arrays at EVERY boundary — main validates the bridge, this validates main). */
+export function assertCreatedFeatureIds(v: unknown, where: string): string[] {
+  if (!Array.isArray(v) || !v.every((id) => typeof id === 'string' && id.length > 0)) {
+    throw new Error(`${where}: response is missing a valid createdFeatureIds array`)
+  }
+  return v as string[]
+}
+
+/** What `begin` returns: the opaque session id + each op's ENGINE-minted
+ *  feature ids (per-op deltas, index-aligned with the submitted ops). */
+export interface BeginResult {
+  sessionId: string
+  createdFeatureIds: string[][]
+}
+
 export interface SimulateResult {
   valid: boolean
   message?: string
@@ -29,8 +98,10 @@ export interface CommitResult {
 export interface AuthoringBackend {
   /** true = real engine over the bridge; false = the dev:web mock. */
   readonly isReal: boolean
-  /** Open a draft with an op sequence; returns the opaque session id. */
-  begin(ops: FeatureOp[]): Promise<string>
+  /** Open a draft with an op sequence; returns the opaque session id + each
+   *  op's engine-minted feature ids. `{ $fromOp: n }` aliases in params are
+   *  resolved inside the implementation and never leave the renderer. */
+  begin(ops: FeatureOp[]): Promise<BeginResult>
   /** Validate the draft (no write). */
   simulate(sessionId: string): Promise<SimulateResult>
   /** Commit; returns the committed object ref + its display source. */
@@ -80,18 +151,9 @@ export function sketchAuthoringGate(
   return 'Create a Part with New… first — sketching an existing Part arrives with the S2 slice'
 }
 
-/**
- * Reconcile the authoring target when a canonical Part LOADS into the viewport
- * (Codex5 B2): if the displayed Part is not the target, the target is no
- * longer trustworthy — clear it (fail closed) rather than author against a
- * hidden Part.
- */
-export function reconcileLoadedPart<T extends { number: string }>(
-  active: T | null,
-  loadedNumber: string,
-): T | null {
-  return active && active.number === loadedNumber ? active : null
-}
+// (EP1's `reconcileLoadedPart` fail-close is superseded in S2: loading a
+// canonical Part now ADOPTS it into the generation-owned partContext — the
+// tree, target, and eligibility all follow the displayed Part by construction.)
 
 // ---- Backend lane selection (arc 20260714-1; Codex1 B2) --------------------
 
@@ -132,32 +194,8 @@ export function createUnavailableBackend(): AuthoringBackend {
   }
 }
 
-/**
- * Build the op sequence for "sketch a rectangle + extrude it" — the parametric-
- * rectangle sketch of the anti-balloon guardrail (a fresh Part; sketch = feat_0001).
- */
-export function buildExtrudeOps(
-  partNumber: string,
-  name: string,
-  widthMm: number,
-  heightMm: number,
-  depthMm: number,
-): FeatureOp[] {
-  return [
-    { kind: 'create_part', params: { number: partNumber, name } },
-    {
-      kind: 'mechanical.add_sketch_feature',
-      params: {
-        part_number: partNumber,
-        primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: widthMm, height_mm: heightMm }],
-      },
-    },
-    {
-      kind: 'mechanical.add_extrude_feature',
-      params: { part_number: partNumber, sketch_feature_id: 'feat_0001', depth_mm: depthMm, direction: 'z+' },
-    },
-  ]
-}
+// (The parametric-rectangle `buildExtrudeOps` retired in S2 with its dashboard
+//  — Extrude is now dual-entry over real sketches, never a canned rectangle.)
 
 /** The three principal sketch planes (EP2). Studio labels follow the Creo
  *  convention; the ENGINE speaks geometry — labels never cross the wire. */
@@ -182,14 +220,17 @@ export function buildCreatePartOps(partNumber: string, name: string): FeatureOp[
 }
 
 /** Sketch + extrude feature ops targeting an EXISTING Part (EP1: features are
- *  edits to the active Part, never a new Part per commit). `sketchFeatureId`
- *  must be the id the engine will mint for the sketch in THIS draft. */
+ *  edits to the active Part, never a new Part per commit). The extrude
+ *  references the sketch via `{ $fromOp: sketchOpIndex }` — the ENGINE mints
+ *  the id; the renderer never predicts it (S2 Codex1 B1). `sketchOpIndex` is
+ *  the sketch's index in the FINAL submitted sequence (0 when these two ops
+ *  stand alone; shift it when ops are prepended). */
 export function buildContourFeatureOps(
   partNumber: string,
   points: Pt[],
   depthMm: number,
   plane: PlaneOrientation,
-  sketchFeatureId: string,
+  sketchOpIndex = 0,
 ): FeatureOp[] {
   return [
     {
@@ -204,7 +245,7 @@ export function buildContourFeatureOps(
       kind: 'mechanical.add_extrude_feature',
       params: {
         part_number: partNumber,
-        sketch_feature_id: sketchFeatureId,
+        sketch_feature_id: opRef(sketchOpIndex),
         depth_mm: depthMm,
         direction: 'normal+',
       },
@@ -215,7 +256,7 @@ export function buildContourFeatureOps(
 /**
  * Build the op sequence for "sketch a DRAWN contour + extrude it" on a FRESH
  * Part (the workspace-less dev flow; arc 20260711-11 slice S/X + the EP2
- * plane). The sketch is feat_0001 on a fresh Part.
+ * plane). create_part is op 0, so the sketch sits at op index 1.
  */
 export function buildContourOps(
   partNumber: string,
@@ -226,6 +267,57 @@ export function buildContourOps(
 ): FeatureOp[] {
   return [
     { kind: 'create_part', params: { number: partNumber, name } },
-    ...buildContourFeatureOps(partNumber, points, depthMm, plane, 'feat_0001'),
+    ...buildContourFeatureOps(partNumber, points, depthMm, plane, 1),
+  ]
+}
+
+/** The STEPWISE sketch commit (S2 D-S2): the sketch alone becomes Truth —
+ *  `Sketch N` in the tree + its wire in the viewport; Extrude consumes it
+ *  later (dual entry A). */
+export function buildSketchOnlyOps(
+  partNumber: string,
+  points: Pt[],
+  plane: PlaneOrientation,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_sketch_feature',
+      params: {
+        part_number: partNumber,
+        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
+        plane: { kind: 'principal', orientation: plane },
+      },
+    },
+  ]
+}
+
+/** The dev-lane stepwise flow without an active Part: create + sketch (the
+ *  drawn ring becomes the fresh Part's first unconsumed sketch). */
+export function buildCreateWithSketchOps(
+  partNumber: string,
+  name: string,
+  points: Pt[],
+  plane: PlaneOrientation,
+): FeatureOp[] {
+  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildSketchOnlyOps(partNumber, points, plane)]
+}
+
+/** Extrude an ALREADY-COMMITTED unconsumed sketch (S2 D-S3 entry A): one op,
+ *  a REAL engine id from inspected Truth — nothing predicted. */
+export function buildExtrudeOnSketchOps(
+  partNumber: string,
+  sketchFeatureId: string,
+  depthMm: number,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_extrude_feature',
+      params: {
+        part_number: partNumber,
+        sketch_feature_id: sketchFeatureId,
+        depth_mm: depthMm,
+        direction: 'normal+',
+      },
+    },
   ]
 }

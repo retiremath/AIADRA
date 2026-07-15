@@ -1,26 +1,28 @@
 /**
- * The 2D sketch pad (arc 20260711-11 slice S/X) — draw a closed contour, then
- * extrude it into a real solid. v1 sketches head-on on the XY datum plane, as
- * Creo orients to the sketch plane; drawing on arbitrary 3D planes/surfaces +
- * references is the incremental follow-up.
+ * The 2D sketch pad (arc 20260711-11 slice S/X; S2 stepwise) — draw a closed
+ * contour on the picked plane. S2 (D-S2/D-S4): the pad is a view over the ONE
+ * discriminated `authoringSession` store, and the sketch is FIRST-CLASS —
+ * OK commits the sketch ALONE (→ `Sketch N` in the tree + its wire in the
+ * viewport; Extrude consumes it later), except in the CHAINED entry (launched
+ * from Extrude's "New sketch…"), where OK hands the drawn rings back to the
+ * extrude session and the pair commits as ONE draft via the $fromOp handshake.
  *
- * The pad is the VIEW over the pure `sketchStore` (source of truth); it owns the
- * async extrude side effect (buildContourOps → the AuthoringBackend → the
- * viewport display swap). Validity is a client-side mirror of the engine's
- * Class-1 gate (`contourProblem`) so the hint matches what commit will accept.
+ * Validity is a client-side mirror of the engine's Class-1 gate
+ * (`contourProblem`) so the hint matches what commit will accept.
  */
-import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import type { ViewportApi } from '../Viewport'
+import { useEffect, useMemo, useRef } from 'react'
+import type { DisplaySource } from '../display/displaySource'
 import {
-  buildContourFeatureOps,
-  buildContourOps,
+  buildCreateWithSketchOps,
+  buildSketchOnlyOps,
   PLANE_LABELS,
   suggestPartNumber,
   type AuthoringBackend,
 } from '../authoring/backend'
+import { useAuthoringSession, type AuthoringSessionStore } from '../authoring/authoringSession'
 import { createSessionLifecycle } from '../authoring/sessionLifecycle'
+import { guardTerminalTarget, type PartContextStore } from '../authoring/partContext'
 import { contourProblem, dist, type Pt } from './contour'
-import { useSketch, type SketchStore } from './sketchStore'
 
 const HALF_W = 130 // mm half-width of the pad view
 const HALF_H = 85 // mm half-height
@@ -43,37 +45,40 @@ const plot = (p: Pt) => `${p.x},${-p.y}`
 export function SketchPad({
   store,
   backend,
-  viewportApi,
+  context,
   onClose,
-  targetFeatureCount = 0,
   onCommitted,
 }: {
-  store: SketchStore
+  store: AuthoringSessionStore
   backend: AuthoringBackend
-  viewportApi: MutableRefObject<ViewportApi | null>
+  /** The generation-owned Part context — the terminal commit REVALIDATES the
+   *  captured target against it (Codex3 B2, fail closed). */
+  context: PartContextStore
   onClose: () => void
-  /** The active Part's current feature count (EP1) — the engine mints the next
-   *  sketch id from it, so the extrude references the RIGHT sketch. */
-  targetFeatureCount?: number
-  /** Fired after EVERY successful commit (Codex5 B2) so the shell reconciles
-   *  the authoring target: onto the active Part (`createdFresh: false`) or a
-   *  fresh Part in the badged dev lane (`createdFresh: true`). */
-  onCommitted?: (info: { number: string; name: string; createdFresh: boolean }) => void
+  /** Fired after every successful STEPWISE commit; carries the commit's
+   *  display source so the Workbench installs it INSIDE the same Part
+   *  transition that re-reads Truth (Codex3 B2 — no direct installs here). */
+  onCommitted?: (info: {
+    number: string
+    name: string
+    createdFresh: boolean
+    display: DisplaySource
+  }) => void
 }) {
-  const s = useSketch(store)
+  const st = useAuthoringSession(store)
+  const s = st.mode === 'sketch' ? st : null
   const svgRef = useRef<SVGSVGElement>(null)
-  const [depthMm, setDepthMm] = useState(10)
 
-  // Codex6 B1: the SAME shared begin→simulate→commit lifecycle as the
-  // FeatureDashboard — retained session, retry cleanup, uninterruptible commit.
+  // Codex6 B1 → S2: the SAME shared begin→simulate→commit lifecycle as every
+  // authoring surface — retained session, retry cleanup, uninterruptible commit.
   const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
-  const busy = s.phase === 'busy'
-  const problem = contourProblem(s.points)
-  const nearStart = s.cursor && s.points.length >= 3 && dist(s.cursor, s.points[0]) <= CLOSE_MM
+  const busy = s?.phase === 'busy'
+  const problem = s ? contourProblem(s.points) : null
+  const nearStart = s?.cursor && s.points.length >= 3 && dist(s.cursor, s.points[0]) <= CLOSE_MM
 
   // Esc cancels; Enter closes a valid ring; Backspace undoes — guarded off inputs.
   useEffect(() => {
-    if (!s.active) return
+    if (!s) return
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
@@ -84,9 +89,9 @@ export function SketchPad({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.active, s.phase, problem])
+  }, [s?.phase, !!s, problem])
 
-  if (!s.active) return null
+  if (!s) return null
 
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (s.closed || busy || !svgRef.current) return
@@ -116,37 +121,53 @@ export function SketchPad({
     onClose()
   }
 
-  const extrude = async () => {
+  /** OK — the stepwise sketch commit (or the chained hand-back). */
+  const ok = async () => {
     if (busy || problem) return
-    // EP1: with an ACTIVE Part (commit-at-New), the sketch+extrude are ADDED
-    // as features to it — the engine mints the next sketch id from the Part's
-    // current feature count. Without one (the plain dev flow), a fresh Part is
-    // created; its number stays PROVISIONAL either way: core validates +
-    // reserves it at commit (ADR/0004) and a collision fails loudly.
+    if (s.chainToExtrude) {
+      // The chained in-place sketch: NO commit here — the rings return to the
+      // extrude session and the pair commits as ONE draft ($fromOp).
+      store.finishChainedSketch()
+      return
+    }
     const target = s.targetPart
+    // Codex3 B2 / Codex4 B1.4: the terminal boundary revalidates the CAPTURED
+    // authority tuple — a targeted session whose tuple is missing or no longer
+    // exact (workspace, Part number, generation, ready) fails closed.
+    if (target) {
+      const refusal = s.targetAuth
+        ? guardTerminalTarget(s.targetAuth, context.getSnapshot())
+        : 'the session has no captured target authority — cancel and reopen the operation'
+      if (refusal) {
+        store.setSketchPhase('error', refusal)
+        return
+      }
+    }
     const num = target?.number ?? s.partNumber ?? suggestPartNumber()
     const name = target?.name ?? s.partName ?? `Sketch ${num}`
-    const sketchId = `feat_${String(targetFeatureCount + 1).padStart(4, '0')}`
     const ops = target
-      ? buildContourFeatureOps(target.number, s.points, depthMm, s.plane, sketchId)
-      : buildContourOps(num, name, s.points, depthMm, s.plane)
+      ? buildSketchOnlyOps(target.number, s.points, s.plane)
+      : buildCreateWithSketchOps(num, name, s.points, s.plane)
     await lifecycle.run(ops, num, {
-      onBusy: () => store.setPhase('busy', 'extruding…'),
-      onError: (m) => store.setPhase('error', m),
+      onBusy: () => store.setSketchPhase('busy', 'committing sketch…'),
+      onError: (m) => store.setSketchPhase('error', m),
       onSuccess: (res) => {
-        void viewportApi.current?.setDisplaySource(res.display)
-        // Codex5 B2: EVERY successful commit reconciles the authoring target.
-        onCommitted?.({ number: num, name, createdFresh: !target })
-        // Success: close the pad and KEEP the drawn solid in the viewport. Do
-        // NOT call onClose — that is the CANCEL path (it restores the base
-        // display, which would overwrite the solid we just showed).
+        // The sketch alone makes no solid — the Workbench installs the display
+        // inside the SAME transition that re-reads Truth (the wire follows).
+        onCommitted?.({ number: num, name, createdFresh: !target, display: res.display })
         store.cancel()
       },
     })
   }
 
   const rubber = s.cursor && s.points.length > 0 && !s.closed
-  const hint = problem ?? (s.closed ? 'Ring closed — set a depth and extrude.' : 'Click the first point to close the ring.')
+  const hint =
+    problem ??
+    (s.closed
+      ? s.chainToExtrude
+        ? 'Ring closed — OK returns to Extrude.'
+        : 'Ring closed — OK commits the sketch.'
+      : 'Click the first point to close the ring.')
 
   return (
     <div className="sketchpad">
@@ -154,6 +175,7 @@ export function SketchPad({
         <span className="sp-title">
           Sketch — {PLANE_LABELS[s.plane]} ({s.plane})
           {s.targetPart && <span className="muted"> · {s.targetPart.number}</span>}
+          {s.chainToExtrude && <span className="muted"> · for Extrude</span>}
         </span>
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
         <button type="button" className="fd-x" title="Cancel (Esc)" onClick={cancel} disabled={busy}>✕</button>
@@ -203,8 +225,7 @@ export function SketchPad({
         ) : (
           <>
             <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy}>Reopen</button>
-            <label className="sp-depth">Depth <input type="number" min={1} max={200} value={depthMm} disabled={busy} onChange={(e) => setDepthMm(Number(e.target.value) || 1)} /> mm</label>
-            <button type="button" className="btn primary" onClick={extrude} disabled={busy || !!problem}>{busy ? '…' : 'Extrude'}</button>
+            <button type="button" className="btn primary" onClick={ok} disabled={busy || !!problem}>{busy ? '…' : 'OK'}</button>
           </>
         )}
         <button type="button" className="btn small" onClick={cancel} disabled={busy}>Cancel</button>

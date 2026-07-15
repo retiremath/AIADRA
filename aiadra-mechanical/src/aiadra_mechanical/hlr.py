@@ -110,6 +110,16 @@ def handle_display_hlr(context, params: dict[str, Any]) -> dict[str, Any]:
     min_len = params.get(
         "correlation_min_length_mm", DEFAULT_CORRELATION_MIN_LENGTH_MM)
 
+    # S2 stepwise: a recipe with NO base creation feature has no solid to
+    # project — every requested view answers with ZERO segments under the
+    # Part's real identity echo (mirrors the base display's no-solid branch
+    # and core's EP0 empty-HLR shape).
+    features = material["features"]
+    if features and not any(
+        f.get("feature_type") in ("extrude", "revolve") for f in features
+    ):
+        return _no_solid_hlr(material, views, algorithm, min_len)
+
     topo = topology.extract_part_topology(
         material["features"],
         object_uuid=material["object_uuid"],
@@ -124,6 +134,65 @@ def handle_display_hlr(context, params: dict[str, Any]) -> dict[str, Any]:
         topo, views=views, algorithm=algorithm,
         correlation_min_length_mm=min_len,
     )
+
+
+def _no_solid_hlr(
+    material: dict[str, Any], views: Any, algorithm: str, min_len: Any,
+) -> dict[str, Any]:
+    """Zero-segment HLR for a no-base recipe (S2 stepwise) — the requested
+    views echo back with empty segment lists; inputs validate as loudly as the
+    solid path (same spec/algorithm checks, no silent acceptance)."""
+    if not isinstance(views, list) or not views:
+        raise TransactionError(
+            "mechanical.display_hlr: 'views' must be a non-empty list of view specs"
+        )
+    if algorithm not in ("exact", "poly"):
+        raise TransactionError(
+            f"mechanical.display_hlr: unknown algorithm {algorithm!r} "
+            f"(expected 'exact' or 'poly')"
+        )
+    min_len = float(min_len)
+    if min_len < 0:
+        raise TransactionError(
+            "mechanical.display_hlr: correlation_min_length_mm must be >= 0"
+        )
+    frames = [_validate_view_spec(v) for v in views]
+    return {
+        "identity_echo": {
+            "object_uuid": material["object_uuid"],
+            "object_number": material["object_number"],
+            "geometry_ref": material["geometry_ref"],
+            "display_representation_version": DISPLAY_REPRESENTATION_VERSION,
+            "cache_key": material["cache_key"],
+            "topology_signature": topology.compute_topology_signature(
+                material["features"]),
+        },
+        "views": [
+            {
+                "view_id": f["view_id"],
+                "projector": {
+                    "projection": f["projection"],
+                    "origin": list(f["origin"]),
+                    "direction": list(f["direction"]),
+                    "up": list(f["up"]),
+                    "right": list(f["right"]),
+                    "units": "mm",
+                },
+                "algorithm": algorithm,
+                "coordinate_space": "view_plane_2d",
+                "correlation_min_length_mm": min_len,
+                "segments": [],
+                "counters": {
+                    "visible_segments": 0,
+                    "hidden_segments": 0,
+                    "outline_segments": 0,
+                    "discarded_tolerance_segments": 0,
+                    "generation_ms": 0.0,
+                },
+            }
+            for f in frames
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

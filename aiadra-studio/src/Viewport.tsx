@@ -18,6 +18,8 @@ import { checkAttachHlr } from './display/attachHlr'
 import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
+import { createSketchWireOverlay } from './sketch/sketchWireOverlay'
+import type { InspectedSketch } from './authoring/inspectDecode'
 import type { DisplaySource } from './display/displaySource'
 import { modeFlags, type DisplayMode } from './display/modes'
 import {
@@ -65,6 +67,9 @@ export type ViewportApi = {
   addImported: (id: string, meshes: ImportedMesh[]) => void
   /** Remove an imported group and dispose all its GPU resources. */
   removeImported: (id: string) => void
+  /** Replace the UNCONSUMED-sketch wire overlay (S2 D-S2 — derived from the
+   *  inspected recipe; overlay lane, never canonical identity). */
+  setSketchWires: (sketches: InspectedSketch[]) => void
 }
 
 /**
@@ -234,6 +239,12 @@ export default function Viewport({
     const datums = createDatumOverlay()
     datums.setVisible(viewStore.getSnapshot().datumsVisible)
     scene.add(datums.group)
+
+    // ---- The sketch-wire overlay (S2 D-S2): unconsumed committed sketches as
+    // closed wires on their planes. Same overlay-lane rules as the datums —
+    // derived ids only, outside the canonical group, excluded from fit.
+    const sketchWires = createSketchWireOverlay()
+    scene.add(sketchWires.group)
 
     const paperMaterial = new THREE.MeshBasicMaterial({
       color: liveTheme.paperBody,
@@ -866,6 +877,7 @@ export default function Viewport({
       orbitView,
       addImported,
       removeImported,
+      setSketchWires: (sketches) => sketchWires.setSketches(sketches),
     }
 
     const onResize = () => {
@@ -919,6 +931,8 @@ export default function Viewport({
       grid.geometry.dispose()
       scene.remove(datums.group)
       datums.dispose()
+      scene.remove(sketchWires.group)
+      sketchWires.dispose()
       paperMaterial.dispose()
       renderer.dispose()
       apiRef.current = null

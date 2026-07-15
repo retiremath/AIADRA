@@ -491,6 +491,14 @@ body { background: var(--bg); overflow: hidden; }
 .sp-depth { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); }
 .sp-depth input { width: 56px; background: var(--bg); border: 1px solid var(--border); color: var(--text-h); border-radius: 5px; padding: 3px 6px; }
 
+/* The Extrude dashboard (S2 D-S3) — a compact Creo-style feature bar pinned
+   near the top of the viewport, NOT the full sketch canvas: it overrides the
+   .sketchpad inset so the model (and the sketch wire being consumed) stays
+   visible while the feature is edited — Creo keeps the geometry in view under
+   its dashboard. */
+.extrude-panel { inset: 52px 12px auto 12px; }
+.extrude-panel .sp-foot { border-top: 0; }
+
 /* The Home state (arc 20260714-1; D-H1/D-H2 — the Creo-paradigm startup) */
 .home-surface {
   flex: 1;

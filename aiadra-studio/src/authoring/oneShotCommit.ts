@@ -41,7 +41,7 @@ export async function runOneShotCommit(
     }
   }
   try {
-    sid = await backend.begin(ops)
+    sid = (await backend.begin(ops)).sessionId
     if (isStale()) {
       await rollback()
       return { status: 'failed', reason: 'the workspace context changed during creation' }

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { join, resolve, sep } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
 import { contentTypeFor, resolveAppAssetRelPath } from './appProtocol'
+import { extractCreatedFeatureIds, finalizeBegunAuthoring } from './authoringGuards'
 import { createRecentsRegistry, type RecentsRegistry } from './recents'
 // Shared PURE envelope validators (arc 20260619-1 / 6a, Codex1 B1 + Codex2 R2):
 // main owns BOTH the settings file path AND the persisted shape. The renderer is
@@ -484,11 +485,22 @@ function registerIpc(): void {
       op_params: a.params,
     })
     if (!r.ok) return r
-    authoringSessions.set(operationSessionId, { wsPath })
-    return ok({ operationSessionId })
+    // Codex3 B3: from HERE the bridge owns a live draft — the settlement owns
+    // cleanup for every later validation failure (register-first so the draft
+    // is never unreachable; malformed ids → AWAITED rollback; a failed
+    // rollback RETAINS the capability, recoverable via opRollback /
+    // bridge-exit clearing, ADR/0043 D4).
+    const settled = await finalizeBegunAuthoring(r.result, {
+      register: () => void authoringSessions.set(operationSessionId, { wsPath }),
+      unregister: () => void authoringSessions.delete(operationSessionId),
+      rollback: async () =>
+        (await callBridge('authoring_rollback', { session_id: operationSessionId })).ok,
+    })
+    if (!settled.ok) return err(settled.error)
+    return ok({ operationSessionId, createdFeatureIds: settled.ids })
   })
 
-  ipcMain.handle('aiadra:opAdd', (_e, args: unknown) => {
+  ipcMain.handle('aiadra:opAdd', async (_e, args: unknown) => {
     aiadraIpcCalls++
     const a = args as { operationSessionId?: unknown; kind?: unknown; params?: unknown } | null
     if (!a || typeof a.operationSessionId !== 'string' || typeof a.kind !== 'string') {
@@ -498,11 +510,15 @@ function registerIpc(): void {
     if (!AUTHORING_KINDS.has(a.kind)) return err(`feature kind not allowed: ${a.kind}`)
     const pErr = validateAuthoringParams(a.kind, a.params)
     if (pErr) return err(pErr)
-    return callBridge('authoring_add', {
+    const r = await callBridge('authoring_add', {
       session_id: a.operationSessionId,
       kind: a.kind,
       op_params: a.params,
     })
+    if (!r.ok) return r
+    const ids = extractCreatedFeatureIds(r.result)
+    if (typeof ids === 'string') return err(ids)
+    return ok({ createdFeatureIds: ids })
   })
 
   ipcMain.handle('aiadra:opSimulate', (_e, args: unknown) => {

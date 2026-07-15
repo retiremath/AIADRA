@@ -43,6 +43,9 @@ if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.8 (arc 20260714-3 S2, Codex1 B3): the SAME-KIND one-base guards — a
+# second extrude (or second revolve) is rejected at the handler AND the
+# evaluator (a stored two-base recipe fails loud, never "last one wins").
 # 0.1.7 (arc 20260714-2 EP2): the sketch-plane binding — sketches carry a
 # discriminated `plane: {kind: "principal", orientation: xy|yz|zx}` (absent ≡
 # xy; datum/offset reserved); base features resolve EXACTLY their named sketch
@@ -63,7 +66,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.7"
+ADAPTER_SCHEMA_VERSION = "0.1.8"
 
 
 # =============================================================================
@@ -157,6 +160,13 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
         raise TransactionError(
             f"mechanical.add_extrude_feature: Part {part_number} already has a revolve "
             f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
+        )
+    # S2 (arc 20260714-3 Codex1 B3): the SAME-KIND half of the one-base rule —
+    # a second extrude is rejected too, never a silent "last extrude wins".
+    if any(f.get("feature_type") == "extrude" for f in sidecar.get("feature", [])):
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: Part {part_number} already has an extrude "
+            f"base feature; v1 supports exactly one base creation per Part"
         )
 
     # EP2 direction rule (Codex1 B3): the handler holds the resolved sketch, so
@@ -262,6 +272,12 @@ def handle_add_revolve_feature(context: "NativeEngineContext", params: dict[str,
         raise TransactionError(
             f"mechanical.add_revolve_feature: Part {part_number} already has an extrude "
             f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
+        )
+    # S2 (arc 20260714-3 Codex1 B3): the same-kind half — a second revolve too.
+    if any(f.get("feature_type") == "revolve" for f in features):
+        raise TransactionError(
+            f"mechanical.add_revolve_feature: Part {part_number} already has a revolve "
+            f"base feature; v1 supports exactly one base creation per Part"
         )
     # EP2 (Codex1 D-P4): revolve is principal-xy-only in v1 — its axis
     # vocabulary is the global x/y in the sketch plane. Enforced on the EXACT

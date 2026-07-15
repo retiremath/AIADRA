@@ -10,7 +10,7 @@ function fakeBackend(overrides: Partial<AuthoringBackend> = {}): AuthoringBacken
   let n = 0
   return {
     isReal: false,
-    begin: vi.fn(async () => `S${++n}`),
+    begin: vi.fn(async () => ({ sessionId: `S${++n}`, createdFeatureIds: [] as string[][] })),
     simulate: vi.fn(async () => ({ valid: true })),
     commit: vi.fn(async (_sid: string, objectRef: string): Promise<CommitResult> => ({ objectRef, display: DISPLAY })),
     rollback: vi.fn(async () => {}),

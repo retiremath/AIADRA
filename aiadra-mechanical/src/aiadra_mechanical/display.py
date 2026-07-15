@@ -134,6 +134,27 @@ def generate_display_representation(
     cache_material: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the Display Representation dict for the current recipe."""
+    # S2 (arc 20260714-3, the stepwise paradigm): a recipe with NO base
+    # creation feature — e.g. a committed-but-unconsumed sketch — has no solid
+    # B-REP yet. Its honest display is ZERO faces/edges under the Part's REAL
+    # identity (geometry_ref/cache_key/topology_signature all live, so the
+    # invalidation contract works unchanged); the sketch itself is visible via
+    # Studio's recipe-derived wire overlay (D-S2 — noncanonical, no contract
+    # amendment). Solid correlation vocabularies (one-wall-per-segment etc.)
+    # only apply once a base feature exists.
+    has_base = any(
+        f.get("feature_type") in ("extrude", "revolve") for f in features
+    )
+    if features and not has_base:
+        return _no_solid_display(
+            features,
+            object_uuid=object_uuid,
+            object_number=object_number,
+            geometry_ref=geometry_ref,
+            cache_key=cache_key,
+            linear_deflection_mm=linear_deflection_mm,
+            angular_deflection_rad=angular_deflection_rad,
+        )
     topo = topology.extract_part_topology(
         features,
         object_uuid=object_uuid,
@@ -145,6 +166,58 @@ def generate_display_representation(
         cache_material=cache_material,
     )
     return build_display_payload(topo)
+
+
+def _no_solid_display(
+    features: list[dict[str, Any]],
+    *,
+    object_uuid: str,
+    object_number: str,
+    geometry_ref: str,
+    cache_key: str,
+    linear_deflection_mm: float,
+    angular_deflection_rad: float,
+) -> dict[str, Any]:
+    """The display of a Part whose recipe has features but NO base creation
+    yet (S2 stepwise): zero render payload, full live identity."""
+    return {
+        "display_representation_version": DISPLAY_REPRESENTATION_VERSION,
+        "identity": {
+            "object_uuid": object_uuid,
+            "object_number": object_number,
+            "geometry_ref": geometry_ref,
+            "cache_key": cache_key,
+            "topology_signature": topology.compute_topology_signature(features),
+        },
+        "render": {
+            "faces": [],
+            "edges": [],
+            "vertices": [],
+            "bbox_min": [0.0, 0.0, 0.0],
+            "bbox_max": [0.0, 0.0, 0.0],
+            "linear_deflection_mm": linear_deflection_mm,
+            "angular_deflection_rad": angular_deflection_rad,
+            "buffer_encoding": "json_arrays",
+        },
+        "selection": {
+            "id_space": "canonical",
+            # Codex3 N1: capability metadata stays LITERAL — zero topology
+            # means nothing is pickable (matches the featureless empty branch).
+            "pickable_kinds": [],
+            "names": {},
+        },
+        "view_dependent": None,
+        "invalidation": {
+            "stale_when": ["geometry_ref_changed", "cache_key_changed"],
+            "selection_invalid_when": "topology_signature_changed",
+        },
+        "counters": {
+            "face_count": 0,
+            "edge_count_by_kind": {},
+            "triangle_count": 0,
+            "vertex_count": 0,
+        },
+    }
 
 
 def build_display_payload(topo: "topology.PartTopology") -> dict[str, Any]:

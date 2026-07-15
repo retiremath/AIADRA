@@ -158,10 +158,28 @@ def _report_to_dict(report: Any) -> dict[str, Any]:
     return d
 
 
+def _created_feature_ids(draft: Any, events_before: int) -> list[str]:
+    """The ENGINE-minted feature ids this op staged (arc 20260714-3 Codex1 B1)
+    — read from the draft's OWN emitted events (the per-op delta, Codex2 bar):
+    every mutation handler emits `part_changed` with `feature_delta.added[]`
+    carrying the records it minted. The identity authority is the engine's
+    emitted record, never a recount."""
+    ids: list[str] = []
+    for ev in draft.events[events_before:]:
+        payload = ev.get("payload") or {}
+        for added in (payload.get("feature_delta") or {}).get("added", []):
+            fid = added.get("id")
+            if isinstance(fid, str):
+                ids.append(fid)
+    return ids
+
+
 def m_authoring_begin(params: dict[str, Any]) -> dict[str, Any]:
     """Open an authoring draft for a feature op (Ring-2 `propose`). `session_id`
     + `workspace_path` are main-minted/resolved; `kind` is a main-allowlisted
-    feature kind; `op_params` are main-validated."""
+    feature kind; `op_params` are main-validated. The response carries this
+    op's ENGINE-minted `created_feature_ids` so a chained op can reference them
+    without predicting ids (Codex1 B1)."""
     from aiadra_core.protocol import propose
 
     session_id = params["session_id"]
@@ -171,20 +189,29 @@ def m_authoring_begin(params: dict[str, Any]) -> dict[str, Any]:
         Path(params["workspace_path"]), kind=params["kind"], params=params.get("op_params", {}), actor="human"
     )
     _DRAFTS[session_id] = draft
-    return {"session_id": session_id, "op_count": 1}
+    return {
+        "session_id": session_id,
+        "op_count": 1,
+        "created_feature_ids": _created_feature_ids(draft, 0),
+    }
 
 
 def m_authoring_add(params: dict[str, Any]) -> dict[str, Any]:
     """Extend the open draft with another op (Ring-2 `modify`) — e.g. add an
-    extrude after a sketch within one authoring session."""
+    extrude after a sketch within one authoring session. The response carries
+    THIS op's engine-minted `created_feature_ids` (the per-op event delta)."""
     from aiadra_core.protocol import modify
 
     session_id = params["session_id"]
     draft = _DRAFTS.get(session_id)
     if draft is None:
         raise ValueError(f"no open authoring session: {session_id}")
+    events_before = len(draft.events)
     modify(draft, kind=params["kind"], params=params.get("op_params", {}), actor="human")
-    return {"session_id": session_id}
+    return {
+        "session_id": session_id,
+        "created_feature_ids": _created_feature_ids(draft, events_before),
+    }
 
 
 def m_authoring_simulate(params: dict[str, Any]) -> dict[str, Any]:

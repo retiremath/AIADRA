@@ -46,7 +46,16 @@ def test_empty_part_displays_then_first_sketch_flips_the_identity(
     assert full.identity.geometry_ref.startswith("sha256:")  # a REAL vault ref now
     assert full.identity.topology_signature != empty_sig
     assert full.identity.cache_key != empty_key
-    # Real geometry present; the old empty selection is invalid under the
-    # STANDARD gate (selection_invalid_when: topology_signature_changed).
-    assert len(full.render.faces) > 0
+    # S2 stepwise: the unconsumed sketch has NO solid yet — its render payload
+    # is honestly empty (Studio's wire overlay shows the sketch); the old empty
+    # selection is still invalid under the STANDARD gate.
+    assert len(full.render.faces) == 0
     assert full.invalidation.selection_invalid_when == "topology_signature_changed"
+
+    # 3. Consuming the sketch with a base feature produces the solid render.
+    propose(ws, kind="mechanical.add_extrude_feature", params={
+        "part_number": "P-000001", "sketch_feature_id": "feat_0001",
+        "depth_mm": 5.0, "direction": "normal+"}).commit()
+    solid = display_representation(ws, "P-000001")
+    assert len(solid.render.faces) > 0
+    assert solid.identity.topology_signature != full.identity.topology_signature

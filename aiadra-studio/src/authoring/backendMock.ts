@@ -18,7 +18,14 @@ import {
   type PlaneOrientation,
 } from '../sketch/proceduralExtrude'
 import { contourProblem, type Pt } from '../sketch/contour'
-import type { AuthoringBackend, CommitResult, FeatureOp, SimulateResult } from './backend'
+import {
+  resolveOpAliases,
+  type AuthoringBackend,
+  type BeginResult,
+  type CommitResult,
+  type FeatureOp,
+  type SimulateResult,
+} from './backend'
 
 type Seg = { x1_mm: number; y1_mm: number }
 
@@ -43,47 +50,185 @@ function isCreateOnly(ops: FeatureOp[]): boolean {
   return ops.length === 1 && ops[0].kind === 'create_part'
 }
 
-export function createMockAuthoringBackend(): AuthoringBackend {
+/** The mock backend + its honest Truth mirror: `inspectRaw` serves the SAME
+ *  raw sidecar shape the bridge's `inspect` returns, so the partContext /
+ *  decoder / tree pipeline runs identically in browser dev (one decoder, two
+ *  lanes — never a mock-only tree shape). */
+export interface MockAuthoringBackend extends AuthoringBackend {
+  inspectRaw(partNumber: string): unknown
+}
+
+/** Build the raw feature records an op WOULD write to Truth (the engine's
+ *  sidecar shape, adapter 0.1.8) — the mock's committed-part mirror. The
+ *  `engine` stamp is LOAD-BEARING (Codex3 B1): the decoder interprets
+ *  mechanical payloads only under `engine === 'mechanical'`, exactly like the
+ *  real sidecar records — an unstamped mirror record would decode as a
+ *  generic feature (no wire, unselectable, invisible to Extrude). */
+function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: string): Record<string, unknown> | null {
+  if (kind === 'mechanical.add_sketch_feature') {
+    const payload: Record<string, unknown> = { primitives: params.primitives }
+    if (params.plane !== undefined) payload.plane = params.plane
+    return {
+      id,
+      feature_type: 'sketch',
+      engine: 'mechanical',
+      adapter_schema_version: '0.1.8',
+      adapter_payload: payload,
+    }
+  }
+  if (kind === 'mechanical.add_extrude_feature') {
+    return {
+      id,
+      feature_type: 'extrude',
+      engine: 'mechanical',
+      adapter_schema_version: '0.1.8',
+      depends_on_feature_ids: [params.sketch_feature_id],
+      parameters: [{ id: 'featp_mock', name: 'depth_mm', value: params.depth_mm, datatype: 'number', unit: 'mm' }],
+      adapter_payload: { sketch_feature_id: params.sketch_feature_id, direction: params.direction },
+    }
+  }
+  return null
+}
+
+export function createMockAuthoringBackend(): MockAuthoringBackend {
   let counter = 0
-  const open = new Map<string, FeatureOp[]>()
+  const open = new Map<string, { ops: FeatureOp[]; features: Record<string, unknown>[]; partNumber: string | null; partName: string | null }>()
+  // The committed mirror: partNumber → { name, features } (grows per commit,
+  // ids continue across commits — same numbering behavior as the engine).
+  const parts = new Map<string, { name: string; features: Record<string, unknown>[] }>()
+
+  /** Entry-A support: resolve the extruded COMMITTED sketch from the mirror
+   *  into drawable points + plane (contour chain or rectangle corners). */
+  const mirroredContour = (
+    ops: FeatureOp[],
+    partNumber: string,
+  ): { points: Pt[]; depthMm: number; plane: PlaneOrientation } | null => {
+    const ext = ops.find((o) => o.kind === 'mechanical.add_extrude_feature')
+    if (!ext) return null
+    const rec = parts
+      .get(partNumber)
+      ?.features.find((f) => f.id === ext.params.sketch_feature_id && f.feature_type === 'sketch')
+    if (!rec) return null
+    const payload = (rec.adapter_payload ?? {}) as Record<string, unknown>
+    const prim = ((payload.primitives ?? []) as Array<Record<string, unknown>>)[0]
+    if (!prim) return null
+    let points: Pt[]
+    if (prim.type === 'contour') {
+      points = ((prim.segments ?? []) as Seg[]).map((s) => ({ x: Number(s.x1_mm), y: Number(s.y1_mm) }))
+    } else if (prim.type === 'rectangle') {
+      const x = Number(prim.x_mm)
+      const y = Number(prim.y_mm)
+      const w = Number(prim.width_mm)
+      const h = Number(prim.height_mm)
+      points = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]
+    } else return null
+    const plane = ((payload.plane as { orientation?: PlaneOrientation } | undefined)?.orientation ?? 'xy') as PlaneOrientation
+    return { points, depthMm: Number(ext.params.depth_mm ?? 6), plane }
+  }
 
   return {
     isReal: false,
-    async begin(ops: FeatureOp[]): Promise<string> {
+    async begin(ops: FeatureOp[]): Promise<BeginResult> {
       const sessionId = `mock-op-${++counter}`
       // Shallow structural sanity so the mock can't "succeed" on nonsense the
       // real bridge would reject (keeps the mock honest).
       if (ops.length === 0) throw new Error('mock: empty op sequence')
-      open.set(sessionId, ops)
-      return sessionId
+      // S2 honest-mock mirror of the engine handshake: each `mechanical.add_*`
+      // op mints exactly one feature record; `$fromOp` aliases resolve through
+      // the SAME shared resolver (same loud cardinality/reference failures).
+      const createOp = ops.find((o) => o.kind === 'create_part')
+      const targetNumber =
+        (createOp?.params.number as string | undefined) ??
+        (ops.find((o) => typeof o.params.part_number === 'string')?.params.part_number as string | undefined) ??
+        null
+      const perOpIds: string[][] = []
+      const features: Record<string, unknown>[] = []
+      // Continue the target Part's numbering, like the engine does.
+      let featSeq = targetNumber ? (parts.get(targetNumber)?.features.length ?? 0) : 0
+      const resolved: FeatureOp[] = ops.map((op, i) => {
+        const params = resolveOpAliases(op.params, i, perOpIds) as Record<string, unknown>
+        if (op.kind.startsWith('mechanical.add_')) {
+          const id = `feat_${String(++featSeq).padStart(4, '0')}`
+          perOpIds.push([id])
+          const raw = rawFeatureFromOp(op.kind, params, id)
+          if (raw) features.push(raw)
+        } else {
+          perOpIds.push([])
+        }
+        return { kind: op.kind, params }
+      })
+      open.set(sessionId, {
+        ops: resolved,
+        features,
+        partNumber: targetNumber,
+        partName: (createOp?.params.name as string | undefined) ?? null,
+      })
+      return { sessionId, createdFeatureIds: perOpIds }
+    },
+    inspectRaw(partNumber: string): unknown {
+      const p = parts.get(partNumber)
+      if (!p) throw new Error(`mock: no committed Part ${partNumber}`)
+      return {
+        object_number: partNumber,
+        object_type: 'Part',
+        sidecar: {
+          object: { type: 'Part', number: partNumber, name: p.name, uuid: `mock-${partNumber}` },
+          feature: p.features,
+        },
+      }
     },
     async simulate(sessionId: string): Promise<SimulateResult> {
-      const ops = open.get(sessionId)
-      if (!ops) return { valid: false, message: 'no open session' }
+      const session = open.get(sessionId)
+      if (!session) return { valid: false, message: 'no open session' }
       // Codex6 B2 (defence-in-depth): the mock must never report success the
       // real engine would reject — run the SAME pure Class-1 mirror on a drawn
       // contour (zero-length/duplicate, open, self-intersecting, collinear).
-      const contour = contourFromOps(ops)
+      const contour = contourFromOps(session.ops)
+      const sessionHasBase = session.ops.some((o) => o.kind === 'mechanical.add_extrude_feature')
       if (contour) {
         const problem = contourProblem(contour.points)
         if (problem) return { valid: false, message: `mock Class-1: ${problem}` }
-        if (!(contour.depthMm > 0)) return { valid: false, message: 'mock Class-1: depth must be positive' }
+        if (sessionHasBase && !(contour.depthMm > 0)) {
+          return { valid: false, message: 'mock Class-1: depth must be positive' }
+        }
+      }
+      // S2 B3 mirror: the engine rejects a second base creation — so does the mock.
+      const target = session.partNumber ? parts.get(session.partNumber) : undefined
+      const priorBase = target?.features.some((f) => f.feature_type === 'extrude' || f.feature_type === 'revolve')
+      const addsBase = session.features.some((f) => f.feature_type === 'extrude' || f.feature_type === 'revolve')
+      if (priorBase && addsBase) {
+        return { valid: false, message: 'mock one-base rule: the Part already has a base creation feature' }
       }
       return { valid: true }
     },
     async commit(sessionId: string, objectRef: string): Promise<CommitResult> {
-      const ops = open.get(sessionId)
-      if (!ops) throw new Error('mock: no open session')
+      const session = open.get(sessionId)
+      if (!session) throw new Error('mock: no open session')
+      const { ops } = session
       const badge = `${objectRef} — dev mock (procedural, not a real Part)`
       const contour = contourFromOps(ops)
-      const display = isCreateOnly(ops)
-        ? // EP1 commit-at-New: the empty Part displays as emptiness (the dev
-          // mirror of core's A4 empty state).
-          emptyMockSource(objectRef, `${objectRef} — dev mock (empty Part, not Truth)`)
-        : contour
-          ? proceduralContourSource(contour.points, contour.depthMm, badge, contour.plane)
-          : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
+      // A session WITHOUT a base creation op produces NO solid (S2 stepwise:
+      // a sketch-only commit shows as emptiness + the wire overlay — exactly
+      // what the real engine's display returns for an unconsumed sketch).
+      const hasBase = ops.some((o) => o.kind === 'mechanical.add_extrude_feature')
+      // Entry A (extrude a COMMITTED sketch): the session has no sketch op —
+      // resolve the consumed sketch from the mirror so the mock shows the
+      // DRAWN geometry, never a canned box for a real reference.
+      const mirrored = !contour && hasBase ? mirroredContour(ops, session.partNumber ?? objectRef) : null
+      const solid = contour ?? mirrored
+      const display =
+        isCreateOnly(ops) || !hasBase
+          ? emptyMockSource(objectRef, `${objectRef} — dev mock (not Truth)`)
+          : solid
+            ? proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
+            : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
       if (!display) throw new Error('mock: display unavailable')
+      // Register the commit in the mock's Truth mirror (feeds inspectRaw).
+      const number = session.partNumber ?? objectRef
+      const entry = parts.get(number) ?? { name: session.partName ?? number, features: [] }
+      if (session.partName) entry.name = session.partName
+      entry.features.push(...session.features)
+      parts.set(number, entry)
       open.delete(sessionId)
       return { objectRef, display }
     },

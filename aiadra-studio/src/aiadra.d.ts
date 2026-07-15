@@ -42,16 +42,18 @@ declare global {
       ): Promise<Envelope<{ view_dependent: ViewDependentPayload }>>
       // Authoring session — the Ring-2 WRITE lane (arc 20260711-11; ADR/0043).
       // Optional: absent in browser-only dev (the AuthoringBackend uses a mock there).
+      // S2 (arc 20260714-3 Codex1 B1): both mutating verbs return the op's
+      // ENGINE-minted createdFeatureIds — the renderer NEVER predicts feat ids.
       opBegin?(
         workspaceId: string,
         kind: string,
         params: unknown,
-      ): Promise<Envelope<{ operationSessionId: string }>>
+      ): Promise<Envelope<{ operationSessionId: string; createdFeatureIds: string[] }>>
       opAdd?(
         operationSessionId: string,
         kind: string,
         params: unknown,
-      ): Promise<Envelope<{ session_id: string }>>
+      ): Promise<Envelope<{ createdFeatureIds: string[] }>>
       opSimulate?(
         operationSessionId: string,
       ): Promise<Envelope<{ report: { valid: boolean } & Record<string, unknown> }>>

@@ -9,7 +9,15 @@
  * real geometry (a fast-follow adds live preview once the engine exposes it).
  */
 import { createBridgeSource } from '../display/displaySource'
-import type { AuthoringBackend, CommitResult, FeatureOp, SimulateResult } from './backend'
+import {
+  assertCreatedFeatureIds,
+  resolveOpAliases,
+  type AuthoringBackend,
+  type BeginResult,
+  type CommitResult,
+  type FeatureOp,
+  type SimulateResult,
+} from './backend'
 
 function unwrap<T>(env: { ok: true; result: T } | { ok: false; error: { message: string } }): T {
   if (!env.ok) throw new Error(env.error.message)
@@ -24,15 +32,31 @@ export function createBridgeAuthoringBackend(workspaceId: string): AuthoringBack
 
   return {
     isReal: true,
-    async begin(ops: FeatureOp[]): Promise<string> {
+    async begin(ops: FeatureOp[]): Promise<BeginResult> {
       if (ops.length === 0) throw new Error('empty op sequence')
+      // S2 (Codex1 B1): each response carries the op's ENGINE-minted feature
+      // ids; `{ $fromOp: n }` aliases resolve here against those ids — the
+      // wire only ever carries real engine ids, never a renderer prediction.
+      const perOpIds: string[][] = []
       const [first, ...rest] = ops
-      const { operationSessionId } = unwrap(await b.opBegin!(workspaceId, first.kind, first.params))
-      // Codex3 B1: an opened session must not orphan if a later opAdd fails —
+      // opIndex 0 has no earlier products — a $fromOp here fails loud in the
+      // resolver instead of leaking an alias object over IPC.
+      const firstParams = resolveOpAliases(first.params, 0, perOpIds) as Record<string, unknown>
+      const begun = unwrap(await b.opBegin!(workspaceId, first.kind, firstParams))
+      const operationSessionId = begun.operationSessionId
+      if (typeof operationSessionId !== 'string' || operationSessionId.length === 0) {
+        // No capability came back — nothing this side can roll back.
+        throw new Error('opBegin: response is missing operationSessionId')
+      }
+      // Codex3 arc-11 B1 → S2 Codex3 B3: from here a session EXISTS — every
+      // later failure (including the FIRST response's own id validation) must
       // roll it back before rethrowing so main/bridge don't keep a dead draft.
       try {
-        for (const op of rest) {
-          unwrap(await b.opAdd!(operationSessionId, op.kind, op.params))
+        perOpIds.push(assertCreatedFeatureIds(begun.createdFeatureIds, 'opBegin'))
+        for (const [i, op] of rest.entries()) {
+          const params = resolveOpAliases(op.params, i + 1, perOpIds) as Record<string, unknown>
+          const added = unwrap(await b.opAdd!(operationSessionId, op.kind, params))
+          perOpIds.push(assertCreatedFeatureIds(added.createdFeatureIds, 'opAdd'))
         }
       } catch (e) {
         try {
@@ -42,7 +66,7 @@ export function createBridgeAuthoringBackend(workspaceId: string): AuthoringBack
         }
         throw e
       }
-      return operationSessionId
+      return { sessionId: operationSessionId, createdFeatureIds: perOpIds }
     },
     async simulate(sessionId: string): Promise<SimulateResult> {
       const { report } = unwrap(await b.opSimulate!(sessionId))

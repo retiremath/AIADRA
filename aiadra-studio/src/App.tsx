@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import Viewport, { type ViewportApi } from './Viewport'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
@@ -11,8 +11,12 @@ import { HomeRibbon } from './home/HomeRibbon'
 import { FileMenu, type FileMenuItem } from './home/FileMenu'
 import { NewDialog, type NewObjectChoice } from './home/NewDialog'
 import { WorkspaceStart, type OpenedWorkspace } from './home/HomeShared'
-import { createFeatureSessionStore, useFeatureSession, type FeatureSessionStore } from './authoring/featureSession'
-import { FeatureDashboard, EXTRUDE_DEFAULTS } from './authoring/FeatureDashboard'
+import {
+  createAuthoringSessionStore,
+  useAuthoringSession,
+  type AuthoringSessionStore,
+} from './authoring/authoringSession'
+import { ExtrudePanel } from './authoring/ExtrudePanel'
 import { ModelRibbon } from './authoring/ModelRibbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
@@ -23,14 +27,22 @@ import {
   INTRINSIC_CSYS_ID,
   INTRINSIC_PLANE_IDS,
   PLANE_LABELS,
-  reconcileLoadedPart,
   sketchAuthoringGate,
   type AuthoringBackend,
   type PlaneOrientation,
 } from './authoring/backend'
+import {
+  authoringFacts,
+  authoringStartRefusal,
+  captureAuthoringTarget,
+  createPartContextStore,
+  type InspectFetcher,
+  type PartContextStore,
+} from './authoring/partContext'
+import { createPendingDisplayCoordinator } from './authoring/pendingDisplay'
+import { buildTreeRows, unconsumedSketches } from './authoring/inspectDecode'
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
-import { createSketchStore, useSketch, type SketchStore } from './sketch/sketchStore'
 import { SketchPad } from './sketch/SketchPad'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
@@ -62,14 +74,13 @@ import type { CommandActions } from './commands/types'
 type PartRow = { object_number: string; name: string; object_uuid: string }
 
 function EnginePanel({
-  api,
   ws,
   onOpen,
   gate,
   refresh = 0,
+  loadedPart,
   onPartLoaded,
 }: {
-  api: MutableRefObject<ViewportApi | null>
   /** The ONE Workbench-owned current workspace (Codex1 B1) — this panel is a
    *  projection of it, never a second owner. */
   ws: OpenedWorkspace | null
@@ -80,13 +91,14 @@ function EnginePanel({
   gate: string | null
   /** Bump to re-list parts (EP1: a commit created/changed a Part). */
   refresh?: number
-  /** Codex5 B2: report every canonical Part LOAD so the Workbench can
-   *  reconcile (or fail-close) the authoring target. */
+  /** The loaded-row label — the partContext's partNumber (Codex3 B2: bound to
+   *  the SAME transition generation as tree/target/display, never local). */
+  loadedPart: string | null
+  /** Route a Part-row load through the Workbench's ONE canonical transition. */
   onPartLoaded?: (partNumber: string) => void
 }) {
   const [version, setVersion] = useState<string | null>(null)
   const [parts, setParts] = useState<PartRow[]>([])
-  const [loadedPart, setLoadedPart] = useState<string | null>(null)
   const [note, setNote] = useState('')
 
   useEffect(() => {
@@ -100,15 +112,12 @@ function EnginePanel({
     })
   }, [])
 
-  const loadPart = async (workspaceId: string, part: PartRow) => {
-    try {
-      await api.current?.setDisplaySource(createBridgeSource(workspaceId, part.object_number))
-      setLoadedPart(part.object_number)
-      setNote('')
-      onPartLoaded?.(part.object_number) // Codex5 B2 — the target must reconcile
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : String(e))
-    }
+  // Codex3 B2: the row load is a pure DISPATCH into the Workbench's one
+  // canonical Part transition — this panel installs nothing itself, so
+  // display/tree/target/row can never split across two Parts.
+  const loadPart = (part: PartRow) => {
+    setNote('')
+    onPartLoaded?.(part.object_number)
   }
 
   // Projection (Codex1 B1): adopt EVERY current-workspace change — including a
@@ -117,8 +126,9 @@ function EnginePanel({
   // already cleared the display before applying).
   useEffect(() => {
     setParts([])
-    setLoadedPart(null)
-    setNote('')
+    // Keep the lane-identifying note in browser dev — clearing it left a
+    // misleading perpetual "connecting…" (it hid which lane was running).
+    setNote(window.aiadra ? '' : 'browser preview — no engine bridge (run as the desktop app)')
     if (!ws || !window.aiadra) return
     let cancelled = false
     window.aiadra
@@ -132,7 +142,7 @@ function EnginePanel({
         setParts(list.result.parts)
         if (list.result.parts.length === 1) {
           // Exactly one Part — load it without a pointless extra click.
-          void loadPart(ws.workspaceId, list.result.parts[0])
+          loadPart(list.result.parts[0])
         }
       })
       .catch(() => {})
@@ -179,11 +189,16 @@ function EnginePanel({
           {ws && version && note && <div className="small pad err">{note}</div>}
           {parts.length > 0 && (
             <ul className="tree">
+              {/* Codex3 B2: Part loads join the SAME operation gate as
+                  authoring/workspace transitions — a Part cannot change under
+                  an active sketch/extrude session. */}
               {parts.map((p) => (
                 <li
                   key={p.object_uuid}
-                  className={`part-row ${loadedPart === p.object_number ? 'on' : ''}`}
-                  onClick={() => ws && loadPart(ws.workspaceId, p)}
+                  className={`part-row ${loadedPart === p.object_number ? 'on' : ''}${gate ? ' disabled' : ''}`}
+                  title={gate ?? undefined}
+                  onClick={() => !gate && loadPart(p)}
+                  style={gate ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                 >
                   {p.name || p.object_number} <span className="muted small">{p.object_number}</span>
                 </li>
@@ -402,27 +417,46 @@ function AppearancePanel() {
   )
 }
 
-// ---- Model tree (arc 20260714-2 EP1 — the Creo-paradigm scaffold) ----
-// The active Part header + the three intrinsic principal planes + the origin
-// csys (stable overlay ids — Codex1: labeled intrinsic, never Truth features;
-// user-CREATED datums become real features in EP3) + the active feature op.
-// The Truth-fed persistent feature list arrives with S2.
+// ---- Model tree (S2 — TRUTH-FED, the Creo shape; arc 20260714-3 D-S1) ----
+// The Part header + the three intrinsic principal planes + the origin csys
+// (stable overlay ids — labeled intrinsic, never Truth features), then the
+// COMMITTED features straight from the generation-owned partContext: base
+// features as `Extrude N` with their consumed sketch NESTED as `Section N`,
+// unconsumed sketches top-level as `Sketch N` — exactly the Creo 10 tree.
+// Fail-closed: loading shows a spinner row, a decode error shows the error —
+// never a silently stale or wrong tree. The in-flight feature op still shows
+// as a transient last row (it is not Truth yet).
+const TREE_GLYPHS: Record<string, string> = {
+  sketch: '✎',
+  extrude: '⬒',
+  revolve: '◎',
+  section: '✎',
+  other: '▪',
+}
+
 function ModelTreePanel({
-  store,
-  part,
+  session,
+  context,
 }: {
-  store: FeatureSessionStore
-  part: { number: string; name: string } | null
+  session: AuthoringSessionStore
+  context: PartContextStore
 }) {
-  const s = useFeatureSession(store)
-  const kindLabel = s.featureKind ? s.featureKind[0].toUpperCase() + s.featureKind.slice(1) : null
+  const s = useAuthoringSession(session)
+  const pc = useSyncExternalStore(context.subscribe, context.getSnapshot)
+  const part = pc.inspection.status === 'ready' ? pc.inspection.part : null
+  const transient =
+    s.mode === 'sketch'
+      ? { label: 'Sketch', state: s.phase === 'busy' ? '…' : 'editing' }
+      : s.mode === 'extrude'
+        ? { label: 'Extrude', state: s.phase === 'busy' ? '…' : 'editing' }
+        : null
   return (
     <ul className="tree model-tree">
-      {part && (
+      {pc.partNumber && (
         <li className="feat-row part-head">
           <span className="feat-glyph">■</span>
-          <span className="feat-name">{part.name}</span>
-          <span className="muted small feat-state">{part.number}</span>
+          <span className="feat-name">{part?.name ?? pc.partNumber}</span>
+          <span className="muted small feat-state">{pc.partNumber}</span>
         </li>
       )}
       {(['xy', 'yz', 'zx'] as const).map((ori) => (
@@ -437,13 +471,55 @@ function ModelTreePanel({
         <span className="feat-name">Origin</span>
         <span className="muted small feat-state">intrinsic</span>
       </li>
-      {s.active && (
-        <li className={`feat-row ${s.phase}`}>
-          <span className="feat-glyph">{s.phase === 'committed' ? '▸' : '◐'}</span>
-          <span className="feat-name">{kindLabel}</span>
-          <span className="muted small feat-state">
-            {s.phase === 'committed' ? (s.objectRef ?? 'committed') : s.phase === 'busy' ? '…' : 'editing'}
+      {pc.inspection.status === 'loading' && (
+        <li className="feat-row busy">
+          <span className="feat-glyph">◐</span>
+          <span className="feat-name muted">reading Truth…</span>
+        </li>
+      )}
+      {pc.inspection.status === 'error' && (
+        <li className="feat-row error">
+          <span className="feat-glyph">⚠</span>
+          <span className="feat-name">tree unavailable</span>
+          <span className="muted small feat-state" title={pc.inspection.message}>
+            {pc.inspection.message}
           </span>
+        </li>
+      )}
+      {part &&
+        buildTreeRows(part).map((row) => {
+          // An UNCONSUMED sketch row is selectable — the Extrude dual entry A
+          // (select a sketch → Extrude goes straight to depth).
+          const selectable = row.kind === 'sketch'
+          const selected = selectable && s.selectedSketchId === row.featureId
+          return (
+            <li
+              key={`${row.featureId}:${row.depth}`}
+              className={`feat-row truth${row.depth === 1 ? ' nested' : ''}${selected ? ' selected' : ''}`}
+              data-feature-id={row.featureId}
+              style={{
+                ...(row.depth === 1 ? { paddingLeft: '1.4em' } : null),
+                ...(selectable ? { cursor: 'pointer' } : null),
+                ...(selected ? { outline: '1px solid var(--accent, #6b9bd1)' } : null),
+              }}
+              title={selectable ? 'Select this sketch (Extrude will consume it)' : undefined}
+              onClick={
+                selectable
+                  ? () => session.selectSketch(selected ? null : row.featureId)
+                  : undefined
+              }
+            >
+              <span className="feat-glyph">{TREE_GLYPHS[row.kind] ?? '▪'}</span>
+              <span className="feat-name">{row.label}</span>
+              <span className="muted small feat-state">{row.featureId}</span>
+            </li>
+          )
+        })}
+      {transient && (
+        <li className="feat-row editing">
+          <span className="feat-glyph">◐</span>
+          <span className="feat-name">{transient.label}</span>
+          <span className="muted small feat-state">{transient.state}</span>
         </li>
       )}
     </ul>
@@ -456,24 +532,21 @@ function Workbench({
   viewStore,
   selectionStore,
   operationStore,
-  featureStore,
-  sketchStore,
+  authoringStore,
 }: {
   ready: boolean
   viewportApi: MutableRefObject<ViewportApi | null>
   viewStore: ViewStateStore
   selectionStore: SelectionStore
   operationStore: OperationStore
-  featureStore: FeatureSessionStore
-  sketchStore: SketchStore
+  authoringStore: AuthoringSessionStore
 }) {
   const registry = useRegistry()
   const theme = useTheme()
   // Authoring dispatch (arc 20260711-11): the Model ribbon starts either the
   // sketch pad (draw a contour) or the extrude feature session. One at a time.
-  const featureActive = useFeatureSession(featureStore).active
-  const sketchActive = useSketch(sketchStore).active
-  const authoringBusy = featureActive || sketchActive
+  const authoringSession = useAuthoringSession(authoringStore)
+  const authoringBusy = authoringSession.mode !== 'idle'
 
   // ---- The two application states (arc 20260714-1; D-H1 — the Creo paradigm).
   // `home` at boot: NO viewport, the Home surface (workspace browser + recents
@@ -519,9 +592,11 @@ function Workbench({
         clearContext: () => {
           void viewportApi.current?.setDisplaySource(null)
           selectionStore.clearSelected()
+          authoringStore.selectSketch(null) // Part-local ids die with the workspace (Codex4 B1.3)
           setFixtureBadge(null)
           sampleRef.current = false
-          setActivePart(null) // the active Part belongs to the old workspace (EP1)
+          partContext.clear() // the Part context belongs to the old workspace (S2 B2)
+          pendingDisplay.cancel() // settle any queued pre-mount install (Codex5 B1.1)
         },
         // Codex2 B3 + Codex3 B1: retirement is AWAITED and only counts on the
         // TYPED acknowledgement (ok && result.closed === true).
@@ -537,48 +612,184 @@ function Workbench({
         apply: (ws) => setCurrentWs(ws),
         onTransition: (active) => setWsTransition(active),
       }),
-    [selectionStore, viewportApi],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- authoringStore/partContext are creation-stable
+    [selectionStore, viewportApi, authoringStore],
   )
-  // The COMBINED gate for every operation start + open/close control (Codex3
-  // B1): active work OR an in-flight workspace transition.
-  const uiGate = switchGate ?? (wsTransition ? 'A workspace transition is in flight' : null)
-  // The active Part of this modeling session (EP1 commit-at-New): set when New
-  // commits the empty Part; sketches then ADD FEATURES to it. `featureCount`
-  // tracks the engine's minted feature ids so a follow-up sketch on the same
-  // Part references the right id (a fresh empty Part starts at 0; each
-  // sketch+extrude commit adds 2).
-  const [activePart, setActivePart] = useState<{
-    number: string
-    name: string
-    featureCount: number
-  } | null>(null)
+  // ---- ONE generation-owned Part context (S2; Codex1 B2). THE authority for
+  // "which Part is this session about + what does Truth say": the model tree,
+  // the sketch-wire overlay, the authoring target, and Extrude eligibility all
+  // read here. EP1's featureCount bookkeeping is retired — the engine owns
+  // feature identity (the $fromOp handshake), Truth owns the tree.
+  const partContext = useMemo(() => createPartContextStore(), [])
+  const pc = useSyncExternalStore(partContext.subscribe, partContext.getSnapshot)
+  const partFacts = authoringFacts(pc)
   const [partsRefresh, setPartsRefresh] = useState(0)
+  // The COMBINED gate for every operation start + open/close control (Codex3
+  // B1 → Codex4 B1.2): active work, an in-flight workspace transition, OR an
+  // unresolved canonical Part transition — no manual/AI operation may start
+  // while a Part adoption is in flight.
+  const uiGate =
+    switchGate ??
+    (wsTransition ? 'A workspace transition is in flight' : null) ??
+    (pc.inspection.status === 'loading' ? 'A Part is loading — wait for it to resolve' : null)
+  // The AUTHORING-START gate (Codex5 B1.2): everything in uiGate PLUS a
+  // targeted-but-not-ready Part context — ONE policy for the ribbon, the AI
+  // session, and New/commit starts. Navigation (workspace open/close, Part
+  // rows) stays on uiGate so a targeted `error` never blocks recovery.
+  const authoringGate = uiGate ?? authoringStartRefusal(pc)
+  // The inspect lane, bound to an EXPLICIT workspaceId (never a render-time
+  // closure — commit-at-New adopts a workspace mid-flight): desktop = the
+  // capability-checked bridge inspect; browser dev = the mock's honest mirror.
+  const makeInspectFetcher = useCallback(
+    (wsId: string | null): InspectFetcher =>
+      async (partNumber: string) => {
+        if (window.aiadra) {
+          if (!wsId) throw new Error('no workspace capability for inspect')
+          const r = await window.aiadra.inspect(wsId, partNumber)
+          if (!r.ok) throw new Error(r.error.message)
+          return (r.result as { object: unknown }).object
+        }
+        const mock = featureBackendRef.current as { inspectRaw?: (n: string) => unknown }
+        if (typeof mock?.inspectRaw !== 'function') throw new Error('no inspect lane available')
+        return mock.inspectRaw(partNumber)
+      },
+    [],
+  )
+  // The pre-mount display coordinator (Codex5 B1.1): keeps a deferred
+  // commit-at-New display INSIDE the transition join.
+  const pendingDisplay = useMemo(() => createPendingDisplayCoordinator(), [])
+  /** Install a display source INSIDE a Part transition (Codex3 B2): stale
+   *  adoptions install nothing; the pre-mount case DEFERS through the
+   *  coordinator with the transition's `stillCurrent` (Codex4 B1.5 + Codex5
+   *  B1.1 — the deferral is a real joined promise, and a cleared or
+   *  superseded adoption can never install its deferred source after mount).
+   *  The viewport's own load token stays as defense in depth. */
+  const installIntoViewport = useCallback(
+    (src: DisplaySource) => async (stillCurrent: () => boolean) => {
+      if (!stillCurrent()) return
+      if (viewportApi.current) await viewportApi.current.setDisplaySource(src)
+      // Pre-mount (commit-at-New from Home): the deferred install stays part
+      // of the transition JOIN — this promise settles only when the mounted
+      // viewport installs (or fails), so partContext cannot publish `ready`
+      // on a merely-queued display (Codex5 B1.1).
+      else await pendingDisplay.defer(src, stillCurrent)
+    },
+    [viewportApi, pendingDisplay],
+  )
+  /** The synchronous transition-start boundary (Codex4 B1.3): canonical
+   *  face/edge selection and the tree's selected sketch die BEFORE any async
+   *  work — feature ids are Part-local, so A's `feat_0001` must never alias
+   *  B's `feat_0001` across an adoption. */
+  const clearPartScopedSelections = useCallback(() => {
+    selectionStore.clearSelected()
+    authoringStore.selectSketch(null)
+  }, [selectionStore, authoringStore])
+  /** THE canonical Part adoption (Codex3 B2 — ONE transition for row-click
+   *  loads, auto-load, commit-at-New, and fresh dev-lane commits): the
+   *  generation advances synchronously, then display + inspect run under it.
+   *  `display` = a commit result's source; absent → the bridge canonical lane. */
+  const adoptPart = useCallback(
+    (wsId: string | null, partNumber: string, display?: DisplaySource) => {
+      const src =
+        display ?? (window.aiadra && wsId ? createBridgeSource(wsId, partNumber) : null)
+      void partContext.setPart(wsId, partNumber, {
+        onTransitionStart: clearPartScopedSelections,
+        fetchInspect: makeInspectFetcher(wsId),
+        installDisplay: src ? installIntoViewport(src) : undefined,
+      })
+    },
+    [partContext, makeInspectFetcher, installIntoViewport, clearPartScopedSelections],
+  )
+  /** Re-run the transition for the CURRENT Part (after a feature commit);
+   *  `display` = the commit's returned source (installed under the SAME
+   *  generation as the Truth re-read). The commit changed the topology, so
+   *  Part-scoped selections clear here too (the same boundary rule). */
+  const refreshPartContext = useCallback(
+    (display?: DisplaySource) => {
+      const s = partContext.getSnapshot()
+      if (s.partNumber === null) return
+      void partContext.refresh({
+        onTransitionStart: clearPartScopedSelections,
+        fetchInspect: makeInspectFetcher(s.workspaceId),
+        installDisplay: display ? installIntoViewport(display) : undefined,
+      })
+    },
+    [partContext, makeInspectFetcher, installIntoViewport, clearPartScopedSelections],
+  )
 
   // Authoring dispatch — gated on the COMBINED gate (Codex3 B1): no op may
   // start while a workspace transition owns the shell. Sketch begins by
   // PICKING A PLANE (EP1 — Petre's pinned semantics; all three live via EP2).
-  const [planePickerOpen, setPlanePickerOpen] = useState(false)
+  // The picker serves BOTH the stepwise sketch and Extrude's chained
+  // "New sketch…" (D-S3 entry B) — the purpose decides where the plane goes.
+  const [planePicker, setPlanePicker] = useState<null | 'sketch' | 'chained'>(null)
   const onStartFeature = (kind: string) => {
-    if (uiGate) return
+    // Codex4 B1.2 → Codex5 B1.2: the ONE shared authoring-start gate —
+    // active work, workspace/Part transitions, AND a targeted-but-not-ready
+    // context (dev:web's fresh-Part flow is only legitimate with NO target).
+    if (authoringGate) {
+      setShellNote(authoringGate)
+      return
+    }
     if (kind === 'sketch') {
       // Codex5 B2 (fail closed): the REAL lane refuses to sketch without a
-      // trustworthy active Part — never the fresh-Part fallback against a
-      // hidden/different Part. The badged dev lane keeps the fresh-Part flow.
-      const refusal = sketchAuthoringGate(!!window.aiadra && !!currentWs, activePart !== null)
+      // READY inspected Part context — loading/error states refuse too (S2
+      // B2), never the fresh-Part fallback against a hidden/different Part.
+      // The badged dev lane keeps the fresh-Part flow.
+      const refusal = sketchAuthoringGate(!!window.aiadra && !!currentWs, partFacts.readyPart !== null)
       if (refusal) {
         setShellNote(refusal)
         return
       }
-      setPlanePickerOpen(true)
-    } else if (kind === 'extrude') featureStore.start('extrude', EXTRUDE_DEFAULTS)
+      setPlanePicker('sketch')
+    } else if (kind === 'extrude') {
+      // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
+      // without a ready context or when the one-base rule already holds.
+      if (window.aiadra || partFacts.readyPart) {
+        if (!partFacts.readyPart) {
+          setShellNote('Open or create a Part first — Extrude needs an inspected Part context')
+          return
+        }
+        if (!partFacts.canExtrude) {
+          setShellNote('This Part already has a base creation feature (one per Part in v1)')
+          return
+        }
+      } else {
+        // dev:web with no context yet — the chained New sketch… entry still
+        // works (a fresh Part is created at commit).
+      }
+      // Dual entry (D-S3): a tree-selected UNCONSUMED sketch goes straight to
+      // depth (entry A); otherwise the select step offers pick-or-create.
+      const sel = authoringSession.selectedSketchId
+      const part = partFacts.readyPart
+      const selectedIsUnconsumed =
+        sel !== null && part !== null && unconsumedSketches(part).some((sk) => sk.id === sel)
+      // Codex3 B2 / Codex4 B1.4: the session CAPTURES the FULL authority
+      // tuple {workspaceId, partNumber, generation} at start; the terminal
+      // commit revalidates the exact tuple against the live context.
+      authoringStore.startExtrude(
+        selectedIsUnconsumed ? sel : null,
+        captureAuthoringTarget(partContext.getSnapshot()),
+      )
+    }
   }
   const onPlanePicked = (plane: PlaneOrientation) => {
-    setPlanePickerOpen(false)
-    if (uiGate) return
-    sketchStore.start({
-      plane,
-      targetPart: activePart ? { number: activePart.number, name: activePart.name } : null,
-    })
+    const purpose = planePicker
+    setPlanePicker(null)
+    if (authoringGate) return
+    const target = partFacts.readyPart
+    const targetRef = target ? { number: target.number, name: target.name } : null
+    if (purpose === 'chained') {
+      // The chained sketch keeps the EXTRUDE session's captured tuple — the
+      // store copies it at the hand-off (Codex4 B1.4).
+      authoringStore.beginChainedSketch(plane, targetRef)
+    } else {
+      authoringStore.startSketch({
+        plane,
+        targetPart: targetRef,
+        targetAuth: targetRef ? captureAuthoringTarget(partContext.getSnapshot()) : null,
+      })
+    }
   }
   /** The ONE adoption path — returns the refusal reason (null = adopted). */
   const switchWorkspace = async (ws: OpenedWorkspace): Promise<string | null> => {
@@ -604,12 +815,13 @@ function Workbench({
   // A Number collision surfaces verbatim (core's ADR/0004 Reservation).
   const [newDialogOpen, setNewDialogOpen] = useState(false)
   const requestNew = () => {
-    if (!uiGate) setNewDialogOpen(true)
+    if (authoringGate) setShellNote(authoringGate)
+    else setNewDialogOpen(true)
   }
   const createNew = async (choice: NewObjectChoice) => {
     setNewDialogOpen(false)
     setShellNote(null)
-    if (uiGate) return // Codex3 B1: incl. an in-flight workspace transition
+    if (authoringGate) return // Codex3 B1 + Codex5 B1.2: one authoring-start policy
     let wsId = switcher.current()?.workspaceId ?? null
     if (window.aiadra && wsId === null) {
       const r = await window.aiadra.chooseWorkspace()
@@ -623,12 +835,15 @@ function Workbench({
     }
     // Commit the empty Part through the SAME lanes as every authoring op
     // (desktop = the real bridge; dev:web = the badged mock; never mixed).
+    // The bridge wrapper is rebuilt against the JUST-adopted wsId (the render's
+    // featureBackend may predate the adoption); the mock lane reuses the ONE
+    // session mock — its honest Truth mirror is what inspect reads (S2).
     const lane = chooseBackendLane(!!window.aiadra, wsId)
     const backend =
       lane === 'bridge'
         ? createBridgeAuthoringBackend(wsId!)
         : lane === 'mock'
-          ? createMockAuthoringBackend()
+          ? featureBackendRef.current
           : createUnavailableBackend()
     // Codex5 B1: a globally GATED, cleanup-owning one-shot — its busy state
     // sits in the same operation gate (createBusy → switchGate/uiGate), every
@@ -654,33 +869,48 @@ function Workbench({
         return
       }
       setShellNote(null)
-      setActivePart({ number: choice.number, name: choice.name, featureCount: 0 })
+      // The committed empty Part IS the context — ONE transition installs its
+      // display AND reads its Truth (Codex3 B2; the pre-mount case defers to
+      // the mount effect inside installIntoViewport).
+      adoptPart(wsId, choice.number, outcome.result.display)
       setPartsRefresh((n) => n + 1)
       setAppSession('modeling')
-      // The viewport may not be mounted yet on the FIRST modeling entry —
-      // defer the (empty) display to the mount effect below.
-      if (viewportApi.current) void viewportApi.current.setDisplaySource(outcome.result.display)
-      else pendingDisplayRef.current = outcome.result.display
     } finally {
       setCreateBusy(false)
     }
   }
-  // Apply a display that arrived before the viewport mounted (commit-at-New on
-  // the first modeling entry).
-  const pendingDisplayRef = useRef<DisplaySource | null>(null)
+  // Drain a display deferred before the viewport mounted (commit-at-New on
+  // the first modeling entry): generation-bound AND join-settling (Codex4
+  // B1.5 + Codex5 B1.1) — the coordinator installs iff the deferring
+  // transition still holds its generation, and settles that transition's
+  // promise either way (success → ready; failure → fail-closed error).
   useEffect(() => {
     if (appSession !== 'modeling' || !ready) return
-    const src = pendingDisplayRef.current
-    if (!src) return
-    pendingDisplayRef.current = null
-    void viewportApi.current?.setDisplaySource(src)
-  }, [appSession, ready, viewportApi, partsRefresh])
+    void pendingDisplay.drain(async (src) => {
+      const api = viewportApi.current
+      if (!api) throw new Error('viewport unavailable for the deferred display')
+      await api.setDisplaySource(src)
+    })
+  }, [appSession, ready, viewportApi, partsRefresh, pendingDisplay])
+
+  // The sketch-wire overlay (S2 D-S2): committed-but-unconsumed sketches show
+  // as wires on their planes — derived from the SAME decoded Truth as the
+  // tree, pushed on every partContext change (and on viewport mount).
+  useEffect(() => {
+    const push = () => {
+      const s = partContext.getSnapshot()
+      const part = s.inspection.status === 'ready' ? s.inspection.part : null
+      viewportApi.current?.setSketchWires(part ? unconsumedSketches(part) : [])
+    }
+    push()
+    return partContext.subscribe(push)
+  }, [partContext, viewportApi, ready, appSession])
   const openSample = () => {
     setSampleWanted(true)
     setAppSession('modeling')
   }
   const startDesign = () => {
-    if (uiGate) return // Codex3 B1: the AI-session start is an operation start
+    if (authoringGate) return // Codex3 B1 + Codex5 B1.2: the AI start is an authoring start
     setAppSession('modeling')
     setDockOpen(true)
     startBracketSession(operationStore)
@@ -694,6 +924,10 @@ function Workbench({
     if (lane === 'unavailable') return createUnavailableBackend()
     return createMockAuthoringBackend()
   }, [currentWs])
+  // The stable handle the inspect fetcher reads (the mock lane's honest
+  // `inspectRaw` mirror lives on the instance).
+  const featureBackendRef = useRef(featureBackend)
+  featureBackendRef.current = featureBackend
   // The CAD↔AI dock chrome (ADR/0040 D5). Live open/width are transient; their
   // startup defaults come from the settings registry (aiDockOpenDefault) and the
   // width is a persisted setting written on drag (aiDockWidth).
@@ -808,8 +1042,8 @@ function Workbench({
   const fileItems: FileMenuItem[] = [
     {
       label: 'New…',
-      enabled: !uiGate,
-      title: uiGate ?? 'Create a new object (Part, …)',
+      enabled: !authoringGate,
+      title: authoringGate ?? 'Create a new object (Part, …)',
       onClick: requestNew,
     },
     {
@@ -869,31 +1103,30 @@ function Workbench({
             onOpened={switchWorkspace}
             onOpenSample={import.meta.env.DEV && !window.aiadra ? openSample : undefined}
             onDesignStart={startDesign}
-            startGate={uiGate}
+            startGate={authoringGate}
             onNewPart={requestNew}
           />
         </>
       )}
       {appSession === 'modeling' && (
         <>
-      <ModelRibbon onStart={onStartFeature} busy={!!uiGate} />
+      <ModelRibbon onStart={onStartFeature} busy={!!authoringGate} />
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel
-            api={viewportApi}
             ws={currentWs}
             onOpen={switchWorkspace}
             gate={uiGate}
             refresh={partsRefresh}
-            onPartLoaded={(n) => setActivePart((p) => reconcileLoadedPart(p, n))}
+            loadedPart={pc.partNumber}
+            onPartLoaded={(n) => adoptPart(currentWs?.workspaceId ?? null, n)}
           />
           <ImportPanel api={viewportApi} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
-          <ModelTreePanel store={featureStore} part={activePart} />
+          <ModelTreePanel session={authoringStore} context={partContext} />
           <div className="muted small pad">
-            Create features from the <b>Model</b> ribbon above. The persistent
-            per-Part tree arrives with the stepwise Sketch→Extrude flow.
+            Create features from the <b>Model</b> ribbon above.
           </div>
           {fixtureError && <div className="small pad err">{fixtureError}</div>}
           <div className="panel-title">Properties</div>
@@ -917,35 +1150,31 @@ function Workbench({
           ) : (
             <div className="hud muted small">initializing…</div>
           )}
-          <FeatureDashboard
-            store={featureStore}
+          <ExtrudePanel
+            store={authoringStore}
             backend={featureBackend}
-            viewportApi={viewportApi}
+            context={partContext}
+            part={partFacts.readyPart}
             onClose={restoreBase}
-            onCommitted={(info) => {
-              // Codex5 B2: the standalone extrude's fresh Part BECOMES the
-              // authoring target (its known feature count is 2).
-              setActivePart({ number: info.number, name: info.name, featureCount: 2 })
+            onCommitted={(display) => {
+              // S2 / Codex3 B2: the commit's display installs INSIDE the same
+              // transition that re-reads Truth — one generation for both.
+              refreshPartContext(display)
               setPartsRefresh((n) => n + 1)
             }}
+            onNewSketch={() => setPlanePicker('chained')}
           />
           <SketchPad
-            store={sketchStore}
+            store={authoringStore}
             backend={featureBackend}
-            viewportApi={viewportApi}
+            context={partContext}
             onClose={restoreBase}
-            targetFeatureCount={activePart?.featureCount ?? 0}
             onCommitted={(info) => {
-              // Codex5 B2: reconcile the target on EVERY commit — features onto
-              // the active Part advance its count; a fresh dev-lane Part
-              // BECOMES the target (2 features: sketch + extrude).
-              setActivePart((p) =>
-                info.createdFresh
-                  ? { number: info.number, name: info.name, featureCount: 2 }
-                  : p
-                    ? { ...p, featureCount: p.featureCount + 2 }
-                    : p,
-              )
+              // S2 / Codex3 B2: ONE transition — a fresh dev-lane Part is
+              // ADOPTED (display + Truth together); features onto the context
+              // Part REFRESH it with the commit's display.
+              if (info.createdFresh) adoptPart(currentWs?.workspaceId ?? null, info.number, info.display)
+              else refreshPartContext(info.display)
               setPartsRefresh((n) => n + 1)
             }}
           />
@@ -957,7 +1186,7 @@ function Workbench({
             width={dockWidth as number}
             onWidthChange={(w) => setDockWidth(w)}
             onDismiss={() => setDockOpen(false)}
-            startGate={uiGate}
+            startGate={authoringGate}
             homeTab={
               <WorkspaceStart
                 onOpened={switchWorkspace}
@@ -979,7 +1208,7 @@ function Workbench({
         </span>
       </div>
       <NewDialog open={newDialogOpen} onCancel={() => setNewDialogOpen(false)} onCreate={(c) => void createNew(c)} />
-      <PlanePicker open={planePickerOpen} onPick={onPlanePicked} onCancel={() => setPlanePickerOpen(false)} />
+      <PlanePicker open={planePicker !== null} onPick={onPlanePicked} onCancel={() => setPlanePicker(null)} />
     </div>
   )
 }
@@ -991,8 +1220,7 @@ export default function App() {
   const viewStoreRef = useRef<ViewStateStore | null>(null)
   const selectionStoreRef = useRef<SelectionStore | null>(null)
   const operationStoreRef = useRef<OperationStore | null>(null)
-  const featureStoreRef = useRef<FeatureSessionStore | null>(null)
-  const sketchStoreRef = useRef<SketchStore | null>(null)
+  const authoringStoreRef = useRef<AuthoringSessionStore | null>(null)
   const [ready, setReady] = useState(false)
 
   if (!registryRef.current) {
@@ -1023,11 +1251,9 @@ export default function App() {
   if (!operationStoreRef.current) operationStoreRef.current = createOperationStore()
   const operationStore = operationStoreRef.current
 
-  if (!featureStoreRef.current) featureStoreRef.current = createFeatureSessionStore()
-  const featureStore = featureStoreRef.current
+  if (!authoringStoreRef.current) authoringStoreRef.current = createAuthoringSessionStore()
+  const authoringStore = authoringStoreRef.current
 
-  if (!sketchStoreRef.current) sketchStoreRef.current = createSketchStore()
-  const sketchStore = sketchStoreRef.current
 
   // Boot: load persisted settings → hydrate → render the viewport with the
   // resolved values (so persisted theme/settleMs/defaults apply at startup).
@@ -1066,8 +1292,7 @@ export default function App() {
         viewStore={viewStore}
         selectionStore={selectionStore}
         operationStore={operationStore}
-        featureStore={featureStore}
-        sketchStore={sketchStore}
+        authoringStore={authoringStore}
       />
     </SettingsProvider>
   )
