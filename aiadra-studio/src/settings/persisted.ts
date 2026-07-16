@@ -12,7 +12,7 @@
  * descriptor job, applied when values resolve into live state.
  */
 
-export const CURRENT_SETTINGS_VERSION = 1
+export const CURRENT_SETTINGS_VERSION = 3
 
 export type JSONValue =
   | string
@@ -166,13 +166,30 @@ export function validatePersistedSettingsForSave(blob: unknown): BlobCheck {
 
 /**
  * Migrate a (validated) blob to the current version. Fail-loud on a newer
- * version (`SettingsVersionError`). The ordered step chain is empty while v1 is
- * the floor; when v2 lands, add `1 -> 2` here and the structure carries it.
+ * version (`SettingsVersionError`). Ordered step chain.
  */
 export function migratePersisted(blob: PersistedSettings): PersistedSettings {
   if (blob.settings_version > CURRENT_SETTINGS_VERSION) {
     throw new SettingsVersionError(blob.settings_version)
   }
-  // No downgrade steps needed yet (v1 is the first version).
-  return { ...blob, settings_version: CURRENT_SETTINGS_VERSION }
+  let out: PersistedSettings = { ...blob, values: { ...blob.values } }
+  if (out.settings_version < 2) {
+    // v1 -> v2 (arc 20260716-1 V grid closure, Codex1 B3): the empty-part
+    // grid is REMOVED — the `gridVisibleDefault` key dies here so a stale
+    // persisted `true` can never resurrect it. The future sketch mode mints
+    // its OWN setting; it never inherits this key.
+    delete out.values.gridVisibleDefault
+  }
+  if (out.settings_version < 3) {
+    // v2 -> v3 (arc 20260716-1, Petre's empty-part round 2): the viewport
+    // background default moves light-green -> neutral grey. The B2 rule: a
+    // persisted value equal to the OLD built-in default is dropped (the new
+    // default takes over); a REAL user override is preserved verbatim.
+    const OLD_LIGHT_GREEN = 0xe4efdf
+    for (const key of ['viewportBackground', 'paperBody'] as const) {
+      if (out.values[key] === OLD_LIGHT_GREEN) delete out.values[key]
+    }
+  }
+  out.settings_version = CURRENT_SETTINGS_VERSION
+  return out
 }

@@ -1,18 +1,22 @@
 /**
- * The 2D sketch pad (arc 20260711-11 slice S/X; S2 stepwise) — draw a closed
- * contour on the picked plane. S2 (D-S2/D-S4): the pad is a view over the ONE
- * discriminated `authoringSession` store, and the sketch is FIRST-CLASS —
- * OK commits the sketch ALONE (→ `Sketch N` in the tree + its wire in the
- * viewport; Extrude consumes it later), except in the CHAINED entry (launched
- * from Extrude's "New sketch…"), where OK hands the drawn rings back to the
- * extrude session and the pair commits as ONE draft via the $fromOp handshake.
+ * The 2D sketch pad (arc 20260711-11 slice S/X; S2 stepwise; SK-C0 palette) —
+ * draw a closed contour (lines + BULGE ARCS), a rectangle, or a circle on the
+ * picked plane, optionally as a CONSTRUCTION guide (D-C3). S2 (D-S2/D-S4): the
+ * pad is a view over the ONE discriminated `authoringSession` store, and the
+ * sketch is FIRST-CLASS — OK commits the sketch ALONE, except in the CHAINED
+ * entry (launched from Extrude's "New sketch…"), where OK hands the drawing
+ * back and the pair commits as ONE draft via the $fromOp handshake.
  *
- * Validity is a client-side mirror of the engine's Class-1 gate
- * (`contourProblem`) so the hint matches what commit will accept.
+ * Validity is a client-side mirror of the engine's Class-1 gate — CURVE-AWARE
+ * since SK-C0 (`contourProblem(points, bulges)`) — so the hint matches what
+ * commit will accept. Arc UX: toggle "Arc", place the segment's endpoint, then
+ * one more click places the VIA point (3-point arc → bulge, minor arcs only).
  */
 import { useEffect, useMemo, useRef } from 'react'
 import type { DisplaySource } from '../display/displaySource'
 import {
+  buildCircleSketchOps,
+  buildCreateWithCircleOps,
   buildCreateWithRectangleOps,
   buildCreateWithSketchOps,
   buildRectangleSketchOps,
@@ -24,7 +28,8 @@ import {
 import { useAuthoringSession, type AuthoringSessionStore } from '../authoring/authoringSession'
 import { createSessionLifecycle } from '../authoring/sessionLifecycle'
 import { guardTerminalTarget, type PartContextStore } from '../authoring/partContext'
-import { contourProblem, dist, type Pt } from './contour'
+import { contourProblem, dist, pointsToSegments, type Pt } from './contour'
+import { bulgeFromThreePoints, tessellateSegments } from './arcGeometry'
 
 const HALF_W = 130 // mm half-width of the pad view
 const HALF_H = 85 // mm half-height
@@ -43,6 +48,27 @@ function clientToMm(svg: SVGSVGElement, clientX: number, clientY: number): Pt {
 }
 
 const plot = (p: Pt) => `${p.x},${-p.y}`
+
+/** The drawn ring as a render polyline (arcs tessellated for preview only). */
+function ringPolyline(points: Pt[], bulges: number[], closed: boolean): string {
+  if (points.length === 0) return ''
+  if (!closed) {
+    // open: tessellate only the PLACED segments (points.length-1 of them)
+    const segs = points.slice(0, -1).map((p, i) => {
+      const q = points[i + 1]
+      const b = bulges[i] ?? 0
+      return b !== 0
+        ? ({ kind: 'arc', x1_mm: p.x, y1_mm: p.y, x2_mm: q.x, y2_mm: q.y, bulge: b } as const)
+        : ({ kind: 'line', x1_mm: p.x, y1_mm: p.y, x2_mm: q.x, y2_mm: q.y } as const)
+    })
+    const pts = segs.length ? tessellateSegments([...segs]) : []
+    pts.push(points[points.length - 1])
+    return pts.map(plot).join(' ')
+  }
+  const pts = tessellateSegments(pointsToSegments(points, bulges))
+  pts.push(points[0])
+  return pts.map(plot).join(' ')
+}
 
 export function SketchPad({
   store,
@@ -71,19 +97,15 @@ export function SketchPad({
   const s = st.mode === 'sketch' ? st : null
   const svgRef = useRef<SVGSVGElement>(null)
 
-  // Codex6 B1 → S2: the SAME shared begin→simulate→commit lifecycle as every
-  // authoring surface — retained session, retry cleanup, uninterruptible commit.
   const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
   const busy = s?.phase === 'busy'
-  // The DISCRIMINATED tool (arc 20260715-1 Codex2 N2): contour drawing state
-  // and rectangle two-click state never mix.
   const ct = s?.tool.kind === 'contour' ? s.tool : null
   const rt = s?.tool.kind === 'rectangle' ? s.tool : null
-  const problem = ct ? contourProblem(ct.points) : null
-  const done = ct ? ct.closed : (rt?.rect ?? null) !== null
+  const ci = s?.tool.kind === 'circle' ? s.tool : null
+  const problem = ct ? contourProblem(ct.points, ct.bulges) : null
+  const done = ct ? ct.closed : rt ? rt.rect !== null : (ci?.circle ?? null) !== null
   const nearStart = ct?.cursor && ct.points.length >= 3 && dist(ct.cursor, ct.points[0]) <= CLOSE_MM
 
-  // Esc cancels; Enter closes a valid ring; Backspace undoes — guarded off inputs.
   useEffect(() => {
     if (!s) return
     const onKey = (e: KeyboardEvent) => {
@@ -109,17 +131,26 @@ export function SketchPad({
     const m = clientToMm(svgRef.current, e.clientX, e.clientY)
     const p = { x: snap(m.x), y: snap(m.y) }
     if (rt) {
-      // The rectangle tool: anchor, then the opposite corner (normalized
-      // min-corner + abs dims — Codex2 N1; a degenerate pick refuses).
       store.placeRectCorner(p)
       return
     }
+    if (ci) {
+      store.placeCirclePoint(p)
+      return
+    }
     if (!ct) return
+    if (ct.awaitingVia && ct.points.length >= 2) {
+      // SK-C0: the 3-point-arc VIA click — the last segment curves through it.
+      const a = ct.points[ct.points.length - 2]
+      const b = ct.points[ct.points.length - 1]
+      const bulge = bulgeFromThreePoints(a, m, b)
+      if (bulge !== null) store.setLastBulge(bulge)
+      else store.setAwaitingVia(false) // degenerate/major — the segment stays a line
+      return
+    }
     if (ct.points.length >= 3 && dist(m, ct.points[0]) <= CLOSE_MM) {
       store.closeRing()
     } else {
-      // Ignore a click that lands on the last placed point (grid snap makes a
-      // double-click an exact duplicate → a zero-length segment, Codex6 B2).
       const last = ct.points[ct.points.length - 1]
       if (last && dist(p, last) === 0) return
       store.addPoint(p)
@@ -127,9 +158,6 @@ export function SketchPad({
   }
 
   const cancel = () => {
-    // Refuses while the terminal commit is in flight (Codex6 B1 — this guards
-    // the Escape path too, not just the disabled buttons), and rolls back a
-    // retained failed-commit session before the pad closes.
     if (!lifecycle.cancel()) return
     store.cancel()
     onClose()
@@ -139,15 +167,10 @@ export function SketchPad({
   const ok = async () => {
     if (busy || problem || !done) return
     if (s.chainToExtrude) {
-      // The chained in-place sketch: NO commit here — the rings return to the
-      // extrude session and the pair commits as ONE draft ($fromOp).
       store.finishChainedSketch()
       return
     }
     const target = s.targetPart
-    // Codex3 B2 / Codex4 B1.4: the terminal boundary revalidates the CAPTURED
-    // authority tuple — a targeted session whose tuple is missing or no longer
-    // exact (workspace, Part number, generation, ready) fails closed.
     if (target) {
       const refusal = s.targetAuth
         ? guardTerminalTarget(s.targetAuth, context.getSnapshot())
@@ -159,45 +182,75 @@ export function SketchPad({
     }
     const num = target?.number ?? s.partNumber ?? suggestPartNumber()
     const name = target?.name ?? s.partName ?? `Sketch ${num}`
+    const construction = s.construction
     const rect = rt?.rect ?? null
-    const ops = rect
+    const circle = ci?.circle ?? null
+    const ops = circle
       ? target
-        ? buildRectangleSketchOps(target.number, rect, s.plane)
-        : buildCreateWithRectangleOps(num, name, rect, s.plane)
-      : target
-        ? buildSketchOnlyOps(target.number, ct!.points, s.plane)
-        : buildCreateWithSketchOps(num, name, ct!.points, s.plane)
+        ? buildCircleSketchOps(target.number, circle, s.plane, construction)
+        : buildCreateWithCircleOps(num, name, circle, s.plane, construction)
+      : rect
+        ? target
+          ? buildRectangleSketchOps(target.number, rect, s.plane, construction)
+          : buildCreateWithRectangleOps(num, name, rect, s.plane, construction)
+        : target
+          ? buildSketchOnlyOps(target.number, ct!.points, s.plane, { bulges: ct!.bulges, construction })
+          : buildCreateWithSketchOps(num, name, ct!.points, s.plane, { bulges: ct!.bulges, construction })
     await lifecycle.run(ops, num, {
       onBusy: () => store.setSketchPhase('busy', 'committing sketch…'),
       onError: (m) => store.setSketchPhase('error', m),
       onSuccess: (res) => {
-        // The sketch alone makes no solid — the Workbench installs the display
-        // inside the SAME transition that re-reads Truth (the wire follows).
         onCommitted?.({ number: num, name, createdFresh: !target, display: res.display })
         store.cancel()
       },
     })
   }
 
-  const rubber = ct ? ct.cursor && ct.points.length > 0 && !ct.closed : false
+  const rubber = ct ? ct.cursor && ct.points.length > 0 && !ct.closed && !ct.awaitingVia : false
+  // the live arc preview while placing the via point
+  const viaPreview =
+    ct?.awaitingVia && ct.cursor && ct.points.length >= 2
+      ? (() => {
+          const a = ct.points[ct.points.length - 2]
+          const b = ct.points[ct.points.length - 1]
+          const bulge = bulgeFromThreePoints(a, ct.cursor!, b)
+          if (bulge === null) return null
+          const pts = tessellateSegments([
+            { kind: 'arc', x1_mm: a.x, y1_mm: a.y, x2_mm: b.x, y2_mm: b.y, bulge },
+          ])
+          pts.push(b)
+          return pts.map(plot).join(' ')
+        })()
+      : null
   const hint =
     problem ??
     (done
       ? s.chainToExtrude
         ? 'Ready — OK returns to Extrude.'
         : 'Ready — OK commits the sketch.'
-      : rt
-        ? rt.anchor
-          ? 'Click the opposite corner.'
-          : 'Click the first corner of the rectangle.'
-        : 'Click the first point to close the ring.')
-  // The live rectangle preview: committed rect, or anchor->cursor rubber.
+      : ct?.awaitingVia
+        ? 'Click a point the arc should pass through (the via).'
+        : rt
+          ? rt.anchor
+            ? 'Click the opposite corner.'
+            : 'Click the first corner of the rectangle.'
+          : ci
+            ? ci.center
+              ? 'Click a rim point to set the radius.'
+              : 'Click the circle center.'
+            : 'Click the first point to close the ring.')
   const previewRect = rt
     ? rt.rect ?? (rt.anchor && rt.cursor
         ? { x_mm: Math.min(rt.anchor.x, rt.cursor.x), y_mm: Math.min(rt.anchor.y, rt.cursor.y),
             width_mm: Math.abs(rt.cursor.x - rt.anchor.x), height_mm: Math.abs(rt.cursor.y - rt.anchor.y) }
         : null)
     : null
+  const previewCircle = ci
+    ? ci.circle ?? (ci.center && ci.cursor
+        ? { cx_mm: ci.center.x, cy_mm: ci.center.y, radius_mm: dist(ci.center, ci.cursor) }
+        : null)
+    : null
+  const strokeClass = s.construction ? ' construction' : ''
 
   return (
     <div className="sketchpad">
@@ -215,6 +268,18 @@ export function SketchPad({
             <button type="button" className={`btn small${rt ? ' primary' : ''}`} disabled={busy}
               title="Draw a rectangle (two clicks) — the native profile for Revolve/Hole"
               onClick={() => store.switchTool('rectangle')}>Rectangle</button>
+            <button type="button" className={`btn small${ci ? ' primary' : ''}`} disabled={busy}
+              title="Draw a circle (center + rim) — a hole beside a rectangle, or a cylinder profile alone"
+              onClick={() => store.switchTool('circle')}>Circle</button>
+            {ct && (
+              <button type="button" className={`btn small${ct.awaitingVia ? ' primary' : ''}`}
+                disabled={busy || ct.closed || ct.points.length < 2 || (ct.bulges[ct.bulges.length - 1] ?? 0) !== 0}
+                title="Curve the LAST segment: click a via point the arc passes through (minor arcs)"
+                onClick={() => store.setAwaitingVia(!ct.awaitingVia)}>Arc</button>
+            )}
+            <button type="button" className={`btn small${s.construction ? ' primary' : ''}`} disabled={busy}
+              title="Construction guide (SK-C0): visible dashed, never part of the profile or the solid"
+              onClick={() => store.toggleConstruction()}>Constr.</button>
           </span>
         )}
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
@@ -238,13 +303,14 @@ export function SketchPad({
         <line x1={-HALF_W} y1={0} x2={HALF_W} y2={0} className="sp-axis" />
         <line x1={0} y1={-HALF_H} x2={0} y2={HALF_H} className="sp-axis" />
 
-        {/* contour: the ring (closed → filled; open → polyline) */}
+        {/* contour: the ring (closed → filled; open → polyline), arcs tessellated */}
         {ct && ct.points.length > 0 && (
           <polyline
-            className={`sp-ring ${ct.closed ? 'closed' : ''}`}
-            points={ct.points.map(plot).join(' ') + (ct.closed ? ' ' + plot(ct.points[0]) : '')}
+            className={`sp-ring ${ct.closed ? 'closed' : ''}${strokeClass}`}
+            points={ringPolyline(ct.points, ct.bulges, ct.closed)}
           />
         )}
+        {ct && viaPreview && <polyline className={`sp-rubber arc${strokeClass}`} points={viaPreview} fill="none" />}
         {ct && rubber && <line className="sp-rubber" x1={ct.points[ct.points.length - 1].x} y1={-ct.points[ct.points.length - 1].y} x2={ct.cursor!.x} y2={-ct.cursor!.y} />}
         {ct &&
           ct.points.map((p, i) => (
@@ -254,7 +320,7 @@ export function SketchPad({
         {/* rectangle: the committed rect (filled) or the anchor→cursor rubber */}
         {previewRect && (
           <rect
-            className={`sp-ring ${rt?.rect ? 'closed' : ''}`}
+            className={`sp-ring ${rt?.rect ? 'closed' : ''}${strokeClass}`}
             x={previewRect.x_mm}
             y={-(previewRect.y_mm + previewRect.height_mm)}
             width={previewRect.width_mm}
@@ -262,6 +328,17 @@ export function SketchPad({
           />
         )}
         {rt?.anchor && <circle className="sp-vert" cx={rt.anchor.x} cy={-rt.anchor.y} r={1.8} />}
+
+        {/* circle: committed (filled) or center→cursor rubber (SK-C0 D-C2) */}
+        {previewCircle && previewCircle.radius_mm > 0 && (
+          <circle
+            className={`sp-ring ${ci?.circle ? 'closed' : ''}${strokeClass}`}
+            cx={previewCircle.cx_mm}
+            cy={-previewCircle.cy_mm}
+            r={previewCircle.radius_mm}
+          />
+        )}
+        {ci?.center && <circle className="sp-vert" cx={ci.center.x} cy={-ci.center.y} r={1.8} />}
       </svg>
 
       <div className="sp-foot">
@@ -275,7 +352,7 @@ export function SketchPad({
               <button type="button" className="btn small" onClick={() => store.closeRing()} disabled={busy || !!problem}>Close ring</button>
             </>
           ) : (
-            <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy || !rt?.anchor}>Restart</button>
+            <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy || (rt ? !rt.anchor : !ci?.center)}>Restart</button>
           )
         ) : (
           <>

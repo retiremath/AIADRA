@@ -1,18 +1,32 @@
 :root {
-  --bg: #16171d;
-  --panel: #1e1f26;
-  --panel-2: #23252e;
-  --border: #2e303a;
-  --text: #c7cad1;
-  --text-h: #f3f4f6;
-  --muted: #7c8088;
-  --accent: #6b9bd1;
+  /* THE LIGHT DEFAULT (arc 20260716-1 V-1) — these values are the CHROME
+     projection of src/settings/lightDefault.ts; lightDefault.test.ts parses
+     this block and FAILS on any drift. Edit the module, then mirror here. */
+  --bg: #eceef1;
+  --panel: #f7f8fa;
+  --panel-2: #e2e5ea;
+  --border: #c2c8d1;
+  --text: #24272c;
+  --text-h: #0d0f12;
+  --muted: #5b6470;
+  --text-disabled: #767f8b;
+  --text-roadmap: #767f8b;
+  --accent: #2e6d3f;
+  --accent-ink: #ffffff;
+  --warn: #8a5a14;
+  --ok: #2e6d3f;
+  --err: #a13232;
+  --focus: #164a86;
+  --plane-xy: #2b5e8f;
+  --plane-yz: #9a5220;
+  --plane-zx: #2e6d3f;
+  --committed: #2e6d3f;
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
   font: 14px/1.45 var(--sans);
   color: var(--text);
-  color-scheme: dark;
+  color-scheme: light;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -36,14 +50,19 @@ body { background: var(--bg); overflow: hidden; }
 }
 .brand { color: var(--text-h); font-weight: 600; letter-spacing: 0.2px; }
 
-/* Model ribbon (arc 20260711-11 / slice A — the Creo-shaped shell) */
+/* Model ribbon (slice A shell → arc 20260716-1 V-2 DENSE layout, Codex1 B4).
+   Creo-benchmarked packing: anchor buttons own a column; smalls stack up to
+   three per column. NO `overflow: hidden` anywhere in the ribbon — narrow
+   widths FOLD trailing groups into the » menu instead of clipping (B4).
+   Disabled text = EXPLICIT full-opacity tokens (the opacity trap is banned,
+   B2) — --text-disabled for state-disabled, --text-roadmap for roadmap. */
 .ribbon {
   display: flex;
   align-items: stretch;
-  padding: 4px 10px 0;
+  padding: 3px 10px 0;
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
-  min-height: 62px;
+  min-height: 70px;
 }
 .ribbon-tab {
   display: flex;
@@ -61,39 +80,107 @@ body { background: var(--bg); overflow: hidden; }
 .ribbon-group {
   display: flex;
   flex-direction: column;
-  padding: 0 8px;
+  padding: 0 6px;
   border-right: 1px solid var(--border);
 }
-.ribbon-group:last-child { border-right: none; }
-.ribbon-btns { display: flex; gap: 2px; flex: 1; align-items: flex-start; padding-top: 2px; }
+.ribbon-group:last-of-type { border-right: none; }
+.ribbon-btns { display: flex; gap: 1px; flex: 1; align-items: stretch; padding-top: 2px; }
 .ribbon-group-title {
   font-size: 10px;
   color: var(--muted);
   text-align: center;
-  padding: 2px 0 4px;
+  padding: 2px 0 3px;
   letter-spacing: 0.3px;
 }
+.rb-col { display: flex; flex-direction: column; gap: 1px; align-items: stretch; }
 .rb-btn {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 3px;
-  width: 60px;
-  padding: 5px 2px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+/* anchor: tall icon-over-label button, one per column */
+.rb-btn.rb-anchor {
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 58px;
+  padding: 4px 2px;
+  font-size: 11px;
+  text-align: center;
+}
+.rb-btn.rb-anchor .rb-ico svg { width: 22px; height: 22px; }
+/* small: compact icon+label row, up to three per column */
+.rb-btn.rb-small,
+.rb-family .dd-trigger {
+  gap: 5px;
+  padding: 1px 6px 1px 4px;
+  font-size: 11px;
+  line-height: 16px;
+  min-height: 18px;
+}
+.rb-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
+.rb-btn:active:not(:disabled) { background: var(--panel); }
+.rb-btn:disabled { color: var(--text-disabled); cursor: default; }
+.rb-btn.rb-roadmap:disabled { color: var(--text-roadmap); }
+.rb-ico { display: flex; align-items: center; color: var(--accent); }
+.rb-btn:disabled .rb-ico { color: var(--text-disabled); }
+.rb-btn.rb-roadmap:disabled .rb-ico { color: var(--text-roadmap); }
+.rb-lbl { line-height: 1.1; }
+/* the family trigger + » overflow share the button look */
+.rb-family, .rb-overflow { display: flex; }
+.rb-family .dd-trigger, .rb-overflow .dd-trigger {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
   color: var(--text);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
 }
-.rb-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
-.rb-btn:active:not(:disabled) { background: rgba(107, 155, 209, 0.18); }
-.rb-btn:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
-.rb-ico { display: flex; color: var(--accent); }
-.rb-btn:disabled .rb-ico { color: var(--muted); }
-.rb-lbl { line-height: 1; }
+.rb-overflow { align-self: center; }
+.rb-overflow .dd-trigger { padding: 6px; }
+.rb-family .dd-trigger:hover, .rb-overflow .dd-trigger:hover {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text-h);
+}
+
+/* The shared DropdownMenu primitive (arc 20260716-1 V-1/V-2, Codex1 B4.5) */
+.dd { position: relative; }
+.dd-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 40;
+  min-width: 160px;
+  margin: 2px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(13, 15, 18, 0.18);
+}
+.dd-item {
+  padding: 5px 8px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dd-item:hover:not(.disabled), .dd-item:focus { background: var(--panel-2); color: var(--text-h); }
+.dd-item.disabled { color: var(--text-disabled); cursor: default; }
+.dd-item.current { color: var(--text-h); font-weight: 600; }
 
 /* Model tree (slice A — reflects the active feature op for now) */
 .model-tree { margin: 2px 0; }
@@ -101,7 +188,7 @@ body { background: var(--bg); overflow: hidden; }
 .feat-glyph { color: var(--accent); }
 .feat-name { color: var(--text-h); }
 .feat-row.editing { background: rgba(107, 155, 209, 0.12); }
-.feat-row.committed .feat-glyph { color: #7bbf7b; }
+.feat-row.committed .feat-glyph { color: var(--committed); }
 .feat-state { margin-left: auto; }
 
 .workbench {
@@ -163,9 +250,9 @@ body { background: var(--bg); overflow: hidden; }
   cursor: default;
   white-space: nowrap;
 }
-.ctx-menu li:not(.sep):not(.disabled):hover { background: var(--accent); color: #fff; }
+.ctx-menu li:not(.sep):not(.disabled):hover { background: var(--accent); color: var(--accent-ink); }
 .ctx-menu li.on::before { content: '✓ '; color: var(--accent); }
-.ctx-menu li.on:hover::before { color: #fff; }
+.ctx-menu li.on:hover::before { color: var(--accent-ink); }
 .ctx-menu li.sep { height: 1px; margin: 4px 2px; padding: 0; background: var(--border); }
 .ctx-menu li.disabled { color: var(--muted); font-size: 12px; }
 
@@ -206,12 +293,12 @@ body { background: var(--bg); overflow: hidden; }
   cursor: pointer;
 }
 .btn:hover { border-color: var(--accent); }
-.ok { color: #7fd1a3; }
+.ok { color: var(--ok); }
 
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .pad { padding: 2px 0; }
-.err { color: #e08a8a; }
+.err { color: var(--err); }
 
 /* ---- Reference import lane (ADR/0032 D5 lane 1) ---- */
 .import-panel { margin-bottom: 4px; }
@@ -229,7 +316,7 @@ body { background: var(--bg); overflow: hidden; }
   display: inline-block;
   margin: 3px 0;
   padding: 1px 6px;
-  color: #d8c08a;
+  color: var(--warn);
   background: rgba(216, 192, 138, 0.12);
   border: 1px solid rgba(216, 192, 138, 0.4);
   border-radius: 3px;
@@ -277,24 +364,29 @@ body { background: var(--bg); overflow: hidden; }
   cursor: pointer;
 }
 .tb-btn:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
-.tb-btn.on { color: var(--text-h); background: rgba(107, 155, 209, 0.22); border-color: var(--accent); }
-.tb-btn:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
-.tb-segmented { border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
-.tb-seg {
-  padding: 4px 8px;
+.tb-btn.on { color: var(--text-h); background: var(--panel); border-color: var(--accent); }
+.tb-btn:disabled { color: var(--text-disabled); cursor: default; }
+/* V-4 condensed dropdowns (display style / views / selection) — the shared
+   DropdownMenu primitive styled as toolbar buttons. */
+.tb-dd .dd-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px;
   font: inherit;
   font-size: 12px;
   color: var(--text);
   background: transparent;
-  border: none;
-  border-right: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-radius: 5px;
   cursor: pointer;
+  white-space: nowrap;
 }
-.tb-seg:last-child { border-right: none; }
-.tb-seg:hover:not(:disabled) { background: var(--panel); color: var(--text-h); }
-.tb-seg.on { color: #fff; background: var(--accent); }
-.tb-seg:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
-.tb-seg { white-space: nowrap; }
+.tb-dd .dd-trigger:hover:not(:disabled) { background: var(--panel); border-color: var(--border); color: var(--text-h); }
+.tb-dd .dd-trigger:disabled { color: var(--text-disabled); cursor: default; }
+.tb-dd-lbl { line-height: 1; }
+.tb-caret { font-size: 9px; color: var(--muted); }
 /* Text buttons (standard views, selection filters) — auto-width, no wrap
    (arc 20260625-1 / 6c). */
 .tb-btn.tb-text {
@@ -345,7 +437,7 @@ body { background: var(--bg); overflow: hidden; }
 .nc-roll-r { top: 1px; right: 1px; }
 
 /* ---- MVP-1: the CAD↔AI dock + operation session pill (arc 20260711-10) ---- */
-:root { --accent: #3f7d4e; --accent-ink: #fff; --warn: #b7772c; }
+/* (the former second :root accent override merged into THE light default above) */
 
 .ai-dock {
   flex: none;
@@ -481,6 +573,10 @@ body { background: var(--bg); overflow: hidden; }
 .sp-axis { stroke: color-mix(in srgb, var(--accent) 45%, var(--border)); stroke-width: 0.5; }
 .sp-ring { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-linejoin: round; }
 .sp-ring.closed { fill: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* SK-C0 D-C3: construction guides draw dashed, never filled */
+.sp-ring.construction { stroke-dasharray: 4 3; }
+.sp-ring.closed.construction { fill: none; }
+.sp-rubber.arc { stroke-dasharray: 2 2; }
 .sp-rubber { stroke: var(--muted); stroke-width: 0.8; stroke-dasharray: 3 2; }
 .sp-vert { fill: var(--accent); stroke: var(--bg); stroke-width: 0.4; }
 .sp-vert.snap { fill: var(--text-h); stroke: var(--accent); stroke-width: 0.8; }
@@ -645,12 +741,17 @@ body { background: var(--bg); overflow: hidden; }
 }
 .pp-plane:hover { border-color: var(--accent); background: var(--panel-2); }
 .pp-name { font-weight: 600; letter-spacing: 0.4px; }
-.pp-xy .pp-name { color: #6b9bd1; }
-.pp-yz .pp-name { color: #c98f6b; }
-.pp-zx .pp-name { color: #7bbf7b; }
+.pp-xy .pp-name { color: var(--plane-xy); }
+.pp-yz .pp-name { color: var(--plane-yz); }
+.pp-zx .pp-name { color: var(--plane-zx); }
 .pp-note { border-top: 1px solid var(--border); }
 
 /* Model-tree intrinsic rows (EP1 — the datum scaffold) */
 .feat-row.part-head .feat-name { font-weight: 600; }
 .feat-row.intrinsic .feat-glyph { color: var(--muted); }
 .feat-row.intrinsic .feat-name { color: var(--text); }
+
+
+/* V-1 (Codex1 B2.6): VISIBLE keyboard focus everywhere, incl. icon-only
+   controls and menu items — the ring token is contrast-tested. */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }

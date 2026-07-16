@@ -16,7 +16,6 @@ from aiadra_core.transaction.boundary import TransactionError
 from aiadra_mechanical.adapter_payload import (
     build_sketch_payload,
     build_extrude_payload,
-    _self_intersects,
     _signed_area,
 )
 from aiadra_mechanical import display, topology
@@ -126,16 +125,17 @@ def test_open_ring_fails_class1():
 
 
 def test_self_intersecting_contour_rejected():
-    # A crossing profile with NON-zero area (exercises _self_intersects, not area).
+    # A crossing profile with NON-zero area (exercises the pair predicates, not area).
     crossing = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (2.0, -2.0)]
     assert abs(_signed_area(crossing)) > 1.0
-    assert _self_intersects(crossing) is True
     with pytest.raises(TransactionError):
         build_sketch_payload([{"type": "contour", "segments": _segments(crossing)}])
 
 
 def test_simple_polygon_is_not_flagged_self_intersecting():
-    assert _self_intersects([(0.0, 0.0), (4.0, 0.0), (5.0, 3.0), (2.0, 5.0), (-1.0, 3.0)]) is False
+    # SK-C0: behavior-level — a clean convex pentagon builds fine.
+    pent = [(0.0, 0.0), (4.0, 0.0), (5.0, 3.0), (2.0, 5.0), (-1.0, 3.0)]
+    build_sketch_payload([{"type": "contour", "segments": _segments(pent)}])
 
 
 def test_collinear_adjacent_segments_rejected():
@@ -147,13 +147,11 @@ def test_collinear_adjacent_segments_rejected():
         build_sketch_payload([{"type": "contour", "segments": _segments(redundant)}])
 
 
-def test_collinear_vertex_helper():
-    from aiadra_mechanical.adapter_payload import _collinear_vertex
-    # redundant midpoint (parallel) and a fold-back (anti-parallel) are both flagged
-    assert _collinear_vertex([(0.0, 0.0), (30.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)]) is not None
-    assert _collinear_vertex([(0.0, 0.0), (60.0, 0.0), (30.0, 0.0), (30.0, 40.0), (0.0, 40.0)]) is not None
-    # a clean L turns at every vertex
-    assert _collinear_vertex(L_SHAPE) is None
+def test_fold_back_vertex_rejected():
+    # SK-C0: behavior-level — a fold-back (anti-parallel adjacent lines) rejects.
+    foldback = [(0.0, 0.0), (60.0, 0.0), (30.0, 0.0), (30.0, 40.0), (0.0, 40.0)]
+    with pytest.raises(TransactionError):
+        build_sketch_payload([{"type": "contour", "segments": _segments(foldback)}])
 
 
 def test_unsupported_segment_kind_fails_loud():

@@ -4,7 +4,7 @@ import { DEFAULT_VALUES } from './descriptors'
 
 describe('theme', () => {
   it('default background is the light-green default (Petre)', () => {
-    expect(DEFAULT_THEME.viewportBackground).toBe(0xe4efdf)
+    expect(DEFAULT_THEME.viewportBackground).toBe(0xdfe3e8)
   })
 
   it('paperBody tracks background when tracking is on (no copied background — Codex1 B2)', () => {

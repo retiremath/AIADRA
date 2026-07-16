@@ -21,6 +21,7 @@ import { EdgeFeaturePanel } from './authoring/EdgeFeaturePanel'
 import { HolePanel } from './authoring/HolePanel'
 import { EditParameterPanel } from './authoring/EditParameterPanel'
 import { ModelRibbon } from './authoring/ModelRibbon'
+import { RIBBON_COMMANDS } from './authoring/ribbon'
 import { createMockAuthoringBackend } from './authoring/backendMock'
 import { createBridgeAuthoringBackend } from './authoring/backendBridge'
 import {
@@ -51,10 +52,7 @@ import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { SketchPad } from './sketch/SketchPad'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
-import { createImporter, type Importer } from './import/importController'
-import { createImportSession, type ImportSession } from './import/importSession'
-import { spawnImportWorker } from './import/defaultWorker'
-import { ACCEPT_EXTENSIONS, ACCEPT_LABEL, STEP_ENABLED } from './import/importConfig'
+import { IMPORT_HOME_REASON, IMPORT_MENU_LABEL, ReferencesList, useReferenceImport } from './import/referenceImport'
 import type { DisplayMode } from './display/modes'
 import { SettingsProvider, useRegistry, useSetting, useTheme } from './settings/useSettings'
 import { createSettingsRegistry, type SettingsRegistry } from './settings/registry'
@@ -212,112 +210,6 @@ function EnginePanel({
           )}
           {ws && parts.length === 0 && <div className="small pad muted">no Parts in this workspace</div>}
         </>
-      )}
-    </div>
-  )
-}
-
-type ImportStatus = 'loading' | 'ready' | 'error'
-type ImportItem = { id: string; name: string; status: ImportStatus; detail?: string }
-
-function triangleCount(meshes: { position: Float32Array; index?: Uint32Array }[]): number {
-  return meshes.reduce((n, m) => n + (m.index ? m.index.length / 3 : m.position.length / 9), 0)
-}
-
-/**
- * Reference Import panel — the external inspection lane. Bytes come from a
- * user-mediated file input (NO path crosses to main); parsing happens off-thread
- * in a Web Worker; the result is reference-only geometry with NO AIADRA id and
- * NO Product-Truth/engine operations. This panel never calls `window.aiadra`.
- */
-function ImportPanel({ api }: { api: MutableRefObject<ViewportApi | null> }) {
-  const inputRef = useRef<HTMLInputElement>(null)
-  const importerRef = useRef<Importer | null>(null)
-  const sessionRef = useRef<ImportSession | null>(null)
-  const seq = useRef(0)
-  const [items, setItems] = useState<ImportItem[]>([])
-
-  useEffect(() => () => importerRef.current?.dispose(), [])
-
-  // The session governs add/remove so a row removed while still loading cannot
-  // orphan geometry (Codex2 B3). `api.current` is read at call time (null-safe).
-  const session = (): ImportSession => {
-    if (!sessionRef.current) {
-      sessionRef.current = createImportSession({
-        addImported: (id, m) => api.current?.addImported(id, m),
-        removeImported: (id) => api.current?.removeImported(id),
-      })
-    }
-    return sessionRef.current
-  }
-
-  const patch = (id: string, next: Partial<ImportItem>) =>
-    setItems((xs) => xs.map((it) => (it.id === id ? { ...it, ...next } : it)))
-
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = '' // allow re-importing the same file
-    if (!file) return
-
-    const lower = file.name.toLowerCase()
-    if (!STEP_ENABLED && (lower.endsWith('.step') || lower.endsWith('.stp'))) {
-      const id = `imp_${++seq.current}`
-      setItems((xs) => [...xs, { id, name: file.name, status: 'error', detail: 'STEP import is deferred to a follow-up — STL only for now' }])
-      return
-    }
-
-    const id = `imp_${++seq.current}`
-    session().begin(id)
-    setItems((xs) => [...xs, { id, name: file.name, status: 'loading' }])
-    try {
-      if (!importerRef.current) importerRef.current = createImporter({ workerFactory: spawnImportWorker })
-      const meshes = await importerRef.current.import(file)
-      if (session().complete(id, meshes)) {
-        patch(id, { status: 'ready', detail: `${triangleCount(meshes).toLocaleString()} triangles` })
-      }
-      // else: removed while loading — the row is already gone, the result dropped.
-    } catch (err) {
-      session().settleError(id)
-      patch(id, { status: 'error', detail: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  const remove = (id: string) => {
-    session().remove(id) // tombstones an in-flight parse + drops any added group
-    setItems((xs) => xs.filter((it) => it.id !== id))
-  }
-
-  return (
-    <div className="import-panel">
-      <div className="panel-title">Reference import</div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={ACCEPT_EXTENSIONS}
-        style={{ display: 'none' }}
-        onChange={onFile}
-      />
-      <button className="btn" type="button" onClick={() => inputRef.current?.click()}>
-        Import {ACCEPT_LABEL}…
-      </button>
-      <div className="muted small pad">External geometry — reference only, never Product Truth.</div>
-      {items.length > 0 && (
-        <ul className="tree import-list">
-          {items.map((it) => (
-            <li key={it.id} className="import-row">
-              <div className="import-row-head">
-                <span className="import-name" title={it.name}>{it.name}</span>
-                <button className="link-btn small" type="button" onClick={() => remove(it.id)}>
-                  Remove
-                </button>
-              </div>
-              <span className="ref-badge small">Imported — reference only</span>
-              <div className={`small ${it.status === 'error' ? 'err' : 'muted'}`}>
-                {it.status === 'loading' ? 'parsing…' : it.detail}
-              </div>
-            </li>
-          ))}
-        </ul>
       )}
     </div>
   )
@@ -818,7 +710,18 @@ function Workbench({
       setPlanePicker('chained')
     }
   }
+  // V-3 (Codex1 B1): ONE reference-import controller behind File -> Import,
+  // the ribbon's Get Data, and the sidebar References list.
+  const referenceImport = useReferenceImport(viewportApi)
+
   const onStartFeature = (kind: string) => {
+    // V-3 (Codex1 B1): the TYPED dispatch kind — 'reference-import' commands
+    // open the user-mediated picker; they never touch authoring sessions, so
+    // the authoring gate does not apply (reference-only display lane).
+    if (RIBBON_COMMANDS.find((c) => c.key === kind)?.dispatch === 'reference-import') {
+      referenceImport.openPicker()
+      return
+    }
     // Codex4 B1.2 → Codex5 B1.2: the ONE shared authoring-start gate —
     // active work, workspace/Part transitions, AND a targeted-but-not-ready
     // context (dev:web's fresh-Part flow is only legitimate with NO target).
@@ -1101,7 +1004,6 @@ function Workbench({
       fit: () => viewportApi.current?.fit(),
       reset: () => viewportApi.current?.reset(),
       setMode: (m) => viewStore.setMode(m),
-      toggleGrid: () => viewStore.setGridVisible(!viewStore.getSnapshot().gridVisible),
       toggleDatums: () => viewStore.setDatumsVisible(!viewStore.getSnapshot().datumsVisible),
       standardView: (id) => viewportApi.current?.standardView(id),
       toggleFilterKind: (k) => selectionStore.toggleFilterKind(k),
@@ -1194,6 +1096,16 @@ function Workbench({
       },
     },
     {
+      // V-3 (Codex1 B1): the ONE typed import entry — enabled only in the
+      // modeling workspace; format-honest label per STEP_ENABLED.
+      label: IMPORT_MENU_LABEL,
+      enabled: appSession === 'modeling',
+      title: appSession === 'modeling'
+        ? 'External geometry - reference only, never Product Truth'
+        : IMPORT_HOME_REASON,
+      onClick: () => referenceImport.openPicker(),
+    },
+    {
       label: 'Close',
       enabled: appSession === 'modeling' && !uiGate,
       title:
@@ -1255,6 +1167,7 @@ function Workbench({
         }}
         onStart={onStartFeature}
       />
+      {referenceImport.inputElement}
       <div className="workbench">
         <aside className="sidebar">
           <EnginePanel
@@ -1265,7 +1178,7 @@ function Workbench({
             loadedPart={pc.partNumber}
             onPartLoaded={(n) => adoptPart(currentWs?.workspaceId ?? null, n)}
           />
-          <ImportPanel api={viewportApi} />
+          <ReferencesList imports={referenceImport} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
           <ModelTreePanel session={authoringStore} context={partContext} onEditFeature={editFeatureEntry} />
@@ -1411,7 +1324,6 @@ export default function App() {
     // persisted startup mode/grid (6a N3) apply on first viewport mount.
     viewStoreRef.current = createViewStateStore({
       mode: registry.get('defaultDisplayMode') as DisplayMode,
-      gridVisible: registry.get('gridVisibleDefault') as boolean,
       datumsVisible: true, // the empty-part scaffold shows by default (EP1)
       hasCanonicalPart: false,
       hasReferenceGeometry: false,
@@ -1448,7 +1360,6 @@ export default function App() {
         // Re-seed the view-state store from the (now hydrated) registry so the
         // persisted startup mode/grid apply on the first viewport mount.
         viewStore.setMode(registry.get('defaultDisplayMode') as DisplayMode)
-        viewStore.setGridVisible(registry.get('gridVisibleDefault') as boolean)
         setReady(true)
       })
       .catch(() => setReady(true))

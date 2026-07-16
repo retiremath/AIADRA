@@ -27,7 +27,7 @@ const EXTRUDE_PAIR = [
     engine: 'mechanical',
     adapter_schema_version: '0.1.8',
     adapter_payload: {
-      primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 5, height_mm: 5 }],
+      primitives: [{ type: 'rectangle', id: 'skp_0001', x_mm: 0, y_mm: 0, width_mm: 5, height_mm: 5 }],
     },
   },
   {

@@ -35,7 +35,7 @@ const MODE_OPTIONS = DISPLAY_MODES.map((m: DisplayMode) => ({ value: m, label: M
 export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
   // ---- Theme: viewport background + body + grid ----
   // Petre's preferred light-green default (supersedes the prior 0xe6e9ec).
-  { key: 'viewportBackground', type: 'color', default: 0xe4efdf, label: 'Background', group: 'Theme' },
+  { key: 'viewportBackground', type: 'color', default: 0xdfe3e8, label: 'Background', group: 'Theme' },
   {
     key: 'paperBodyTracksBackground',
     type: 'boolean',
@@ -44,7 +44,7 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     group: 'Theme',
     help: 'Unshaded (Hidden Line / No Hidden) body color tracks the background unless overridden.',
   },
-  { key: 'paperBody', type: 'color', default: 0xe4efdf, label: 'Paper body (override)', group: 'Theme' },
+  { key: 'paperBody', type: 'color', default: 0xdfe3e8, label: 'Paper body (override)', group: 'Theme' },
   { key: 'gridMajor', type: 'color', default: 0xb9c0c7, label: 'Grid (major)', group: 'Theme' },
   { key: 'gridMinor', type: 'color', default: 0xcdd3d9, label: 'Grid (minor)', group: 'Theme' },
   // ---- Theme: canonical part ----
@@ -84,14 +84,6 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     group: 'Behavior',
     options: MODE_OPTIONS,
     help: 'Startup default; the live mode is changed transiently from the viewport (Codex1 N3).',
-  },
-  {
-    key: 'gridVisibleDefault',
-    type: 'boolean',
-    default: true,
-    label: 'Show grid by default',
-    group: 'Behavior',
-    help: 'Startup default; the live toggle is transient (Codex1 N3).',
   },
   // ---- CAD↔AI dock chrome (arc 20260711-10 / MVP-1; ADR/0040 D5/N4). Typed
   // settings, not ad-hoc local state (Codex arc-20260711-10 note). The live

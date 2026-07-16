@@ -102,10 +102,28 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
   triad.userData = { kind: 'intrinsic-csys', intrinsicId: INTRINSIC_CSYS_ID }
   group.add(triad)
   disposables.push(triad.geometry, triad.material as THREE.Material)
-  const originLabel = makeLabelSprite('Origin', 0xf3f4f6)
+  // X/Y/Z axis labels at the triad tips (Petre round 2): THIS is the
+  // coordinate system — at 0,0,0, the datum intersection — replacing the
+  // old floating corner gnomon.
+  const AXIS_TIPS: Array<[string, number, THREE.Vector3]> = [
+    ['X', 0xb03333, new THREE.Vector3(1, 0, 0)], // AxesHelper x = red
+    ['Y', 0x2e8b2e, new THREE.Vector3(0, 1, 0)], // y = green
+    ['Z', 0x2e5db0, new THREE.Vector3(0, 0, 1)], // z = blue
+  ]
+  for (const [text, color, dir] of AXIS_TIPS) {
+    const tip = makeLabelSprite(text, color)
+    if (!tip) continue
+    tip.position.copy(dir.clone().multiplyScalar(halfSize * 0.42))
+    tip.scale.set(9, 2.25, 1)
+    tip.userData = { kind: 'intrinsic-csys-label', intrinsicId: INTRINSIC_CSYS_ID }
+    group.add(tip)
+    disposables.push(tip.material as THREE.SpriteMaterial)
+    disposables.push((tip.material as THREE.SpriteMaterial).map as THREE.Texture)
+  }
+  const originLabel = makeLabelSprite('Origin', 0x5b6470)
   if (originLabel) {
     originLabel.position.set(halfSize * 0.04, halfSize * 0.04, halfSize * 0.04)
-    originLabel.scale.multiplyScalar(0.8)
+    originLabel.scale.multiplyScalar(0.5)
     group.add(originLabel)
     disposables.push(originLabel.material as THREE.SpriteMaterial)
     disposables.push((originLabel.material as THREE.SpriteMaterial).map as THREE.Texture)

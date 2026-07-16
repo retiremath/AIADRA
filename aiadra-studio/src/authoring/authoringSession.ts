@@ -20,8 +20,8 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { Pt } from '../sketch/contour'
-import type { PlaneOrientation, RectDims } from './backend'
-import { normalizeRectangle } from './backend'
+import type { CircleDims, PlaneOrientation, RectDims } from './backend'
+import { normalizeCircle, normalizeRectangle } from './backend'
 import type { AuthoringTarget, SelectorCapture } from './partContext'
 import type { EditableParameter } from './inspectDecode'
 
@@ -33,7 +33,7 @@ export type ExtrudePhase = 'editing' | 'busy' | 'error'
  *  commit WITH the extrude in one draft via the $fromOp handshake). */
 export type ExtrudeSource =
   | { kind: 'committed'; sketchId: string }
-  | { kind: 'pending'; plane: PlaneOrientation; points: Pt[] }
+  | { kind: 'pending'; plane: PlaneOrientation; points: Pt[]; bulges: number[] }
   /** The chained RECTANGLE hand-back (R3/D-R9) — revolve's create-in-place
    *  path; plane pinned xy (the engine's v1 bound). */
   | { kind: 'pending_rectangle'; rect: RectDims }
@@ -42,8 +42,19 @@ export type ExtrudeSource =
  *  state and rectangle two-click state cannot mix — invalid cross-tool fields
  *  are unrepresentable. */
 export type SketchTool =
-  | { kind: 'contour'; points: Pt[]; cursor: Pt | null; closed: boolean }
+  | {
+      kind: 'contour'
+      points: Pt[]
+      /** SK-C0 D-C1: bulge per segment points[i]→points[i+1] (0 = line); the
+       *  CLOSING segment stays a line in the v1 pad. */
+      bulges: number[]
+      /** Waiting for the 3-point-arc VIA click of the just-placed segment. */
+      awaitingVia: boolean
+      cursor: Pt | null
+      closed: boolean
+    }
   | { kind: 'rectangle'; anchor: Pt | null; cursor: Pt | null; rect: RectDims | null }
+  | { kind: 'circle'; center: Pt | null; cursor: Pt | null; circle: CircleDims | null }
 
 export interface SketchMeta {
   partName?: string | null
@@ -67,6 +78,8 @@ interface SketchSubstate {
   chainedDepthMm: number
   chainedAxis: 'x' | 'y'
   tool: SketchTool
+  /** SK-C0 D-C3: the primitive being drawn commits as a construction guide. */
+  construction: boolean
   phase: SketchPhase
   message: string | null
   objectRef: string | null
@@ -159,6 +172,13 @@ export interface AuthoringSessionStore {
   // -- sketch mode --
   startSketch(meta?: SketchMeta): void
   addPoint(p: Pt): void
+  /** SK-C0: set the bulge of the LAST placed segment (the 3-point-arc via). */
+  setLastBulge(b: number): void
+  setAwaitingVia(on: boolean): void
+  /** Circle tool: place the center, then a rim point. */
+  placeCirclePoint(p: Pt): void
+  /** Toggle construction-guide mode for the primitive being drawn (D-C3). */
+  toggleConstruction(): void
   setCursor(p: Pt | null): void
   undoPoint(): void
   closeRing(): void
@@ -219,7 +239,9 @@ const SKETCH_DEFAULTS = {
 const freshTool = (kind: SketchTool['kind']): SketchTool =>
   kind === 'rectangle'
     ? { kind: 'rectangle', anchor: null, cursor: null, rect: null }
-    : { kind: 'contour', points: [], cursor: null, closed: false }
+    : kind === 'circle'
+      ? { kind: 'circle', center: null, cursor: null, circle: null }
+      : { kind: 'contour', points: [], bulges: [], awaitingVia: false, cursor: null, closed: false }
 
 export function createAuthoringSessionStore(): AuthoringSessionStore {
   let state = IDLE
@@ -252,6 +274,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         chainedDepthMm: 10,
         chainedAxis: 'x',
         tool: freshTool(meta?.tool ?? 'contour'),
+        construction: false,
         plane: meta?.plane ?? 'xy',
         partName: meta?.partName?.trim() || null,
         partNumber: meta?.partNumber?.trim() || null,
@@ -263,7 +286,37 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
     addPoint: (p) => {
       const s = sketch()
       if (!s || s.tool.kind !== 'contour' || s.tool.closed || s.phase === 'busy') return
-      emit({ ...s, tool: { ...s.tool, points: [...s.tool.points, p] }, message: null })
+      const bulges = s.tool.points.length >= 1 ? [...s.tool.bulges, 0] : s.tool.bulges
+      emit({ ...s, tool: { ...s.tool, points: [...s.tool.points, p], bulges }, message: null })
+    },
+    setLastBulge: (b) => {
+      const s = sketch()
+      if (!s || s.tool.kind !== 'contour' || s.phase === 'busy') return
+      if (s.tool.bulges.length === 0) return
+      const bulges = [...s.tool.bulges]
+      bulges[bulges.length - 1] = b
+      emit({ ...s, tool: { ...s.tool, bulges, awaitingVia: false }, message: null })
+    },
+    setAwaitingVia: (on) => {
+      const s = sketch()
+      if (!s || s.tool.kind !== 'contour' || s.phase === 'busy') return
+      emit({ ...s, tool: { ...s.tool, awaitingVia: on } })
+    },
+    placeCirclePoint: (p) => {
+      const s = sketch()
+      if (!s || s.tool.kind !== 'circle' || s.phase === 'busy' || s.tool.circle !== null) return
+      if (s.tool.center === null) {
+        emit({ ...s, tool: { ...s.tool, center: p }, message: null })
+        return
+      }
+      const circle = normalizeCircle(s.tool.center, p)
+      if (!circle) return // degenerate radius — ignore the click
+      emit({ ...s, tool: { ...s.tool, circle, cursor: null }, phase: 'closed', message: null })
+    },
+    toggleConstruction: () => {
+      const s = sketch()
+      if (!s || s.phase === 'busy') return
+      emit({ ...s, construction: !s.construction })
     },
     setCursor: (p) => {
       const s = sketch()
@@ -271,15 +324,27 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (s.tool.kind === 'contour') {
         if (s.tool.closed) return
         emit({ ...s, tool: { ...s.tool, cursor: p } })
-      } else {
+      } else if (s.tool.kind === 'rectangle') {
         if (s.tool.rect !== null) return
+        emit({ ...s, tool: { ...s.tool, cursor: p } })
+      } else {
+        if (s.tool.circle !== null) return
         emit({ ...s, tool: { ...s.tool, cursor: p } })
       }
     },
     undoPoint: () => {
       const s = sketch()
       if (!s || s.tool.kind !== 'contour' || s.phase === 'busy' || s.tool.points.length === 0) return
-      emit({ ...s, tool: { ...s.tool, points: s.tool.points.slice(0, -1) }, message: null })
+      emit({
+        ...s,
+        tool: {
+          ...s.tool,
+          points: s.tool.points.slice(0, -1),
+          bulges: s.tool.bulges.length ? s.tool.bulges.slice(0, -1) : s.tool.bulges,
+          awaitingVia: false,
+        },
+        message: null,
+      })
     },
     closeRing: () => {
       const s = sketch()
@@ -292,7 +357,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (s.tool.kind === 'contour') {
         emit({ ...s, tool: { ...s.tool, closed: false }, phase: 'drawing', message: null })
       } else {
-        emit({ ...s, tool: { kind: 'rectangle', anchor: null, cursor: null, rect: null }, phase: 'drawing', message: null })
+        emit({ ...s, tool: freshTool(s.tool.kind), phase: 'drawing', message: null })
       }
     },
     switchTool: (kind) => {
@@ -358,6 +423,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         chainedDepthMm: e.depthMm,
         chainedAxis: e.axis,
         tool: freshTool(tool),
+        construction: false,
         plane,
         targetPart: target,
         targetAuth: e.target,
@@ -369,7 +435,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (!s || !s.chainToExtrude) return
       const source: ExtrudeSource | null =
         s.tool.kind === 'contour' && s.tool.closed
-          ? { kind: 'pending', plane: s.plane, points: s.tool.points }
+          ? { kind: 'pending', plane: s.plane, points: s.tool.points, bulges: s.tool.bulges }
           : s.tool.kind === 'rectangle' && s.tool.rect !== null
             ? { kind: 'pending_rectangle', rect: s.tool.rect }
             : null

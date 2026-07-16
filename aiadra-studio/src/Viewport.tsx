@@ -29,7 +29,6 @@ import {
   type ViewOrientation,
 } from './display/viewOrientation'
 import { createNavCube } from './navcube/navCube'
-import { createAxisGnomon } from './navcube/navGnomon'
 import {
   navCubeViewportRect,
   pointerInNavCube,
@@ -126,7 +125,10 @@ export default function Viewport({
     scene.background = new THREE.Color(liveTheme.viewportBackground)
 
     // ---- Orthographic, Z-up (engine space). ----
-    let frustumHalf = 20
+    // Petre round 2: the canvas comes up FRAMING the datum scaffold (+/-60 mm
+    // planes) — all three principal planes visible, never zoomed into nothing.
+    const DATUM_FRAME_HALF = 80
+    let frustumHalf = DATUM_FRAME_HALF
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000)
     camera.up.set(0, 0, 1)
     const applyFrustum = () => {
@@ -138,7 +140,7 @@ export default function Viewport({
       camera.updateProjectionMatrix()
     }
     const HOME_DIR = new THREE.Vector3(-1, -1, -1).normalize()
-    const HOME_TARGET = new THREE.Vector3(10, 5, 2.5)
+    const HOME_TARGET = new THREE.Vector3(0, 0, 0) // the datum intersection
     camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
     applyFrustum()
 
@@ -171,9 +173,9 @@ export default function Viewport({
     // The cube sits in the centre of a 180px control cluster (the rotate arrows
     // ring it in the JSX); 116px + a 42px corner margin places it there.
     const navLayout: NavCubeLayout = { sizeCss: 116, marginCss: 42, corner: 'top-right' }
-    // The axis triad (indicator only, no interaction) sits bottom-right (FreeCAD).
-    const gnomon = createAxisGnomon()
-    const gnomonLayout: NavCubeLayout = { sizeCss: 76, marginCss: 16, corner: 'bottom-right' }
+    // The corner axis gnomon is REMOVED (Petre round 2): the coordinate
+    // system renders AT the origin — the datum overlay's labeled triad at the
+    // intersection of the principal planes — not as a floating corner widget.
     const canvasRel = (e: { clientX: number; clientY: number }): [number, number] => {
       const r = canvas.getBoundingClientRect()
       return [e.clientX - r.left, e.clientY - r.top]
@@ -218,22 +220,9 @@ export default function Viewport({
     fillLight.position.set(-50, -30, 20)
     scene.add(fillLight)
 
-    // ---- Grid + axes (Z-up); grid colors themed, rebuilt on theme change. ----
-    let gridVisible = viewStore.getSnapshot().gridVisible
-    let grid: THREE.GridHelper
-    const makeGrid = (): THREE.GridHelper => {
-      const g = new THREE.GridHelper(200, 40, liveTheme.gridMajor, liveTheme.gridMinor)
-      g.rotation.x = Math.PI / 2
-      ;(g.material as THREE.Material).depthWrite = false
-      g.visible = gridVisible
-      return g
-    }
-    grid = makeGrid()
-    scene.add(grid)
-    const axes = new THREE.AxesHelper(12)
-    ;(axes.material as THREE.Material).depthWrite = false
-    axes.visible = gridVisible
-    scene.add(axes)
+    // (The XY grid AND the standalone axes helper are both gone — arc
+    // 20260716-1: the datum overlay's labeled triad IS the coordinate system,
+    // at 0,0,0. A future sketch mode mints its own mode-scoped grid.)
 
     // ---- The datum overlay (arc 20260714-2 EP1): the origin triad + the three
     // labeled translucent principal planes — the Creo-paradigm empty-part
@@ -528,7 +517,15 @@ export default function Viewport({
 
     const fit = () => {
       const box = sceneBox()
-      if (box.isEmpty()) return
+      if (box.isEmpty()) {
+        // empty part: fit = frame the datum scaffold (all three planes)
+        frustumHalf = DATUM_FRAME_HALF
+        camera.zoom = 1
+        controls.target.copy(HOME_TARGET)
+        applyFrustum()
+        controls.update()
+        return
+      }
       const sphere = box.getBoundingSphere(new THREE.Sphere())
       const dir = camera.position.clone().sub(controls.target).normalize()
       frustumHalf = sphere.radius * 1.15
@@ -628,17 +625,10 @@ export default function Viewport({
       machine.cameraMoved()
     }
 
-    const applyGridVisible = (v: boolean) => {
-      gridVisible = v
-      grid.visible = v
-      axes.visible = v
-    }
-
     let datumsVisible = viewStore.getSnapshot().datumsVisible
     const unsubStore = viewStore.subscribe(() => {
       const s = viewStore.getSnapshot()
       if (s.mode !== currentMode) applyModeChange(s.mode)
-      if (s.gridVisible !== gridVisible) applyGridVisible(s.gridVisible)
       if (s.datumsVisible !== datumsVisible) {
         datumsVisible = s.datumsVisible
         datums.setVisible(datumsVisible)
@@ -856,11 +846,7 @@ export default function Viewport({
       liveTheme = next
       ;(scene.background as THREE.Color).setHex(next.viewportBackground)
       paperMaterial.color.setHex(next.paperBody)
-      scene.remove(grid)
-      ;(grid.material as THREE.Material).dispose()
-      grid.geometry.dispose()
-      grid = makeGrid()
-      scene.add(grid)
+      // (the empty-part grid is removed — no themed grid to rebuild here)
       if (part) applyPartTheme(part, next)
       if (dimPass) (dimPass.material as THREE.LineBasicMaterial).color.setHex(next.hiddenEdgeDim)
       if (heldHlrView) rebuildOverlayForMode()
@@ -906,8 +892,6 @@ export default function Viewport({
       )
       // CSS-pixel rect — three.js applies pixelRatio inside setViewport/setScissor.
       navCube.render(renderer, navCubeViewportRect(navLayout, w(), h()))
-      gnomon.syncToMainView([navDir.x, navDir.y, navDir.z], [camera.up.x, camera.up.y, camera.up.z])
-      gnomon.render(renderer, navCubeViewportRect(gnomonLayout, w(), h()))
     }
     animate()
 
@@ -926,13 +910,10 @@ export default function Viewport({
       canvas.removeEventListener('contextmenu', onContextMenu)
       canvas.removeEventListener('wheel', onWheelCapture, true)
       navCube.dispose()
-      gnomon.dispose()
       controls.dispose()
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)
       importGroups.clear()
-      ;(grid.material as THREE.Material).dispose()
-      grid.geometry.dispose()
       scene.remove(datums.group)
       datums.dispose()
       scene.remove(sketchWires.group)

@@ -3,7 +3,6 @@ import { createViewStateStore, toCommandContext, type ViewState } from './store'
 
 const initial = (): ViewState => ({
   mode: 'shading-edges',
-  gridVisible: true,
   datumsVisible: true,
   hasCanonicalPart: false,
   hasReferenceGeometry: false,
@@ -28,7 +27,7 @@ describe('view-state store', () => {
     const s = createViewStateStore(initial())
     const a = s.getSnapshot()
     expect(s.getSnapshot()).toBe(a) // same ref, no churn
-    s.setGridVisible(false)
+    s.setMode('wireframe') // a real change
     expect(s.getSnapshot()).not.toBe(a) // new ref on real change
   })
 

@@ -21,7 +21,7 @@ describe('settings registry', () => {
     expect(() => r.set('viewportBackground', 1.5)).toThrow() // non-integer color
     expect(() => r.set('nope', 1)).toThrow() // unknown key
     expect(() => r.set('defaultDisplayMode', 'bogus')).toThrow() // bad enum
-    expect(() => r.set('gridVisibleDefault', 1)).toThrow() // non-boolean
+    expect(() => r.set('paperBodyTracksBackground', 1)).toThrow() // non-boolean
   })
 
   it('reset / resetAll restore defaults', () => {
@@ -30,10 +30,10 @@ describe('settings registry', () => {
     r.reset('settleMs')
     expect(r.get('settleMs')).toBe(200)
     r.set('settleMs', 500)
-    r.set('gridVisibleDefault', false)
+    r.set('paperBodyTracksBackground', false)
     r.resetAll()
     expect(r.get('settleMs')).toBe(200)
-    expect(r.get('gridVisibleDefault')).toBe(true)
+    expect(r.get('paperBodyTracksBackground')).toBe(true)
   })
 
   it('subscribe fires on change; onChange persists on set, NOT on hydrate', () => {
@@ -67,10 +67,10 @@ describe('settings registry', () => {
     const r = createSettingsRegistry()
     r.hydrate({
       settings_version: 1,
-      values: { settleMs: 350, gridVisibleDefault: 'nope' as unknown as boolean, mystery: 7 },
+      values: { settleMs: 350, paperBodyTracksBackground: 'nope' as unknown as boolean, mystery: 7 },
     })
     expect(r.get('settleMs')).toBe(350) // known + valid → applied
-    expect(r.get('gridVisibleDefault')).toBe(true) // known + invalid → default kept
+    expect(r.get('paperBodyTracksBackground')).toBe(true) // known + invalid → default kept
     const persisted = r.toPersisted()
     expect(persisted.unknown).toEqual({ mystery: 7 }) // unknown → quarantined write-back bucket
     expect(persisted.values.mystery).toBeUndefined() // never surfaced into live values

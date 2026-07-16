@@ -8,7 +8,7 @@ const RAW = (number: string, features: unknown[] = []) => ({
 })
 const EXTRUDE_PAIR = [
   { id: 'feat_0001', feature_type: 'sketch', engine: 'mechanical', adapter_schema_version: '0.1.8',
-    adapter_payload: { primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 5, height_mm: 5 }] } },
+    adapter_payload: { primitives: [{ type: 'rectangle', id: 'skp_0001', x_mm: 0, y_mm: 0, width_mm: 5, height_mm: 5 }] } },
   { id: 'feat_0002', feature_type: 'extrude', engine: 'mechanical', adapter_schema_version: '0.1.8',
     depends_on_feature_ids: ['feat_0001'], adapter_payload: { sketch_feature_id: 'feat_0001', direction: 'normal+' } },
 ]
@@ -22,27 +22,39 @@ const inputs = (over: Partial<RibbonInputs> = {}): RibbonInputs => ({
 })
 
 describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)', () => {
-  it('the EXACT benchmark inventory (Codex3 B3 — a missing/renamed/regrouped command fails)', () => {
-    const inventory = RIBBON_COMMANDS.map((c) => `${c.group}:${c.key}:${c.label}`)
+  it('the EXACT benchmark inventory (Codex3 B3 — a missing/renamed/regrouped command fails; V-2 extends it with the presentation fields)', () => {
+    const pres = (c: (typeof RIBBON_COMMANDS)[number]): string =>
+      c.presentation.menu
+        ? `menu(${c.presentation.menu.family}#${c.presentation.menu.order})`
+        : `${c.presentation.size}@c${c.presentation.slot!.column}r${c.presentation.slot!.row}`
+    const inventory = RIBBON_COMMANDS.map((c) => `${c.group}:${c.key}:${c.label}:${pres(c)}`)
     expect(inventory).toEqual([
-      'Operations:regenerate:Regenerate',
-      'Get Data:get-data:Get Data',
-      'Body:boolean-ops:Boolean Operations', 'Body:split-trim-body:Split/Trim Body', 'Body:new-body:New Body',
-      'Datum:datum-plane:Plane', 'Datum:datum-axis:Axis', 'Datum:datum-point:Point',
-      'Datum:datum-csys:Coordinate System', 'Datum:sketch:Sketch',
-      'Shapes:extrude:Extrude', 'Shapes:revolve:Revolve', 'Shapes:sweep:Sweep', 'Shapes:swept-blend:Swept Blend',
-      'Engineering:hole:Hole', 'Engineering:round:Round', 'Engineering:chamfer:Chamfer',
-      'Engineering:shell:Shell', 'Engineering:draft:Draft', 'Engineering:rib:Rib',
-      'Pattern:pattern:Pattern',
-      'Editing:mirror:Mirror', 'Editing:trim:Trim', 'Editing:offset:Offset', 'Editing:extend:Extend',
-      'Editing:project:Project', 'Editing:thicken:Thicken', 'Editing:solidify:Solidify',
-      'Editing:merge:Merge', 'Editing:intersect:Intersect', 'Editing:split:Split',
-      'Editing:remove:Remove', 'Editing:unify:Unify',
-      'Surfaces:boundary-blend:Boundary Blend', 'Surfaces:fill:Fill', 'Surfaces:style:Style', 'Surfaces:freestyle:Freestyle',
-      'Model Intent:component-interface:Component Interface',
+      'Operations:regenerate:Regenerate:anchor@c0r0',
+      'Get Data:get-data:Get Data:anchor@c0r0',
+      'Body:boolean-ops:Boolean Operations:small@c0r0', 'Body:split-trim-body:Split/Trim Body:small@c0r1', 'Body:new-body:New Body:small@c0r2',
+      'Datum:datum-plane:Plane:small@c1r0', 'Datum:datum-axis:Axis:small@c1r1', 'Datum:datum-point:Point:small@c1r2',
+      'Datum:datum-csys:Coordinate System:small@c2r0', 'Datum:sketch:Sketch:anchor@c0r0',
+      'Shapes:extrude:Extrude:anchor@c0r0', 'Shapes:revolve:Revolve:anchor@c1r0', 'Shapes:sweep:Sweep:small@c2r0', 'Shapes:swept-blend:Swept Blend:small@c2r1',
+      'Engineering:hole:Hole:anchor@c0r0', 'Engineering:round:Round:small@c1r0', 'Engineering:chamfer:Chamfer:small@c1r1',
+      'Engineering:shell:Shell:small@c1r2', 'Engineering:draft:Draft:small@c2r0', 'Engineering:rib:Rib:small@c2r1',
+      'Pattern:pattern:Pattern:anchor@c0r0',
+      'Editing:mirror:Mirror:small@c0r0', 'Editing:trim:Trim:small@c0r1', 'Editing:offset:Offset:small@c0r2', 'Editing:extend:Extend:small@c1r0',
+      'Editing:project:Project:small@c1r1', 'Editing:thicken:Thicken:small@c1r2', 'Editing:solidify:Solidify:menu(editing-more#0)',
+      'Editing:merge:Merge:menu(editing-more#1)', 'Editing:intersect:Intersect:menu(editing-more#2)', 'Editing:split:Split:menu(editing-more#3)',
+      'Editing:remove:Remove:menu(editing-more#4)', 'Editing:unify:Unify:menu(editing-more#5)',
+      'Surfaces:boundary-blend:Boundary Blend:small@c0r0', 'Surfaces:fill:Fill:small@c0r1', 'Surfaces:style:Style:small@c0r2', 'Surfaces:freestyle:Freestyle:small@c1r0',
+      'Model Intent:component-interface:Component Interface:small@c0r0',
     ])
     expect(new Set(RIBBON_COMMANDS.map((c) => c.key)).size).toBe(RIBBON_COMMANDS.length) // no duplicates
     expect(roadmapTooltipGaps()).toEqual([])
+  })
+
+  it('V-3 (Codex1 B1): Get Data is WORKING with the typed reference-import dispatch — the ONE semantic exception', () => {
+    const getData = RIBBON_COMMANDS.find((c) => c.key === 'get-data')!
+    expect(getData.dispatch).toBe('reference-import')
+    expect(getData.derive(inputs())).toEqual({ state: 'working' })
+    // …and it stays the ONLY exception: every other command dispatches sessions
+    expect(RIBBON_COMMANDS.filter((c) => c.dispatch !== undefined).map((c) => c.key)).toEqual(['get-data'])
   })
 
   it('Sketch: gated → disabled with the gate reason; real lane needs a ready Part; dev idle flows', async () => {
@@ -130,7 +142,7 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     // domain refuses BEFORE any dashboard (Codex2 B1's exact scenario).
     const CONTOUR_PAIR = [
       { id: 'feat_0001', feature_type: 'sketch', engine: 'mechanical', adapter_schema_version: '0.1.8',
-        adapter_payload: { primitives: [{ type: 'contour', segments: [
+        adapter_payload: { primitives: [{ type: 'contour', id: 'skp_0001', segments: [
           { kind: 'line', x1_mm: 0, y1_mm: 0, x2_mm: 10, y2_mm: 0 },
           { kind: 'line', x1_mm: 10, y1_mm: 0, x2_mm: 10, y2_mm: 8 },
           { kind: 'line', x1_mm: 10, y1_mm: 8, x2_mm: 0, y2_mm: 0 },

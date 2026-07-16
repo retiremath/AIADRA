@@ -52,12 +52,14 @@ export const COMMANDS: Command[] = [
     isActive: (c) => c.mode === m,
     run: (a) => a.setMode(m),
   })),
-  { id: 'scene.grid', group: 'scene', kind: 'toggle', label: 'Grid', iconKey: 'grid', shortcut: 'g', isEnabled: () => true, isActive: (c) => c.gridVisible, run: (a) => a.toggleGrid() },
+  // scene.grid REMOVED (arc 20260716-1, Codex1 B3): no empty-part grid —
+  // toolbar chip, context-menu row, and the `g` shortcut all died with
+  // this entry. A future sketch mode mints its OWN mode-scoped command.
   // The datum overlay (arc 20260714-2 EP1) — the empty-part scaffold's
   // visibility toggle (origin triad + the three principal planes). Always
   // available, like the grid (datums are useful with no geometry — that IS
   // the empty-part paradigm).
-  { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'Datum planes', shortLabel: 'Datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
+  { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'Datum planes', shortLabel: 'Datums', iconKey: 'datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
   // Selection filters + clear (arc 20260625-1 / 6c). Selection is canonical-only,
   // so these gate on `hasCanonicalPart`. Vertex selection is deferred (no vertex
   // markers rendered yet) — like the `operations` reserved slot.

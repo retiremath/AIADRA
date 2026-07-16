@@ -29,6 +29,8 @@ from typing import Any
 from aiadra_core.transaction.boundary import TransactionError
 
 from .adapter_payload import require_valid_contour
+from .arc_geometry import arc_geometry
+from .profile_classify import classify_sketch, non_construction
 from .recipe import (
     PlaneFrame,
     effective_plane_frame,
@@ -38,7 +40,8 @@ from .recipe import (
 )
 
 from OCP.Bnd import Bnd_Box
-from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRep import BRep_Tool
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepBuilderAPI import (
@@ -48,8 +51,10 @@ from OCP.BRepBuilderAPI import (
 )
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer, BRepFilletAPI_MakeFillet
+from OCP.GC import GC_MakeArcOfCircle
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
-from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
+from OCP.BRepTools import BRepTools_WireExplorer
+from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Vec
 from OCP.Precision import Precision
 from OCP.TopAbs import TopAbs_FACE
@@ -148,6 +153,7 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
     frame = effective_plane_frame(sketch)
     primitives = sketch.get("adapter_payload", {}).get("primitives", [])
 
+    wall_hints: list[ProducedFaceHint] = []
     try:
         if revolve is not None:
             # D-P4: v1 revolve is principal-xy-only (its axis vocabulary is the
@@ -157,10 +163,21 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
                     f"{ENGINE_OP_PREFIX}: v1 revolve requires the sketch on the "
                     f"principal xy plane; the consumed sketch is on {frame.orientation!r}"
                 )
-            rectangle = require_simple_revolve_profile(primitives)  # Codex1 B2
+            # SK-C0 D-C3: construction guides never participate in the profile.
+            rectangle = require_simple_revolve_profile(non_construction(primitives))
             shape: TopoDS_Shape = _build_revolved_solid(rectangle, _revolve_axis(revolve))
         else:
             outer_kind, outer, circle = _outer_profile(primitives)
+            if outer_kind == "none":
+                if extrude is not None:
+                    raise TransactionError(
+                        f"{ENGINE_OP_PREFIX}: the consumed sketch has no profile "
+                        f"geometry (a construction-only sketch cannot be extruded)"
+                    )
+                # SK-C0 D-C3: a sketch-only artifact (all-construction) — no
+                # BREP; the display path renders the guides from the recipe on
+                # the established no-base lane.
+                return EvalResult(shape=TopoDS_Shape())
             if outer_kind == "contour":
                 # arc 20260711-11 slice E: an arbitrary closed-ring profile.
                 # Eval-time Class-1 re-check (Codex4 D-E3) so a stored/edited/
@@ -170,7 +187,18 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
                     shape = _contour_face(outer, frame)
                 else:
                     depth_mm, sign = _extract_extrude(extrude, frame)
-                    shape = _build_contour_solid(outer, depth_mm, sign, frame)
+                    shape, wall_hints = _build_contour_solid(
+                        outer, depth_mm, sign, frame, wall_prefix=extrude["id"]
+                    )
+            elif outer_kind == "circle":
+                # SK-C0 D-C2: circle-as-outer-profile — extrude → a cylinder.
+                if extrude is None:
+                    shape = _circle_outer_face(outer, frame)
+                else:
+                    depth_mm, sign = _extract_extrude(extrude, frame)
+                    shape, wall_hints = _build_circle_outer_solid(
+                        outer, depth_mm, sign, frame, wall_prefix=extrude["id"]
+                    )
             elif extrude is None:
                 shape = _build_sketch_face(outer, circle, frame)
             else:
@@ -191,7 +219,9 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
     # (v1 scope: a single produced feature on a plain extrude — resolving a
     # second produced feature's reference against a shape that already carries
     # prior produced faces is deferred, and fails loud rather than mislabel.)
-    produced: list[ProducedFaceHint] = []
+    # Base-wall by-construction hints (SK-C0 B2) ride the same claimed channel
+    # as feature-produced faces — correlation claims them before any geometric rule.
+    produced: list[ProducedFaceHint] = list(wall_hints)
     running = shape
     for idx, feat in enumerate(features):
         ftype = feat.get("feature_type")
@@ -491,15 +521,16 @@ def require_simple_revolve_profile(primitives: list[dict[str, Any]]) -> dict[str
     lines, or extra rectangles silently ignored (which would make Truth claim a
     revolve of more than the engine actually revolved). Shared by the handler
     (early error) and the evaluator (direct/corrupt-recipe path)."""
-    rects = [p for p in primitives if p.get("type") == "rectangle"]
-    others = [p for p in primitives if p.get("type") != "rectangle"]
-    if len(rects) != 1 or others:
+    # SK-C0 Codex3 B2: THE classifier is the one whole-list authority.
+    cls = classify_sketch(primitives)
+    if cls.outer_kind != "rectangle" or cls.hole_index is not None:
         raise TransactionError(
             f"{ENGINE_OP_PREFIX}: v1 revolve requires a SIMPLE profile of exactly one "
-            f"rectangle (no circles, lines, or extra rectangles); got primitive types "
-            f"{[p.get('type') for p in primitives]}"
+            f"rectangle (no circles, lines, or extra rectangles); got outer "
+            f"{cls.outer_kind!r}"
+            + (" with a circle hole" if cls.hole_index is not None else "")
         )
-    return rects[0]
+    return primitives[cls.outer_index]
 
 
 def _revolve_axis(revolve: dict[str, Any]) -> str:
@@ -577,43 +608,193 @@ def _normal_vec(frame: PlaneFrame, length: float) -> gp_Vec:
 
 def _outer_profile(
     primitives: list[dict[str, Any]],
-) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
-    """The single outer profile of a sketch + an optional circle hole. arc
-    20260711-11 slice E: the outer profile is a rectangle OR a contour (Codex4
-    D-E4 — a contour is an outer boundary only, so no circle rides with it)."""
-    contour = next((p for p in primitives if p.get("type") == "contour"), None)
-    if contour is not None:
-        return "contour", contour, None
-    rectangle = next((p for p in primitives if p.get("type") == "rectangle"), None)
-    circle = next((p for p in primitives if p.get("type") == "circle"), None)
-    if rectangle is None:
-        raise TransactionError(
-            "mechanical: sketch has no rectangle or contour outer profile to evaluate"
-        )
-    return "rectangle", rectangle, circle
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+    """THE classifier verdict, materialized for the evaluator (SK-C0 B3):
+    `(outer_kind, outer_primitive, circle_hole)` with outer_kind in
+    rectangle|contour|circle|none. Construction primitives are excluded by the
+    classifier; every unsupported combination fails loud INSIDE it."""
+    cls = classify_sketch(primitives)
+    outer = primitives[cls.outer_index] if cls.outer_index is not None else None
+    hole = primitives[cls.hole_index] if cls.hole_index is not None else None
+    return cls.outer_kind, outer, hole
+
+
+def _contour_wire(contour: dict[str, Any], frame: PlaneFrame):
+    """(wire, [(segment_id, edge), ...]) — one OCCT edge per authored segment,
+    in ring order, on the sketch plane (EP2). SK-C0 D-C1: arc segments become
+    exact circular edges via 3-point construction (the bulge midpoint from the
+    shared `arc_geometry` formulas — the same math Class-1 validated)."""
+    mk = BRepBuilderAPI_MakeWire()
+    seg_edges: list[tuple[str, Any]] = []
+    for seg in contour["segments"]:
+        x1, y1 = float(seg["x1_mm"]), float(seg["y1_mm"])
+        x2, y2 = float(seg["x2_mm"]), float(seg["y2_mm"])
+        p1 = gp_Pnt(*frame.to_3d(x1, y1))
+        p2 = gp_Pnt(*frame.to_3d(x2, y2))
+        if seg.get("kind") == "arc":
+            g = arc_geometry(x1, y1, x2, y2, float(seg["bulge"]))
+            mid_ang = g.start_angle + g.sweep / 2.0
+            pm = gp_Pnt(*frame.to_3d(
+                g.center[0] + g.radius * math.cos(mid_ang),
+                g.center[1] + g.radius * math.sin(mid_ang),
+            ))
+            edge = BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(p1, pm, p2).Value()).Edge()
+        else:
+            edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+        seg_edges.append((seg.get("id"), edge))
+        mk.Add(edge)
+    return mk.Wire(), seg_edges
 
 
 def _contour_face(contour: dict[str, Any], frame: PlaneFrame) -> TopoDS_Shape:
-    """A planar face from an explicit CLOSED RING of line segments (arc
-    20260711-11 slice E), built on the sketch plane (EP2). The segments already
-    close the ring (Codex4 B1 — no implicit closing edge); one OCCT edge per
-    segment, in ring order. Segment coordinates are sketch-local (u, v)."""
-    wire = BRepBuilderAPI_MakeWire()
-    for seg in contour["segments"]:
-        p1 = gp_Pnt(*frame.to_3d(float(seg["x1_mm"]), float(seg["y1_mm"])))
-        p2 = gp_Pnt(*frame.to_3d(float(seg["x2_mm"]), float(seg["y2_mm"])))
-        wire.Add(BRepBuilderAPI_MakeEdge(p1, p2).Edge())
-    return BRepBuilderAPI_MakeFace(wire.Wire()).Face()
+    """A planar face from an explicit CLOSED RING of typed segments (line/arc).
+    The segments already close the ring (Codex4 B1 — no implicit closing edge)."""
+    return BRepBuilderAPI_MakeFace(_contour_wire(contour, frame)[0]).Face()
 
 
 def _build_contour_solid(
-    contour: dict[str, Any], depth_mm: float, sign: float, frame: PlaneFrame
-) -> TopoDS_Shape:
-    """Prism a contour face into a solid along ±normal (v1: outer boundary
-    only, no hole)."""
-    return BRepPrimAPI_MakePrism(
-        _contour_face(contour, frame), _normal_vec(frame, sign * depth_mm)
-    ).Shape()
+    contour: dict[str, Any], depth_mm: float, sign: float, frame: PlaneFrame,
+    *, wall_prefix: str,
+) -> tuple[TopoDS_Shape, list["ProducedFaceHint"]]:
+    """Prism a contour face into a solid + the BY-CONSTRUCTION wall authority
+    (SK-C0 B2): the evaluator built each OCCT edge FROM its authored segment, so
+    `MakePrism.Generated(edge)` IS the segment→wall mapping — exactly one face
+    per segment or loud. Geometry then VERIFIES the surface family/radius (it
+    never selects). Radius+axis matching is dead as a correlation key."""
+    wire, _built_edges = _contour_wire(contour, frame)
+    face = BRepBuilderAPI_MakeFace(wire).Face()
+    prism = BRepPrimAPI_MakePrism(face, _normal_vec(frame, sign * depth_mm))
+    shape = prism.Shape()
+    # MakeWire may re-orient/copy edges while chaining the ring, so Generated()
+    # must be queried with the WIRE'S OWN edges. Each wire edge is paired back
+    # to its authored segment by EXACT endpoint (+kind) matching — unambiguous
+    # for a valid Class-1 ring, and fail-loud otherwise (still by-construction:
+    # the pairing is identity bookkeeping, never geometric guessing of ROLES).
+    hints: list[ProducedFaceHint] = []
+    matched: set[int] = set()
+    exp = BRepTools_WireExplorer(wire)
+    wire_edges = []
+    while exp.More():
+        wire_edges.append(TopoDS.Edge_s(exp.Current()))
+        exp.Next()
+    if len(wire_edges) != len(contour["segments"]):
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: contour wire has {len(wire_edges)} edges for "
+            f"{len(contour['segments'])} segments (SK-C0 B2)"
+        )
+    for edge in wire_edges:
+        sid, seg = _segment_for_edge(edge, contour["segments"], frame, matched)
+        gen = [TopoDS.Face_s(s) for s in prism.Generated(edge)]
+        if len(gen) != 1:
+            raise MechanicalKernelEvaluationError(
+                f"{ENGINE_OP_PREFIX}: contour segment {sid!r} generated "
+                f"{len(gen)} wall faces (expected exactly one; SK-C0 B2 "
+                f"by-construction wall authority)"
+            )
+        _verify_wall_family(gen[0], seg, sid)
+        hints.append(ProducedFaceHint(
+            feature_id=f"{wall_prefix}/{sid}", role_base="wall", faces=(gen[0],)
+        ))
+    return shape, hints
+
+
+def _segment_for_edge(edge, segments, frame: PlaneFrame, matched: set[int]):
+    """Pair one wire edge back to its authored segment by exact endpoints
+    (either direction) + curve kind. Exactly one unmatched candidate or loud."""
+    v1 = BRep_Tool.Pnt_s(TopExp.FirstVertex_s(edge))
+    v2 = BRep_Tool.Pnt_s(TopExp.LastVertex_s(edge))
+    a = frame.project_uv((v1.X(), v1.Y(), v1.Z()))
+    b = frame.project_uv((v2.X(), v2.Y(), v2.Z()))
+    ekind = "arc" if BRepAdaptor_Curve(edge).GetType() == GeomAbs_Circle else "line"
+    tol = 1e-6
+    candidates = []
+    for k, seg in enumerate(segments):
+        if k in matched or seg.get("kind", "line") != ekind:
+            continue
+        s = (float(seg["x1_mm"]), float(seg["y1_mm"]))
+        e = (float(seg["x2_mm"]), float(seg["y2_mm"]))
+        fwd = math.hypot(a[0]-s[0], a[1]-s[1]) <= tol and math.hypot(b[0]-e[0], b[1]-e[1]) <= tol
+        rev = math.hypot(a[0]-e[0], a[1]-e[1]) <= tol and math.hypot(b[0]-s[0], b[1]-s[1]) <= tol
+        if fwd or rev:
+            candidates.append(k)
+    if len(candidates) != 1:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: wire edge could not be paired to exactly one "
+            f"contour segment (candidates={len(candidates)}); SK-C0 B2 identity "
+            f"bookkeeping failed loud"
+        )
+    matched.add(candidates[0])
+    seg = segments[candidates[0]]
+    return seg.get("id"), seg
+
+
+def _verify_wall_family(face, seg: dict[str, Any], sid) -> None:
+    """By-construction VERIFICATION (never selection): a line segment's wall is
+    a plane; an arc segment's wall is a cylinder with the segment's exact radius."""
+    surf = BRepAdaptor_Surface(face)
+    stype = surf.GetType()
+    if seg.get("kind") == "arc":
+        if stype != GeomAbs_Cylinder:
+            raise MechanicalKernelEvaluationError(
+                f"{ENGINE_OP_PREFIX}: contour arc segment {sid!r} produced a "
+                f"non-cylindrical wall (surface type {stype}); by-construction "
+                f"verification failed"
+            )
+        g = arc_geometry(
+            float(seg["x1_mm"]), float(seg["y1_mm"]),
+            float(seg["x2_mm"]), float(seg["y2_mm"]), float(seg["bulge"]),
+        )
+        r_occt = surf.Cylinder().Radius()
+        if abs(r_occt - g.radius) > 1e-6:
+            raise MechanicalKernelEvaluationError(
+                f"{ENGINE_OP_PREFIX}: contour arc segment {sid!r} wall radius "
+                f"{r_occt} does not verify against the recipe radius {g.radius}"
+            )
+    elif stype != GeomAbs_Plane:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: contour line segment {sid!r} produced a "
+            f"non-planar wall (surface type {stype}); by-construction "
+            f"verification failed"
+        )
+
+
+def _circle_outer_face(circle: dict[str, Any], frame: PlaneFrame) -> TopoDS_Shape:
+    """The full disk of a circle-as-outer-profile sketch (SK-C0 D-C2)."""
+    return BRepBuilderAPI_MakeFace(_circle_wire(circle, frame)).Face()
+
+
+def _build_circle_outer_solid(
+    circle: dict[str, Any], depth_mm: float, sign: float, frame: PlaneFrame,
+    *, wall_prefix: str,
+) -> tuple[TopoDS_Shape, list["ProducedFaceHint"]]:
+    """Prism a circle-outer disk into a cylinder (SK-C0 D-C2). The lateral wall
+    is claimed BY CONSTRUCTION via `Generated(circle edge)` with the pinned role
+    `<extrude>/<circle-skp>:face:outer_wall` — the outer wall NEVER enters the
+    hole_wall path (correlation dispatches from classification, B2)."""
+    cx, cy = float(circle["cx_mm"]), float(circle["cy_mm"])
+    r = float(circle["radius_mm"])
+    circ = gp_Circ(gp_Ax2(gp_Pnt(*frame.to_3d(cx, cy)), gp_Dir(*frame.normal)), r)
+    edge = BRepBuilderAPI_MakeEdge(circ).Edge()
+    face = BRepBuilderAPI_MakeFace(BRepBuilderAPI_MakeWire(edge).Wire()).Face()
+    prism = BRepPrimAPI_MakePrism(face, _normal_vec(frame, sign * depth_mm))
+    shape = prism.Shape()
+    gen = [TopoDS.Face_s(s) for s in prism.Generated(edge)]
+    if len(gen) != 1:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: circle outer profile generated {len(gen)} wall "
+            f"faces (expected exactly one; SK-C0 B2)"
+        )
+    surf = BRepAdaptor_Surface(gen[0])
+    if surf.GetType() != GeomAbs_Cylinder or abs(surf.Cylinder().Radius() - r) > 1e-6:
+        raise MechanicalKernelEvaluationError(
+            f"{ENGINE_OP_PREFIX}: circle outer wall failed by-construction "
+            f"verification (cylinder of radius {r} expected)"
+        )
+    hints = [ProducedFaceHint(
+        feature_id=f"{wall_prefix}/{circle['id']}", role_base="outer_wall",
+        faces=(gen[0],),
+    )]
+    return shape, hints
 
 
 def _rectangle_face(rectangle: dict[str, Any], frame: PlaneFrame) -> TopoDS_Shape:

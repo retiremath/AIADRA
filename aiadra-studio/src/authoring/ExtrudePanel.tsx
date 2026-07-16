@@ -75,7 +75,15 @@ export function ExtrudePanel({
   const candidates = all.map((sk, i) => ({
     sk,
     n: i + 1,
-    refusal: isRevolve ? revolveSketchRefusal(sk) : null,
+    // SK-C0 Codex3 B2: a guides-only sketch stays VISIBLE (its dashed overlay
+    // is real) but is never extrudable — the derived refusal mirrors the
+    // engine's construction-only rejection instead of reaching it loudly.
+    refusal:
+      sk.profile.kind === 'sketch_only'
+        ? 'a construction-only sketch has no profile to extrude'
+        : isRevolve
+          ? revolveSketchRefusal(sk)
+          : null,
   }))
 
   // Revolve axis eligibility for the CHOSEN source (committed or pending rect).
@@ -124,7 +132,7 @@ export function ExtrudePanel({
       : e.source.kind === 'committed'
         ? buildExtrudeOnSketchOps(part.number, e.source.sketchId, e.depthMm)
         : e.source.kind === 'pending'
-          ? buildContourFeatureOps(part.number, e.source.points, e.depthMm, e.source.plane)
+          ? buildContourFeatureOps(part.number, e.source.points, e.depthMm, e.source.plane, 0, e.source.bulges)
           : null
     if (ops === null) {
       store.setExtrudePhase('error', `the drawn source does not fit ${featureLabel} — cancel and retry`)

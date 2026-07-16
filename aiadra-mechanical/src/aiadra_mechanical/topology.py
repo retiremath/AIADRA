@@ -38,7 +38,8 @@ from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_C0
 from OCP.GeomLProp import GeomLProp_SLProps
 from OCP.GCPnts import GCPnts_TangentialDeflection
 
-from . import cache, geometry
+from . import cache, geometry, profile_classify
+from .arc_geometry import arc_geometry, point_on_arc_span
 from .recipe import (
     PlaneFrame,
     effective_plane_frame,
@@ -330,7 +331,18 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
         ftype = f.get("feature_type")
         entry: dict[str, Any] = {"feature": ftype}
         if ftype == "sketch":
-            prims = f.get("adapter_payload", {}).get("primitives", [])
+            all_prims = f.get("adapter_payload", {}).get("primitives", [])
+            # SK-C0 B4: only TOPOLOGY-CONTRIBUTING primitives enter the 3D
+            # skeleton (the classifier's outer+hole set). Editing/adding/removing
+            # a pure construction guide changes recipe/vault identity but NEVER
+            # the 3D signature — canonical selections and parent-prefix
+            # references survive. Toggling a primitive into/out of profile
+            # participation DOES change the signature (the set changes, and the
+            # BREP with it). Legacy no-construction recipes: contributing == the
+            # full list → signatures byte-identical (golden-tested).
+            cls = profile_classify.classify_sketch(all_prims)
+            contributing = set(cls.topology_contributing)
+            prims = [p for i, p in enumerate(all_prims) if i in contributing]
             entry["primitives"] = sorted(
                 (p.get("id", ""), p.get("type")) for p in prims
             )
@@ -434,12 +446,16 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
     frame = effective_plane_frame(sketch)
     sketch_id = sketch["id"]
     prims = sketch.get("adapter_payload", {}).get("primitives", [])
-    rectangle = next((p for p in prims if p.get("type") == "rectangle"), None)
-    contour = next((p for p in prims if p.get("type") == "contour"), None)
-    circle = next((p for p in prims if p.get("type") == "circle"), None)
-    if rectangle is None and contour is None:
+    # SK-C0 B3: THE classifier is the single interpretation authority here too —
+    # construction guides never reach correlation; circle-as-outer dispatches.
+    cls = profile_classify.classify_sketch(prims)
+    rectangle = prims[cls.outer_index] if cls.outer_kind == "rectangle" else None
+    contour = prims[cls.outer_index] if cls.outer_kind == "contour" else None
+    outer_circle = prims[cls.outer_index] if cls.outer_kind == "circle" else None
+    circle = prims[cls.hole_index] if cls.hole_index is not None else None
+    if cls.outer_kind == "none":
         raise TransactionError(
-            "mechanical.display: sketch has no rectangle or contour profile"
+            "mechanical.display: sketch has no profile geometry (construction-only)"
         )
 
     # Revolve base (arc 20260622-4): a different topology family than the extrude
@@ -493,6 +509,10 @@ def _extract_recipe_geometry(features: list[dict[str, Any]]) -> dict[str, Any]:
     # topology family; the recipe carries the kind so correlation dispatches.
     if contour is not None:
         return {**common, "outer_kind": "contour", "contour": contour, "circle": None}
+    # SK-C0 D-C2: circle-as-outer — a cylinder family. Correlation dispatches
+    # from THIS classification; the outer wall never enters the hole_wall path.
+    if outer_circle is not None:
+        return {**common, "outer_kind": "circle_outer", "outer_circle": outer_circle, "circle": None}
     return {**common, "outer_kind": "rectangle", "rectangle": rectangle, "circle": circle}
 
 
@@ -528,6 +548,8 @@ def _correlate_faces(
         return _correlate_revolve_faces(face_map, recipe, claimed)
     if recipe.get("outer_kind") == "contour":
         return _correlate_contour_faces(face_map, recipe, claimed)
+    if recipe.get("outer_kind") == "circle_outer":
+        return _correlate_circle_outer_faces(face_map, recipe, claimed)
     sketch_id = recipe["sketch_id"]
     extrude_id = recipe["extrude_id"]
     rect = recipe["rectangle"]
@@ -678,9 +700,16 @@ def _correlate_contour_faces(
     contour = recipe["contour"]
     frame: PlaneFrame = recipe["frame"]  # EP2 — the consumed sketch's frame
     feat_prefix = recipe["extrude_id"] if recipe.get("extrude_id") is not None else recipe["sketch_id"]
-    seg_mids = _contour_segment_midpoints(contour)
+    line_mids, arc_segs = _contour_segment_geometry(contour)
     roles: dict[int, str] = {}
     used_segments: set[str] = set()
+    # SK-C0 B2: by-construction wall claims (Generated(edge) hints from the
+    # evaluator) are AUTHORITY — count their segments toward the bijection.
+    wall_re = re.compile(re.escape(feat_prefix) + r"/([^:]+):face:wall$")
+    for role in claimed.values():
+        m = wall_re.search(role)
+        if m:
+            used_segments.add(m.group(1))
     for i in range(1, face_map.Extent() + 1):
         if i in claimed:
             roles[i] = claimed[i]
@@ -696,7 +725,7 @@ def _correlate_contour_faces(
             )
             continue
         if stype == GeomAbs_Plane:
-            seg_id = _nearest_segment(frame.project_uv(centroid), seg_mids)
+            seg_id = _nearest_segment(frame.project_uv(centroid), line_mids)
             if seg_id is None or seg_id in used_segments:
                 raise TransactionError(
                     f"mechanical.display: could not uniquely correlate side face {i} "
@@ -705,16 +734,30 @@ def _correlate_contour_faces(
             used_segments.add(seg_id)
             roles[i] = f"{feat_prefix}/{seg_id}:face:wall"
             continue
+        if stype == GeomAbs_Cylinder:
+            # SK-C0 B2 EXPLICIT FALLBACK (hint-less re-correlation lane only):
+            # the injective geometric key — cylinder axis point + radius +
+            # the wall centroid within the segment's angular span. Same-support
+            # split arcs stay distinguishable via the span; exactly-one-or-loud.
+            seg_id = _match_arc_wall(face, frame, arc_segs, used_segments)
+            if seg_id is None:
+                raise TransactionError(
+                    f"mechanical.display: could not uniquely correlate cylindrical "
+                    f"face {i} to an arc contour segment; recipe/topology mismatch"
+                )
+            used_segments.add(seg_id)
+            roles[i] = f"{feat_prefix}/{seg_id}:face:wall"
+            continue
         raise TransactionError(
             f"mechanical.display: unexpected surface type {stype} on face {i}; "
-            f"a v1 contour extrude produces planar faces only"
+            f"a contour extrude produces planar and cylindrical faces only"
         )
     # Codex5 B1: the segment↔wall map must be a bijection — every declared segment
     # produces exactly one wall. The in-loop guard rejects a duplicate; this guards
     # the OTHER direction (a missing wall, e.g. a coplanar merge emitting fewer side
     # faces than segments), fail loud rather than returning silently-incomplete
     # identity (ADR/0035 no-placeholder / no-silent-gap).
-    declared = {sid for sid, _, _ in seg_mids}
+    declared = {sid for sid, _, _ in line_mids} | {sid for sid, _ in arc_segs}
     if used_segments != declared:
         missing = sorted(declared - used_segments)
         raise TransactionError(
@@ -725,11 +768,62 @@ def _correlate_contour_faces(
     return roles
 
 
-def _contour_segment_midpoints(contour: dict[str, Any]) -> list[tuple[str, float, float]]:
-    """Each contour segment as (segment_id, midpoint_x, midpoint_y). The id is the
-    engine-minted stable anchor (Codex4 B1); the midpoint disambiguates walls even
-    under symmetric dimensions. Fail loud on a missing anchor (no placeholder)."""
-    out: list[tuple[str, float, float]] = []
+def _correlate_circle_outer_faces(
+    face_map, recipe: dict[str, Any], claimed: dict[int, str]
+) -> dict[int, str]:
+    """Assign roles for a circle-as-outer-profile extrude (SK-C0 D-C2): the
+    lateral wall is `<prefix>/<circle-skp>:face:outer_wall` (normally claimed by
+    construction; verified here on the fallback lane), caps by normal coordinate.
+    Dispatch comes from CLASSIFICATION — this wall never enters the hole_wall path."""
+    circle = recipe["outer_circle"]
+    frame: PlaneFrame = recipe["frame"]
+    feat_prefix = recipe["extrude_id"] if recipe.get("extrude_id") is not None else recipe["sketch_id"]
+    circle_skp = require_skp_id(circle, "circle")
+    roles: dict[int, str] = {}
+    wall_seen = False
+    for i in range(1, face_map.Extent() + 1):
+        if i in claimed:
+            roles[i] = claimed[i]
+            wall_seen = wall_seen or claimed[i].endswith(":face:outer_wall")
+            continue
+        face = TopoDS.Face_s(face_map.FindKey(i))
+        stype = BRepAdaptor_Surface(face).GetType()
+        centroid, normal = _face_centroid_normal(face)
+        if stype == GeomAbs_Plane and abs(_dot3(normal, frame.normal)) >= _AXIS_DOT:
+            roles[i] = (
+                f"{feat_prefix}:face:cap_base"
+                if abs(frame.normal_coord(centroid)) <= 1e-6
+                else f"{feat_prefix}:face:cap_top"
+            )
+            continue
+        if stype == GeomAbs_Cylinder and not wall_seen:
+            r = BRepAdaptor_Surface(face).Cylinder().Radius()
+            if abs(r - float(circle["radius_mm"])) > 1e-6:
+                raise TransactionError(
+                    f"mechanical.display: cylinder face {i} radius {r} does not "
+                    f"verify against the circle outer profile"
+                )
+            roles[i] = f"{feat_prefix}/{circle_skp}:face:outer_wall"
+            wall_seen = True
+            continue
+        raise TransactionError(
+            f"mechanical.display: unexpected face {i} (surface type {stype}) on a "
+            f"circle-outer extrude (one wall + two caps expected)"
+        )
+    if not wall_seen:
+        raise TransactionError(
+            "mechanical.display: circle-outer correlation found no lateral wall"
+        )
+    return roles
+
+
+def _contour_segment_geometry(contour: dict[str, Any]):
+    """Split the contour's segments for correlation: LINE segments as
+    (id, chord-midpoint-x, chord-midpoint-y) for the planar matcher; ARC
+    segments as (id, ArcGeometry) for the cylindrical matcher. Fail loud on a
+    missing engine-minted anchor (no placeholder)."""
+    line_mids: list[tuple[str, float, float]] = []
+    arc_segs: list[tuple[str, Any]] = []
     for seg in contour.get("segments", []):
         sid = seg.get("id")
         if not isinstance(sid, str) or not sid:
@@ -738,10 +832,42 @@ def _contour_segment_midpoints(contour: dict[str, Any]) -> list[tuple[str, float
                 "corrupt/pre-slice-E payload cannot anchor stable wall identity "
                 "(failing loud rather than minting a placeholder, ADR/0035)"
             )
-        mx = 0.5 * (float(seg["x1_mm"]) + float(seg["x2_mm"]))
-        my = 0.5 * (float(seg["y1_mm"]) + float(seg["y2_mm"]))
-        out.append((sid, mx, my))
-    return out
+        if seg.get("kind") == "arc":
+            arc_segs.append((sid, arc_geometry(
+                float(seg["x1_mm"]), float(seg["y1_mm"]),
+                float(seg["x2_mm"]), float(seg["y2_mm"]), float(seg["bulge"]),
+            )))
+        else:
+            mx = 0.5 * (float(seg["x1_mm"]) + float(seg["x2_mm"]))
+            my = 0.5 * (float(seg["y1_mm"]) + float(seg["y2_mm"]))
+            line_mids.append((sid, mx, my))
+    return line_mids, arc_segs
+
+
+def _match_arc_wall(face, frame, arc_segs, used_segments) -> str | None:
+    """The EXPLICIT injective fallback key (SK-C0 B2, hint-less lane): the
+    wall's cylinder must match a declared arc segment's center+radius, and the
+    wall centroid (projected to sketch UV) must fall INSIDE that segment's
+    angular span — same-support split arcs stay distinct. Exactly one match or
+    None (the caller fails loud)."""
+    surf = BRepAdaptor_Surface(face)
+    cyl = surf.Cylinder()
+    r = cyl.Radius()
+    loc = cyl.Axis().Location()
+    cu, cv = frame.project_uv((loc.X(), loc.Y(), loc.Z()))
+    centroid, _ = _face_centroid_normal(face)
+    pu, pv = frame.project_uv(centroid)
+    matches = []
+    for sid, g in arc_segs:
+        if sid in used_segments:
+            continue
+        if abs(r - g.radius) > 1e-6:
+            continue
+        if math.hypot(cu - g.center[0], cv - g.center[1]) > 1e-6:
+            continue
+        if point_on_arc_span(g, pu, pv, 1e-6):
+            matches.append(sid)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _nearest_segment(centroid_uv, seg_mids) -> str | None:

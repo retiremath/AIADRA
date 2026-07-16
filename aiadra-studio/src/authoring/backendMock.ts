@@ -18,7 +18,9 @@ import {
   proceduralRevolveSource,
   type PlaneOrientation,
 } from '../sketch/proceduralExtrude'
-import { contourProblem, type Pt } from '../sketch/contour'
+import { segmentsProblem, type Pt, type Segment } from '../sketch/contour'
+import { classifySketch } from '../sketch/profileClassify'
+import { tessellateCircle, tessellateSegments } from '../sketch/arcGeometry'
 import {
   resolveOpAliases,
   type AuthoringBackend,
@@ -28,22 +30,44 @@ import {
   type SimulateResult,
 } from './backend'
 
-type Seg = { x1_mm: number; y1_mm: number }
+type Seg = { kind?: string; x1_mm: number; y1_mm: number; x2_mm?: number; y2_mm?: number; bulge?: number }
 
-/** Pull the drawn contour points + depth + plane out of an op sequence. */
+/** Pull the drawn contour out of an op sequence: `points` are TESSELLATED for
+ *  the procedural solid (arcs faceted, SK-C0); `segments` keep the authored
+ *  typed chain for the Class-1 mirror; `construction` mirrors D-C3. */
 function contourFromOps(
   ops: FeatureOp[],
-): { points: Pt[]; depthMm: number; plane: PlaneOrientation } | null {
+): { points: Pt[]; segments: Segment[]; construction: boolean; depthMm: number; plane: PlaneOrientation } | null {
   const sketch = ops.find((o) => o.kind === 'mechanical.add_sketch_feature')
   const extrude = ops.find((o) => o.kind === 'mechanical.add_extrude_feature')
-  const prims = (sketch?.params.primitives as Array<{ type?: string; segments?: Seg[] }>) ?? []
+  const prims = (sketch?.params.primitives as Array<{ type?: string; segments?: Seg[]; construction?: boolean }>) ?? []
   const contour = prims.find((p) => p.type === 'contour')
   if (!contour?.segments?.length) return null
-  const points: Pt[] = contour.segments.map((s) => ({ x: Number(s.x1_mm), y: Number(s.y1_mm) }))
+  const segments = contour.segments as Segment[]
+  const points = tessellateSegments(segments)
   const depthMm = Number(extrude?.params.depth_mm ?? 6)
   const planeRec = sketch?.params.plane as { orientation?: PlaneOrientation } | undefined
   const plane: PlaneOrientation = planeRec?.orientation ?? 'xy'
-  return { points, depthMm, plane }
+  return { points, segments, construction: contour.construction === true, depthMm, plane }
+}
+
+/** SK-C0 D-C2: a circle-as-outer sketch op + extrude → the faceted cylinder. */
+function circleFromOps(
+  ops: FeatureOp[],
+): { points: Pt[]; construction: boolean; depthMm: number; plane: PlaneOrientation } | null {
+  const sketch = ops.find((o) => o.kind === 'mechanical.add_sketch_feature')
+  const extrude = ops.find((o) => o.kind === 'mechanical.add_extrude_feature')
+  const prims = (sketch?.params.primitives as Array<Record<string, unknown>>) ?? []
+  if (prims.length !== 1 || prims[0]?.type !== 'circle') return null
+  const c = prims[0]
+  const points = tessellateCircle(Number(c.cx_mm), Number(c.cy_mm), Number(c.radius_mm))
+  const planeRec = sketch?.params.plane as { orientation?: PlaneOrientation } | undefined
+  return {
+    points,
+    construction: c.construction === true,
+    depthMm: Number(extrude?.params.depth_mm ?? 6),
+    plane: (planeRec?.orientation ?? 'xy') as PlaneOrientation,
+  }
 }
 
 /** An op sequence that ONLY creates a Part (EP1 commit-at-New). */
@@ -67,13 +91,28 @@ export interface MockAuthoringBackend extends AuthoringBackend {
  *  generic feature (no wire, unselectable, invisible to Extrude). */
 function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: string): Record<string, unknown> | null {
   if (kind === 'mechanical.add_sketch_feature') {
-    const payload: Record<string, unknown> = { primitives: params.primitives }
+    // SK-C0 Codex3 B3: the mock mints the SAME deterministic identity shapes
+    // as the engine's build_sketch_payload — skp_NNNN primitives and
+    // skp_NNNNsNN contour segments; caller-supplied ids are refused.
+    const prims = (params.primitives as Array<Record<string, unknown>>).map((p, i) => {
+      if ('id' in p) throw new Error('mock: primitives must not carry caller-supplied ids')
+      const skp = `skp_${String(i + 1).padStart(4, '0')}`
+      const out: Record<string, unknown> = { ...p, id: skp }
+      if (p.type === 'contour' && Array.isArray(p.segments)) {
+        out.segments = (p.segments as Array<Record<string, unknown>>).map((seg, k) => {
+          if ('id' in seg) throw new Error('mock: segments must not carry caller-supplied ids')
+          return { ...seg, id: `${skp}s${String(k + 1).padStart(2, '0')}` }
+        })
+      }
+      return out
+    })
+    const payload: Record<string, unknown> = { primitives: prims }
     if (params.plane !== undefined) payload.plane = params.plane
     return {
       id,
       feature_type: 'sketch',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.8',
+      adapter_schema_version: '0.1.9',
       adapter_payload: payload,
     }
   }
@@ -82,7 +121,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'extrude',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.8',
+      adapter_schema_version: '0.1.9',
       depends_on_feature_ids: [params.sketch_feature_id],
       parameters: [{ id: 'featp_mock', name: 'depth_mm', value: params.depth_mm, datatype: 'number', unit: 'mm' }],
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, direction: params.direction },
@@ -95,7 +134,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'revolve',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.8',
+      adapter_schema_version: '0.1.9',
       depends_on_feature_ids: [params.sketch_feature_id],
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, axis: params.axis },
     }
@@ -156,9 +195,12 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
     const payload = (rec.adapter_payload ?? {}) as Record<string, unknown>
     const prim = ((payload.primitives ?? []) as Array<Record<string, unknown>>)[0]
     if (!prim) return null
+    if (prim.construction === true) return null // a guide never extrudes (D-C3)
     let points: Pt[]
     if (prim.type === 'contour') {
-      points = ((prim.segments ?? []) as Seg[]).map((s) => ({ x: Number(s.x1_mm), y: Number(s.y1_mm) }))
+      points = tessellateSegments((prim.segments ?? []) as Segment[])
+    } else if (prim.type === 'circle') {
+      points = tessellateCircle(Number(prim.cx_mm), Number(prim.cy_mm), Number(prim.radius_mm))
     } else if (prim.type === 'rectangle') {
       const x = Number(prim.x_mm)
       const y = Number(prim.y_mm)
@@ -240,10 +282,39 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
         (o) => o.kind === 'mechanical.add_extrude_feature' || o.kind === 'mechanical.add_revolve_feature',
       )
       if (contour) {
-        const problem = contourProblem(contour.points)
+        // SK-C0: the CURVE-AWARE Class-1 mirror over the authored segments.
+        const problem = segmentsProblem(contour.segments)
         if (problem) return { valid: false, message: `mock Class-1: ${problem}` }
         if (sessionHasBase && !(contour.depthMm > 0)) {
           return { valid: false, message: 'mock Class-1: depth must be positive' }
+        }
+        if (sessionHasBase && contour.construction) {
+          return { valid: false, message: 'mock Class-1: a construction-only sketch cannot be extruded' }
+        }
+      }
+      const circleOp = circleFromOps(session.ops)
+      if (circleOp && sessionHasBase && circleOp.construction) {
+        return { valid: false, message: 'mock Class-1: a construction-only sketch cannot be extruded' }
+      }
+      // SK-C0 Codex3 B2 + Codex5 B2: ENTRY A — an extrude consuming a
+      // previously COMMITTED sketch resolves eligibility through the ONE
+      // classifier mirror (never a reimplemented special case): a classifier
+      // failure refuses, and outerKind 'none' — EMPTY or construction-only —
+      // refuses too, exactly like the engine.
+      if (sessionHasBase && !contour && !circleOp) {
+        const ext = session.ops.find((o) => o.kind === 'mechanical.add_extrude_feature')
+        const target = session.partNumber ? parts.get(session.partNumber) : undefined
+        const rec = target?.features.find(
+          (f) => f.id === ext?.params.sketch_feature_id && f.feature_type === 'sketch',
+        )
+        if (rec) {
+          const payload = (rec.adapter_payload ?? {}) as Record<string, unknown>
+          const prims = (payload.primitives ?? []) as Array<Record<string, unknown>>
+          const verdict = classifySketch(prims)
+          if (!verdict.ok) return { valid: false, message: `mock Class-1: ${verdict.reason}` }
+          if (verdict.classification.outerKind === 'none') {
+            return { valid: false, message: 'mock Class-1: the consumed sketch has no extrudable profile (empty or construction-only)' }
+          }
         }
       }
       // S2 B3 mirror: the engine rejects a second base creation — so does the mock.
@@ -271,8 +342,9 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       // resolve the consumed sketch from the mirror so the mock shows the
       // DRAWN geometry, never a canned box for a real reference.
       const revolve = hasBase ? revolveFromOps(ops, session.partNumber ?? objectRef) : null
-      const mirrored = !contour && !revolve && hasBase ? mirroredContour(ops, session.partNumber ?? objectRef) : null
-      const solid = contour ?? mirrored
+      const circleSolid = !revolve && hasBase ? circleFromOps(ops) : null
+      const mirrored = !contour && !revolve && !circleSolid && hasBase ? mirroredContour(ops, session.partNumber ?? objectRef) : null
+      const solid = (contour && !contour.construction ? contour : null) ?? (circleSolid && !circleSolid.construction ? circleSolid : null) ?? mirrored
       const display =
         isCreateOnly(ops) || !hasBase
           ? emptyMockSource(objectRef, `${objectRef} — dev mock (not Truth)`)
@@ -280,7 +352,13 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
             ? proceduralRevolveSource(revolve.rect, revolve.axis, badge)
             : solid
               ? proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
-              : await loadExtrudeBoxSource(`${objectRef} — dev mock preview (not a real Part)`)
+              : (() => {
+                  // SK-C0 Codex3 B2: NO canned fallback — a base op the mock
+                  // cannot honestly synthesize is a loud refusal, never a box.
+                  throw new Error(
+                    'mock: this base feature has no honest procedural synthesis (unsupported/ineligible source)',
+                  )
+                })()
       if (!display) throw new Error('mock: display unavailable')
       // Register the commit in the mock's Truth mirror (feeds inspectRaw).
       const number = session.partNumber ?? objectRef

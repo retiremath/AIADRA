@@ -68,7 +68,7 @@ describe('save-side validator (Codex2 round 2)', () => {
 
   it('rejects a forward/newer version BEFORE it can be written (the boot-brick bug)', () => {
     expect(validatePersistedSettingsForSave({ settings_version: 999, values: {} }).ok).toBe(false)
-    expect(validatePersistedSettingsForSave({ settings_version: 2, values: {} }).ok).toBe(false)
+    expect(validatePersistedSettingsForSave({ settings_version: 4, values: {} }).ok).toBe(false)
   })
 
   it('still applies the shared structural rejections', () => {
@@ -80,6 +80,17 @@ describe('save-side validator (Codex2 round 2)', () => {
 describe('migration', () => {
   it('passes the current version through', () => {
     expect(migratePersisted(valid()).settings_version).toBe(CURRENT_SETTINGS_VERSION)
+    // v1→v2 (grid closure): the dead grid key is dropped
+    const v1 = migratePersisted({ settings_version: 1, values: { gridVisibleDefault: true, settleMs: 350 } })
+    expect(v1.values.gridVisibleDefault).toBeUndefined()
+    expect(v1.values.settleMs).toBe(350) // untouched neighbors survive
+    // v2→v3 (grey background): old-default values yield to the new default…
+    const v2 = migratePersisted({ settings_version: 2, values: { viewportBackground: 0xe4efdf, paperBody: 0xe4efdf } })
+    expect(v2.values.viewportBackground).toBeUndefined()
+    expect(v2.values.paperBody).toBeUndefined()
+    // …while a REAL user override is preserved verbatim
+    const custom = migratePersisted({ settings_version: 2, values: { viewportBackground: 0x123456 } })
+    expect(custom.values.viewportBackground).toBe(0x123456)
   })
 
   it('fails loud on a newer version', () => {

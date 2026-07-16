@@ -14,7 +14,6 @@ function ctx(over: Partial<CommandContext> = {}): CommandContext {
     hasReferenceGeometry: false,
     hasRenderableScene: false,
     mode: 'shading-edges',
-    gridVisible: true,
     datumsVisible: true,
     filter: { face: true, edge: true },
     hasSelection: false,
@@ -28,7 +27,6 @@ const mkActions = (): CommandActions => ({
   fit: vi.fn(),
   reset: vi.fn(),
   setMode: vi.fn(),
-  toggleGrid: vi.fn(),
   toggleDatums: vi.fn(),
   standardView: vi.fn(),
   toggleFilterKind: vi.fn(),
@@ -48,14 +46,14 @@ describe('command taxonomy', () => {
     expect(COMMANDS_BY_ID['view.reset'].isEnabled(imported)).toBe(true)
     expect(COMMANDS_BY_ID['display.wireframe'].isEnabled(imported)).toBe(true)
     expect(COMMANDS_BY_ID['display.hidden-line'].isEnabled(imported)).toBe(true)
-    expect(COMMANDS_BY_ID['scene.grid'].isEnabled(imported)).toBe(true)
+    expect(COMMANDS_BY_ID['scene.grid']).toBeUndefined() // V grid closure (Codex1 B3)
   })
 
   it('B1: an empty scene disables geometry commands but keeps grid', () => {
     const empty = ctx()
     expect(COMMANDS_BY_ID['view.fit'].isEnabled(empty)).toBe(false)
     expect(COMMANDS_BY_ID['display.wireframe'].isEnabled(empty)).toBe(false)
-    expect(COMMANDS_BY_ID['scene.grid'].isEnabled(empty)).toBe(true) // ground plane is always useful
+    expect(COMMANDS_BY_ID['scene.grid']).toBeUndefined() // V grid closure: no empty-part grid
   })
 
   it('B1: a canonical-Part scene enables view + display commands', () => {
@@ -103,8 +101,6 @@ describe('command taxonomy', () => {
   it('active state reflects the live mode + grid', () => {
     expect(COMMANDS_BY_ID['display.shading-edges'].isActive!(ctx({ mode: 'shading-edges' }))).toBe(true)
     expect(COMMANDS_BY_ID['display.wireframe'].isActive!(ctx({ mode: 'shading-edges' }))).toBe(false)
-    expect(COMMANDS_BY_ID['scene.grid'].isActive!(ctx({ gridVisible: true }))).toBe(true)
-    expect(COMMANDS_BY_ID['scene.grid'].isActive!(ctx({ gridVisible: false }))).toBe(false)
   })
 
   it('run dispatches to the injected actions (N3 — no captured state)', () => {
@@ -116,8 +112,6 @@ describe('command taxonomy', () => {
     expect(a.reset).toHaveBeenCalledTimes(1)
     COMMANDS_BY_ID['display.wireframe'].run(a, c)
     expect(a.setMode).toHaveBeenCalledWith('wireframe')
-    COMMANDS_BY_ID['scene.grid'].run(a, c)
-    expect(a.toggleGrid).toHaveBeenCalledTimes(1)
   })
 
   it('the operations group is a reserved disabled placeholder (D10 boundary / N6)', () => {
@@ -144,8 +138,7 @@ describe('keyboard shortcuts', () => {
     expect(a2.setMode).toHaveBeenCalled()
 
     const a3 = mkActions()
-    expect(dispatchShortcut('g', ctx(), a3)).toBe(true) // grid works even with no scene
-    expect(a3.toggleGrid).toHaveBeenCalled()
+    expect(dispatchShortcut('g', ctx(), a3)).toBe(false) // V grid closure: g is unbound at empty-part
   })
 
   it('does not fire a disabled command, and ignores unknown chords', () => {

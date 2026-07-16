@@ -231,13 +231,14 @@ export function buildContourFeatureOps(
   depthMm: number,
   plane: PlaneOrientation,
   sketchOpIndex = 0,
+  bulges?: number[],
 ): FeatureOp[] {
   return [
     {
       kind: 'mechanical.add_sketch_feature',
       params: {
         part_number: partNumber,
-        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
+        primitives: [{ type: 'contour', segments: pointsToSegments(points, bulges) }],
         plane: { kind: 'principal', orientation: plane },
       },
     },
@@ -273,6 +274,19 @@ export function buildContourOps(
 
 // ---- The rectangle primitive (arc 20260715-1 R2; Codex2 N1) ---------------
 
+export interface CircleDims {
+  cx_mm: number
+  cy_mm: number
+  radius_mm: number
+}
+
+/** Normalize the two-click circle (center, rim) — null when degenerate. */
+export function normalizeCircle(center: Pt, rim: Pt, epsMm: number = RECT_EPS_MM): CircleDims | null {
+  const r = Math.hypot(rim.x - center.x, rim.y - center.y)
+  if (r <= epsMm) return null
+  return { cx_mm: center.x, cy_mm: center.y, radius_mm: r }
+}
+
 export interface RectDims {
   x_mm: number
   y_mm: number
@@ -301,13 +315,14 @@ export function buildRectangleSketchOps(
   partNumber: string,
   rect: RectDims,
   plane: PlaneOrientation,
+  construction = false,
 ): FeatureOp[] {
   return [
     {
       kind: 'mechanical.add_sketch_feature',
       params: {
         part_number: partNumber,
-        primitives: [{ type: 'rectangle', ...rect }],
+        primitives: [{ type: 'rectangle', ...rect, ...(construction ? { construction: true } : {}) }],
         plane: { kind: 'principal', orientation: plane },
       },
     },
@@ -320,8 +335,9 @@ export function buildCreateWithRectangleOps(
   name: string,
   rect: RectDims,
   plane: PlaneOrientation,
+  construction = false,
 ): FeatureOp[] {
-  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildRectangleSketchOps(partNumber, rect, plane)]
+  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildRectangleSketchOps(partNumber, rect, plane, construction)]
 }
 
 /** The STEPWISE sketch commit (S2 D-S2): the sketch alone becomes Truth —
@@ -331,16 +347,54 @@ export function buildSketchOnlyOps(
   partNumber: string,
   points: Pt[],
   plane: PlaneOrientation,
+  opts?: { bulges?: number[]; construction?: boolean },
 ): FeatureOp[] {
   return [
     {
       kind: 'mechanical.add_sketch_feature',
       params: {
         part_number: partNumber,
-        primitives: [{ type: 'contour', segments: pointsToSegments(points) }],
+        primitives: [{
+          type: 'contour',
+          segments: pointsToSegments(points, opts?.bulges),
+          ...(opts?.construction ? { construction: true } : {}),
+        }],
         plane: { kind: 'principal', orientation: plane },
       },
     },
+  ]
+}
+
+/** SK-C0 D-C2: the stepwise CIRCLE sketch — hole vocabulary beside a
+ *  rectangle, or the OUTER profile standing alone (extrude → a cylinder). */
+export function buildCircleSketchOps(
+  partNumber: string,
+  circle: CircleDims,
+  plane: PlaneOrientation,
+  construction = false,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_sketch_feature',
+      params: {
+        part_number: partNumber,
+        primitives: [{ type: 'circle', ...circle, ...(construction ? { construction: true } : {}) }],
+        plane: { kind: 'principal', orientation: plane },
+      },
+    },
+  ]
+}
+
+export function buildCreateWithCircleOps(
+  partNumber: string,
+  name: string,
+  circle: CircleDims,
+  plane: PlaneOrientation,
+  construction = false,
+): FeatureOp[] {
+  return [
+    { kind: 'create_part', params: { number: partNumber, name } },
+    ...buildCircleSketchOps(partNumber, circle, plane, construction),
   ]
 }
 
@@ -351,8 +405,9 @@ export function buildCreateWithSketchOps(
   name: string,
   points: Pt[],
   plane: PlaneOrientation,
+  opts?: { bulges?: number[]; construction?: boolean },
 ): FeatureOp[] {
-  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildSketchOnlyOps(partNumber, points, plane)]
+  return [{ kind: 'create_part', params: { number: partNumber, name } }, ...buildSketchOnlyOps(partNumber, points, plane, opts)]
 }
 
 /** Revolve an ALREADY-COMMITTED eligible rectangle sketch (R3 entry A): one

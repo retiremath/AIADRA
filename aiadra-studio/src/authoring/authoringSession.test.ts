@@ -61,7 +61,7 @@ describe('authoringSession (S2 D-S4 — ONE discriminated session)', () => {
     const ex = s.getSnapshot()
     expect(ex.mode).toBe('extrude')
     expect(ex.mode === 'extrude' && ex.step).toBe('depth')
-    expect(ex.mode === 'extrude' && ex.source).toEqual({ kind: 'pending', plane: 'zx', points: RING })
+    expect(ex.mode === 'extrude' && ex.source).toEqual({ kind: 'pending', plane: 'zx', points: RING, bulges: [0, 0] })
   })
 
   it('finishChainedSketch refuses an OPEN ring and a NON-chained sketch', () => {

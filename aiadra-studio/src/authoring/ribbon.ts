@@ -35,6 +35,60 @@ export type CommandState =
   | { state: 'state-disabled'; reason: string }
   | { state: 'roadmap-disabled'; reason: string }
 
+// ---- Presentation metadata (arc 20260716-1 V-2, Codex1 B4) ----------------
+// PRESENTATION-ONLY: semantics stay in `derive` — none of this changes what a
+// command does or when it enables. The dense Creo-benchmarked renderer, the
+// addressability invariant test, and the icon map all read THIS data.
+
+/** Every icon key the merged inline icon map must carry (drift is a test). */
+export type IconKey =
+  | 'regenerate' | 'get-data' | 'boolean-ops' | 'split-trim-body' | 'new-body'
+  | 'datum-plane' | 'datum-axis' | 'datum-point' | 'datum-csys' | 'sketch'
+  | 'extrude' | 'revolve' | 'sweep' | 'swept-blend'
+  | 'hole' | 'round' | 'chamfer' | 'shell' | 'draft' | 'rib'
+  | 'pattern' | 'mirror' | 'trim' | 'offset' | 'extend' | 'project'
+  | 'thicken' | 'solidify' | 'merge' | 'intersect' | 'split' | 'remove'
+  | 'unify' | 'boundary-blend' | 'fill' | 'style' | 'freestyle'
+  | 'component-interface' | 'menu-more' | 'overflow'
+  | 'fit' | 'reset' | 'display-style' | 'views' | 'sel-filter' | 'datums'
+
+export type MenuFamilyId = 'editing-more'
+
+/** A cell in a group's dense grid: anchors own a whole column (row 0 only);
+ *  smalls stack up to three per column (rows 0–2). */
+export interface RibbonSlot { column: number; row: number }
+
+/**
+ * B4's typed presentation record. One refinement over the contract sketch:
+ * `slot` and `menu` are EXCLUSIVE alternatives (a menu member renders inside
+ * its family's dropdown, so a grid cell of its own would be dead data) — the
+ * addressability test enforces the XOR.
+ */
+export type RibbonPresentation =
+  | { icon: IconKey; size: 'anchor' | 'small'; slot: RibbonSlot; menu?: undefined }
+  | { icon: IconKey; size: 'small'; slot?: undefined; menu: { family: MenuFamilyId; order: number } }
+
+/** A declared dropdown family: its trigger is a first-class ribbon cell; its
+ *  members are commands whose `presentation.menu.family` names it. The
+ *  trigger ALWAYS opens (mixed/disabled children never collapse it). */
+export interface RibbonMenuFamily {
+  id: MenuFamilyId
+  label: string
+  group: RibbonGroup
+  icon: IconKey
+  size: 'small'
+  slot: RibbonSlot
+}
+
+export const RIBBON_MENU_FAMILIES: RibbonMenuFamily[] = [
+  { id: 'editing-more', label: 'More', group: 'Editing', icon: 'menu-more', size: 'small', slot: { column: 2, row: 0 } },
+]
+
+const P = (icon: IconKey, size: 'anchor' | 'small', column: number, row = 0): RibbonPresentation =>
+  ({ icon, size, slot: { column, row } })
+const M = (icon: IconKey, family: MenuFamilyId, order: number): RibbonPresentation =>
+  ({ icon, size: 'small', menu: { family, order } })
+
 export interface RibbonInputs {
   /** true = the desktop real-engine lane; false = browser dev (mock). */
   realLane: boolean
@@ -57,6 +111,12 @@ export interface RibbonCommand {
   label: string
   group: RibbonGroup
   derive: (i: RibbonInputs) => CommandState
+  /** V-2 dense-renderer placement (presentation-only; see RibbonPresentation). */
+  presentation: RibbonPresentation
+  /** V-3 (Codex1 B1): the TYPED action kind. Absent = 'authoring-session'
+   *  (the default); 'reference-import' opens the user-mediated import picker
+   *  — the ONE semantic exception, named here, no renderer special-casing. */
+  dispatch?: 'reference-import'
 }
 
 const ROADMAP = (reason: string) => (): CommandState => ({ state: 'roadmap-disabled', reason })
@@ -163,48 +223,52 @@ const holeDerive = (i: RibbonInputs): CommandState => {
 
 export const RIBBON_COMMANDS: RibbonCommand[] = [
   // Operations / Get Data / Body — roadmap strands
-  { key: 'regenerate', label: 'Regenerate', group: 'Operations', derive: ROADMAP('arrives with the parametric-edit strand') },
-  { key: 'get-data', label: 'Get Data', group: 'Get Data', derive: ROADMAP('arrives with the import/interchange strand') },
-  { key: 'boolean-ops', label: 'Boolean Operations', group: 'Body', derive: ROADMAP('arrives with the multi-body strand') },
-  { key: 'split-trim-body', label: 'Split/Trim Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand') },
-  { key: 'new-body', label: 'New Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand') },
+  { key: 'regenerate', label: 'Regenerate', group: 'Operations', derive: ROADMAP('arrives with the parametric-edit strand'), presentation: P('regenerate', 'anchor', 0) },
+  // V-3 (Codex1 B1): Get Data FLIPS roadmap-disabled -> working with the
+  // typed 'reference-import' dispatch — reference-only display, no session,
+  // so no authoring gate. The ribbon exists only in the modeling workspace,
+  // which is exactly the B1 availability predicate.
+  { key: 'get-data', label: 'Get Data', group: 'Get Data', derive: () => ({ state: 'working' }), dispatch: 'reference-import', presentation: P('get-data', 'anchor', 0) },
+  { key: 'boolean-ops', label: 'Boolean Operations', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('boolean-ops', 'small', 0, 0) },
+  { key: 'split-trim-body', label: 'Split/Trim Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('split-trim-body', 'small', 0, 1) },
+  { key: 'new-body', label: 'New Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('new-body', 'small', 0, 2) },
   // Datum — EP3 is its own design arc (D-R6); Sketch is live
-  { key: 'datum-plane', label: 'Plane', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc') },
-  { key: 'datum-axis', label: 'Axis', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc') },
-  { key: 'datum-point', label: 'Point', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc') },
-  { key: 'datum-csys', label: 'Coordinate System', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc') },
-  { key: 'sketch', label: 'Sketch', group: 'Datum', derive: sketchDerive },
+  { key: 'datum-plane', label: 'Plane', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-plane', 'small', 1, 0) },
+  { key: 'datum-axis', label: 'Axis', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-axis', 'small', 1, 1) },
+  { key: 'datum-point', label: 'Point', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-point', 'small', 1, 2) },
+  { key: 'datum-csys', label: 'Coordinate System', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-csys', 'small', 2, 0) },
+  { key: 'sketch', label: 'Sketch', group: 'Datum', derive: sketchDerive, presentation: P('sketch', 'anchor', 0) },
   // Shapes
-  { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive },
-  { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive },
-  { key: 'sweep', label: 'Sweep', group: 'Shapes', derive: ROADMAP('arrives with the swept-features strand') },
-  { key: 'swept-blend', label: 'Swept Blend', group: 'Shapes', derive: ROADMAP('arrives with the swept-features strand') },
+  { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
+  { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },
+  { key: 'sweep', label: 'Sweep', group: 'Shapes', derive: ROADMAP('arrives with the swept-features strand'), presentation: P('sweep', 'small', 2, 0) },
+  { key: 'swept-blend', label: 'Swept Blend', group: 'Shapes', derive: ROADMAP('arrives with the swept-features strand'), presentation: P('swept-blend', 'small', 2, 1) },
   // Engineering
-  { key: 'hole', label: 'Hole', group: 'Engineering', derive: holeDerive },
-  { key: 'round', label: 'Round', group: 'Engineering', derive: edgeFeatureDerive('Round') },
-  { key: 'chamfer', label: 'Chamfer', group: 'Engineering', derive: edgeFeatureDerive('Chamfer') },
-  { key: 'shell', label: 'Shell', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand') },
-  { key: 'draft', label: 'Draft', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand') },
-  { key: 'rib', label: 'Rib', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand') },
+  { key: 'hole', label: 'Hole', group: 'Engineering', derive: holeDerive, presentation: P('hole', 'anchor', 0) },
+  { key: 'round', label: 'Round', group: 'Engineering', derive: edgeFeatureDerive('Round'), presentation: P('round', 'small', 1, 0) },
+  { key: 'chamfer', label: 'Chamfer', group: 'Engineering', derive: edgeFeatureDerive('Chamfer'), presentation: P('chamfer', 'small', 1, 1) },
+  { key: 'shell', label: 'Shell', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand'), presentation: P('shell', 'small', 1, 2) },
+  { key: 'draft', label: 'Draft', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand'), presentation: P('draft', 'small', 2, 0) },
+  { key: 'rib', label: 'Rib', group: 'Engineering', derive: ROADMAP('arrives with the engineering-features strand'), presentation: P('rib', 'small', 2, 1) },
   // Pattern / Editing / Surfaces / Model Intent — roadmap strands
-  { key: 'pattern', label: 'Pattern', group: 'Pattern', derive: ROADMAP('arrives with the pattern strand') },
-  { key: 'mirror', label: 'Mirror', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'trim', label: 'Trim', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'offset', label: 'Offset', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'extend', label: 'Extend', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'project', label: 'Project', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'thicken', label: 'Thicken', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'solidify', label: 'Solidify', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'merge', label: 'Merge', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'intersect', label: 'Intersect', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'split', label: 'Split', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'remove', label: 'Remove', group: 'Editing', derive: ROADMAP('arrives with the editing strand') },
-  { key: 'unify', label: 'Unify', group: 'Editing', derive: ROADMAP('arrives with the surfacing strand') },
-  { key: 'boundary-blend', label: 'Boundary Blend', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand') },
-  { key: 'fill', label: 'Fill', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand') },
-  { key: 'style', label: 'Style', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand') },
-  { key: 'freestyle', label: 'Freestyle', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand') },
-  { key: 'component-interface', label: 'Component Interface', group: 'Model Intent', derive: ROADMAP('arrives with the model-intent strand') },
+  { key: 'pattern', label: 'Pattern', group: 'Pattern', derive: ROADMAP('arrives with the pattern strand'), presentation: P('pattern', 'anchor', 0) },
+  { key: 'mirror', label: 'Mirror', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('mirror', 'small', 0, 0) },
+  { key: 'trim', label: 'Trim', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('trim', 'small', 0, 1) },
+  { key: 'offset', label: 'Offset', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('offset', 'small', 0, 2) },
+  { key: 'extend', label: 'Extend', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('extend', 'small', 1, 0) },
+  { key: 'project', label: 'Project', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('project', 'small', 1, 1) },
+  { key: 'thicken', label: 'Thicken', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: P('thicken', 'small', 1, 2) },
+  { key: 'solidify', label: 'Solidify', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('solidify', 'editing-more', 0) },
+  { key: 'merge', label: 'Merge', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('merge', 'editing-more', 1) },
+  { key: 'intersect', label: 'Intersect', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('intersect', 'editing-more', 2) },
+  { key: 'split', label: 'Split', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('split', 'editing-more', 3) },
+  { key: 'remove', label: 'Remove', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('remove', 'editing-more', 4) },
+  { key: 'unify', label: 'Unify', group: 'Editing', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('unify', 'editing-more', 5) },
+  { key: 'boundary-blend', label: 'Boundary Blend', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('boundary-blend', 'small', 0, 0) },
+  { key: 'fill', label: 'Fill', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('fill', 'small', 0, 1) },
+  { key: 'style', label: 'Style', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('style', 'small', 0, 2) },
+  { key: 'freestyle', label: 'Freestyle', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('freestyle', 'small', 1, 0) },
+  { key: 'component-interface', label: 'Component Interface', group: 'Model Intent', derive: ROADMAP('arrives with the model-intent strand'), presentation: P('component-interface', 'small', 0, 0) },
 ]
 
 export const RIBBON_GROUP_ORDER: RibbonGroup[] = [
@@ -216,6 +280,27 @@ export function deriveCommandState(key: string, inputs: RibbonInputs): CommandSt
   const cmd = RIBBON_COMMANDS.find((c) => c.key === key)
   if (!cmd) return { state: 'roadmap-disabled', reason: `unknown command ${key}` }
   return cmd.derive(inputs)
+}
+
+/**
+ * The B4 responsive fold (pure; benchmark width 1600 CSS px, supported
+ * minimum 1200): how many LEADING groups render directly, given each group's
+ * measured width. The rest fold — as a suffix, never a hole — into the `»`
+ * overflow menu, whose trigger width must also fit. Clipping is banned; at
+ * least one group always stays direct. Unmeasured widths (0 — e.g. jsdom or
+ * the first pre-measure render) fold nothing.
+ */
+export function visibleGroupCount(available: number, widths: number[], overflowWidth: number): number {
+  const total = widths.reduce((a, b) => a + b, 0)
+  if (total <= available || total === 0) return widths.length
+  let used = overflowWidth
+  let n = 0
+  for (const w of widths) {
+    if (used + w > available) break
+    used += w
+    n += 1
+  }
+  return Math.max(1, n)
 }
 
 /** Every roadmap tooltip must be non-empty and name a strand (Codex1 N3). */

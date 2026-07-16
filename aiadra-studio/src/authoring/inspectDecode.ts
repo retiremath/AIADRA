@@ -9,6 +9,8 @@
  * never a silently wrong tree.
  */
 import type { Pt } from '../sketch/contour'
+import { tessellateCircle, tessellateSegments, type ContourSegment } from '../sketch/arcGeometry'
+import { classifySketch } from '../sketch/profileClassify'
 import type { PlaneOrientation } from './backend'
 
 /** The ONE engine whose recipes this decoder is authorized to interpret
@@ -39,15 +41,45 @@ export interface RectangleDims {
  *  does not exist. */
 export type SketchProfile =
   | { kind: 'simple_rectangle'; rectangle: RectangleDims }
+  /** SK-C0 D-C2: exactly one NON-construction circle standing alone — the
+   *  cylinder profile (extrude-eligible; Revolve/Hole eligibility unchanged). */
+  | { kind: 'simple_circle'; circle: { cx_mm: number; cy_mm: number; radius_mm: number } }
+  /** SK-C0 D-C3: no non-construction profile at all — a guides-only sketch. */
+  | { kind: 'sketch_only' }
   | { kind: 'other' }
+
+/** A typed sketch entity (SK-C0 B4 — Codex1: no anonymous flattening): the
+ *  stable engine id, exact geometry, and the construction flag survive. */
+/** A contour segment WITH its engine-minted stable id (SK-C0 Codex3 B3:
+ *  the `skp_NNNNsNN` anchors that produce `<segment-id>:face:wall` roles
+ *  survive decode — list addressability, never dropped). */
+export type IdentifiedSegment = ContourSegment & { id: string }
+
+export type SketchEntity =
+  | { id: string; kind: 'rectangle'; construction: boolean; rect: RectangleDims }
+  | { id: string; kind: 'circle'; construction: boolean; circle: { cx_mm: number; cy_mm: number; radius_mm: number } }
+  | { id: string; kind: 'line'; construction: boolean; a: Pt; b: Pt }
+  | { id: string; kind: 'contour'; construction: boolean; segments: IdentifiedSegment[] }
+
+/** A render wire derived from ONE entity (arcs/circles tessellated,
+ *  preview-only): dashed when construction. */
+export interface SketchWire {
+  points: Pt[]
+  construction: boolean
+  closed: boolean
+}
 
 export interface InspectedSketch {
   kind: 'sketch'
   id: string
   plane: PlaneOrientation
   /** The wire polyline(s) in plane (u,v) coords — one closed ring per
-   *  primitive. Contours use their segment chain; rectangles their 4 corners. */
+   *  NON-construction primitive (compat view; arcs tessellated). */
   rings: Pt[][]
+  /** SK-C0: every primitive as a typed entity (ids + exact geometry + flag). */
+  entities: SketchEntity[]
+  /** SK-C0: per-entity render wires incl. DASHED construction guides. */
+  wires: SketchWire[]
   profile: SketchProfile
 }
 
@@ -140,39 +172,116 @@ function decodePlane(payload: Record<string, unknown>): PlaneOrientation {
   return ori
 }
 
-function decodeRings(payload: Record<string, unknown>, featId: string): Pt[][] {
+function constructionFlag(prim: Record<string, unknown>, featId: string): boolean {
+  const c = prim.construction
+  if (c === undefined) return false
+  if (typeof c !== 'boolean') fail(`sketch ${featId} construction flag must be boolean`)
+  return c
+}
+
+// Codex5 B3: the ENGINE's minted identity grammar — decode enforces it, not
+// mere non-emptiness. List-addressability needs unique, grammar-valid anchors.
+const PRIM_ID_GRAMMAR = /^skp_[0-9]{4}$/
+
+function decodeEntities(payload: Record<string, unknown>, featId: string): SketchEntity[] {
   const prims = payload.primitives
   if (!Array.isArray(prims)) fail(`sketch ${featId} has no primitives array`)
-  const rings: Pt[][] = []
+  const entities: SketchEntity[] = []
+  const seenPrimIds = new Set<string>()
   for (const prim of prims as Array<Record<string, unknown>>) {
+    // SK-C0 Codex3 B3: every 0.1.x primitive since 0.1.1 carries an
+    // engine-minted skp_ id — a missing id is a corrupt/foreign record and
+    // fails LOUD. '' is never a stable-id placeholder. Codex5 B3 tightens
+    // this to the engine grammar + uniqueness.
+    if (typeof prim.id !== 'string' || prim.id.length === 0) {
+      fail(`sketch ${featId} primitive lacks its engine-minted skp_ id`)
+    }
+    const id = prim.id as string
+    if (!PRIM_ID_GRAMMAR.test(id)) {
+      fail(`sketch ${featId} primitive id ${JSON.stringify(id)} violates the engine skp_NNNN grammar`)
+    }
+    if (seenPrimIds.has(id)) fail(`sketch ${featId} duplicate primitive id ${id}`)
+    seenPrimIds.add(id)
+    const construction = constructionFlag(prim, featId)
     if (prim.type === 'rectangle') {
       const x = num(prim.x_mm)
       const y = num(prim.y_mm)
       const w = num(prim.width_mm)
       const h = num(prim.height_mm)
       if (x === null || y === null || w === null || h === null) fail(`sketch ${featId} rectangle malformed`)
-      rings.push([
-        { x, y },
-        { x: x + w, y },
-        { x: x + w, y: y + h },
-        { x, y: y + h },
-      ])
+      entities.push({ id, kind: 'rectangle', construction, rect: { x_mm: x, y_mm: y, width_mm: w, height_mm: h } })
+    } else if (prim.type === 'circle') {
+      const cx = num(prim.cx_mm)
+      const cy = num(prim.cy_mm)
+      const r = num(prim.radius_mm)
+      if (cx === null || cy === null || r === null) fail(`sketch ${featId} circle malformed`)
+      entities.push({ id, kind: 'circle', construction, circle: { cx_mm: cx, cy_mm: cy, radius_mm: r } })
+    } else if (prim.type === 'line') {
+      const x1 = num(prim.x1_mm)
+      const y1 = num(prim.y1_mm)
+      const x2 = num(prim.x2_mm)
+      const y2 = num(prim.y2_mm)
+      if (x1 === null || y1 === null || x2 === null || y2 === null) fail(`sketch ${featId} line malformed`)
+      entities.push({ id, kind: 'line', construction, a: { x: x1, y: y1 }, b: { x: x2, y: y2 } })
     } else if (prim.type === 'contour') {
       const segs = prim.segments
       if (!Array.isArray(segs) || segs.length === 0) fail(`sketch ${featId} contour has no segments`)
-      const ring: Pt[] = []
+      const out: IdentifiedSegment[] = []
+      // Codex5 B3: a segment id must be OWNED by its contour — the engine
+      // grammar is `<owning skp id>sNN` — and unique within it.
+      const segIdGrammar = new RegExp(`^${id}s[0-9]{2}$`)
+      const seenSegIds = new Set<string>()
       for (const seg of segs as Array<Record<string, unknown>>) {
-        const x = num(seg.x1_mm)
-        const y = num(seg.y1_mm)
-        if (x === null || y === null) fail(`sketch ${featId} contour segment malformed`)
-        ring.push({ x, y })
+        if (typeof seg.id !== 'string' || seg.id.length === 0) {
+          fail(`sketch ${featId} contour segment lacks its engine-minted id`)
+        }
+        const sid = seg.id as string
+        if (!segIdGrammar.test(sid)) {
+          fail(`sketch ${featId} segment id ${JSON.stringify(sid)} is not owned by ${id} (engine grammar ${id}sNN)`)
+        }
+        if (seenSegIds.has(sid)) fail(`sketch ${featId} duplicate segment id ${sid}`)
+        seenSegIds.add(sid)
+        // Codex5 B2: construction is TOP-LEVEL and atomic for a contour — a
+        // nested segment carrying its own key is an engine Class-1 reject and
+        // fails loud here too (never silently erased before classification).
+        if ('construction' in seg) {
+          fail(`sketch ${featId} contour segment ${sid} carries its own construction key — construction is top-level and atomic`)
+        }
+        const x1 = num(seg.x1_mm)
+        const y1 = num(seg.y1_mm)
+        const x2 = num(seg.x2_mm)
+        const y2 = num(seg.y2_mm)
+        if (x1 === null || y1 === null || x2 === null || y2 === null) fail(`sketch ${featId} contour segment malformed`)
+        if (seg.kind === 'arc') {
+          const b = num(seg.bulge)
+          if (b === null) fail(`sketch ${featId} arc segment missing bulge`)
+          out.push({ id: sid, kind: 'arc', x1_mm: x1, y1_mm: y1, x2_mm: x2, y2_mm: y2, bulge: b })
+        } else if (seg.kind === 'line') {
+          out.push({ id: sid, kind: 'line', x1_mm: x1, y1_mm: y1, x2_mm: x2, y2_mm: y2 })
+        } else {
+          fail(`sketch ${featId} segment kind ${JSON.stringify(seg.kind)} not understood`)
+        }
       }
-      rings.push(ring)
+      entities.push({ id, kind: 'contour', construction, segments: out })
     } else {
       fail(`sketch ${featId} primitive type ${JSON.stringify(prim.type)} not understood`)
     }
   }
-  return rings
+  return entities
+}
+
+function entityWire(e: SketchEntity): SketchWire {
+  if (e.kind === 'rectangle') {
+    const { x_mm: x, y_mm: y, width_mm: w, height_mm: h } = e.rect
+    return { points: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], construction: e.construction, closed: true }
+  }
+  if (e.kind === 'circle') {
+    return { points: tessellateCircle(e.circle.cx_mm, e.circle.cy_mm, e.circle.radius_mm), construction: e.construction, closed: true }
+  }
+  if (e.kind === 'line') {
+    return { points: [e.a, e.b], construction: e.construction, closed: false }
+  }
+  return { points: tessellateSegments(e.segments), construction: e.construction, closed: true }
 }
 
 function decodeParameters(raw: Record<string, unknown>, featureType: string): EditableParameter[] {
@@ -189,18 +298,20 @@ function decodeParameters(raw: Record<string, unknown>, featureType: string): Ed
   return out
 }
 
-/** P1: classify the WHOLE primitive list — exactly one rectangle, no extras. */
-function decodeProfile(payload: Record<string, unknown>): SketchProfile {
-  const prims = payload.primitives
-  if (!Array.isArray(prims) || prims.length !== 1) return { kind: 'other' }
-  const prim = prims[0] as Record<string, unknown>
-  if (prim.type !== 'rectangle') return { kind: 'other' }
-  const x = num(prim.x_mm)
-  const y = num(prim.y_mm)
-  const w = num(prim.width_mm)
-  const h = num(prim.height_mm)
-  if (x === null || y === null || w === null || h === null) return { kind: 'other' }
-  return { kind: 'simple_rectangle', rectangle: { x_mm: x, y_mm: y, width_mm: w, height_mm: h } }
+/** P1 → SK-C0 Codex3 B2: the profile derives from THE classifier mirror —
+ *  one whole-list interpretation shared with the engine's matrix. */
+function decodeProfile(entities: SketchEntity[]): SketchProfile {
+  const verdict = classifySketch(entities.map((e) => ({
+    type: e.kind, construction: e.construction,
+  })))
+  if (!verdict.ok) return { kind: 'other' }
+  const cls = verdict.classification
+  if (cls.outerKind === 'none') return { kind: 'sketch_only' }
+  if (cls.holeIndex !== null) return { kind: 'other' } // rectangle + hole
+  const outer = entities[cls.outerIndex]
+  if (outer.kind === 'rectangle') return { kind: 'simple_rectangle', rectangle: outer.rect }
+  if (outer.kind === 'circle') return { kind: 'simple_circle', circle: outer.circle }
+  return { kind: 'other' }
 }
 
 /**
@@ -267,8 +378,16 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
         kind: 'sketch',
         id,
         plane: decodePlane(payload),
-        rings: decodeRings(payload, id),
-        profile: decodeProfile(payload),
+        ...(() => {
+          const entities = decodeEntities(payload, id)
+          const wires = entities.map(entityWire)
+          return {
+            entities,
+            wires,
+            rings: wires.filter((w) => !w.construction && w.closed).map((w) => w.points),
+            profile: decodeProfile(entities),
+          }
+        })(),
       })
     } else {
       // The CANONICAL dependency edge is depends_on_feature_ids (the payload's

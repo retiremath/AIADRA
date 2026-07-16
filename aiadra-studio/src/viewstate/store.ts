@@ -19,7 +19,6 @@ import type { CommandContext } from '../commands/types'
 
 export interface ViewState {
   mode: DisplayMode
-  gridVisible: boolean
   /** The datum overlay (EP1): the origin triad + three principal planes. */
   datumsVisible: boolean
   hasCanonicalPart: boolean
@@ -30,7 +29,6 @@ export interface ViewStateStore {
   getSnapshot(): ViewState
   subscribe(fn: () => void): () => void
   setMode(mode: DisplayMode): void
-  setGridVisible(v: boolean): void
   setDatumsVisible(v: boolean): void
   setSceneFacts(facts: Partial<Pick<ViewState, 'hasCanonicalPart' | 'hasReferenceGeometry'>>): void
 }
@@ -59,7 +57,6 @@ export function createViewStateStore(initial: ViewState): ViewStateStore {
       return () => listeners.delete(fn)
     },
     setMode: (mode) => update({ mode }),
-    setGridVisible: (gridVisible) => update({ gridVisible }),
     setDatumsVisible: (datumsVisible) => update({ datumsVisible }),
     setSceneFacts: (facts) => update(facts),
   }
@@ -83,7 +80,6 @@ export function toCommandContext(
     hasReferenceGeometry: s.hasReferenceGeometry,
     hasRenderableScene: s.hasCanonicalPart || s.hasReferenceGeometry,
     mode: s.mode,
-    gridVisible: s.gridVisible,
     datumsVisible: s.datumsVisible,
     filter: sel.filter,
     hasSelection: sel.hasSelection,

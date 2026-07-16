@@ -62,16 +62,24 @@ export function createSketchWireOverlay(color = 0xd9a441): SketchWireOverlay {
     setSketches(sketches) {
       clear()
       for (const sk of sketches) {
-        for (const ring of sk.rings) {
-          if (ring.length < 2) continue
-          const pts = ring.map((p) => toWorld(sk.plane, p.x, p.y))
-          pts.push(pts[0].clone()) // closed
+        // SK-C0: per-entity wires — construction guides render DASHED
+        // (LineDashedMaterial + computeLineDistances, unit-asserted).
+        const wires = sk.wires?.length
+          ? sk.wires
+          : sk.rings.map((points) => ({ points, construction: false, closed: true }))
+        for (const wire of wires) {
+          if (wire.points.length < 2) continue
+          const pts = wire.points.map((p) => toWorld(sk.plane, p.x, p.y))
+          if (wire.closed) pts.push(pts[0].clone())
           const geom = new THREE.BufferGeometry().setFromPoints(pts)
-          const mat = new THREE.LineBasicMaterial({ color, depthWrite: false })
+          const mat = wire.construction
+            ? new THREE.LineDashedMaterial({ color, depthWrite: false, dashSize: 3, gapSize: 2 })
+            : new THREE.LineBasicMaterial({ color, depthWrite: false })
           const line = new THREE.Line(geom, mat)
+          if (wire.construction) line.computeLineDistances()
           line.renderOrder = 3 // above the part edges, like a Creo sketch curve
           line.name = `${SKETCH_WIRE_PREFIX}${sk.id}`
-          line.userData = { kind: 'sketch-wire', sketchFeatureId: sk.id, plane: sk.plane }
+          line.userData = { kind: 'sketch-wire', sketchFeatureId: sk.id, plane: sk.plane, construction: wire.construction }
           group.add(line)
           disposables.push(geom, mat)
         }

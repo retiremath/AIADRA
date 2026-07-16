@@ -29,7 +29,6 @@ export interface CommandContext {
   hasReferenceGeometry: boolean
   hasRenderableScene: boolean // canonical OR reference
   mode: DisplayMode
-  gridVisible: boolean
   /** The datum overlay (arc 20260714-2 EP1). */
   datumsVisible: boolean
   /** Selection filter + selection presence (arc 20260625-1 / 6c). */
@@ -42,7 +41,6 @@ export interface CommandActions {
   fit(): void
   reset(): void
   setMode(mode: DisplayMode): void
-  toggleGrid(): void
   toggleDatums(): void
   /** Orient the main camera to a standard view (arc 20260625-1 / 6c). */
   standardView(id: StandardViewId): void
