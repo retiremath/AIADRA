@@ -82,4 +82,13 @@ describe('DropdownMenu — the shared contract', () => {
     fireEvent.click(trigger)
     expect(screen.getByText(/Charlie/).className).toContain('current')
   })
+
+  it('POINTER activation restores trigger focus, exactly like Enter (Codex2 B1)', () => {
+    const { onSelect, trigger } = mount()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByText(/Alpha/))
+    expect(onSelect).toHaveBeenCalledWith('a')
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
 })

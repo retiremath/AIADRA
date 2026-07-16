@@ -31,7 +31,7 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     expect(inventory).toEqual([
       'Operations:regenerate:Regenerate:anchor@c0r0',
       'Get Data:get-data:Get Data:anchor@c0r0',
-      'Body:boolean-ops:Boolean Operations:small@c0r0', 'Body:split-trim-body:Split/Trim Body:small@c0r1', 'Body:new-body:New Body:small@c0r2',
+      'Body:boolean-ops:Boolean Operations:menu(body-ops#0)', 'Body:split-trim-body:Split/Trim Body:menu(body-ops#1)', 'Body:new-body:New Body:menu(body-ops#2)',
       'Datum:datum-plane:Plane:small@c1r0', 'Datum:datum-axis:Axis:small@c1r1', 'Datum:datum-point:Point:small@c1r2',
       'Datum:datum-csys:Coordinate System:small@c2r0', 'Datum:sketch:Sketch:anchor@c0r0',
       'Shapes:extrude:Extrude:anchor@c0r0', 'Shapes:revolve:Revolve:anchor@c1r0', 'Shapes:sweep:Sweep:small@c2r0', 'Shapes:swept-blend:Swept Blend:small@c2r1',
@@ -42,8 +42,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
       'Editing:project:Project:small@c1r1', 'Editing:thicken:Thicken:small@c1r2', 'Editing:solidify:Solidify:menu(editing-more#0)',
       'Editing:merge:Merge:menu(editing-more#1)', 'Editing:intersect:Intersect:menu(editing-more#2)', 'Editing:split:Split:menu(editing-more#3)',
       'Editing:remove:Remove:menu(editing-more#4)', 'Editing:unify:Unify:menu(editing-more#5)',
-      'Surfaces:boundary-blend:Boundary Blend:small@c0r0', 'Surfaces:fill:Fill:small@c0r1', 'Surfaces:style:Style:small@c0r2', 'Surfaces:freestyle:Freestyle:small@c1r0',
-      'Model Intent:component-interface:Component Interface:small@c0r0',
+      'Surfaces:boundary-blend:Boundary Blend:menu(surfaces-all#0)', 'Surfaces:fill:Fill:menu(surfaces-all#1)', 'Surfaces:style:Style:menu(surfaces-all#2)', 'Surfaces:freestyle:Freestyle:menu(surfaces-all#3)',
+      'Model Intent:component-interface:Component Interface:menu(model-intent-all#0)',
     ])
     expect(new Set(RIBBON_COMMANDS.map((c) => c.key)).size).toBe(RIBBON_COMMANDS.length) // no duplicates
     expect(roadmapTooltipGaps()).toEqual([])

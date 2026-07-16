@@ -1,10 +1,13 @@
 /**
- * The File menu (arc 20260714-1; D-H3). A real dropdown in the topbar, present
- * in BOTH app states. Honest by the slice-A discipline: anything unbuilt is
- * visibly disabled with a tooltip — per Codex6, "Check In" stays disabled until
- * it performs the actual git-backed transition (ADR/0040 D7 optimistic PDM).
+ * The File menu (arc 20260714-1 D-H3 → arc 20260716-1 Codex2 B1) — now built
+ * ON the shared `DropdownMenu` primitive, so File carries the ONE pinned menu
+ * interaction contract (aria-haspopup/expanded, roving Arrow/Home/End focus
+ * skipping disabled, Enter/Space + pointer activation with trigger-focus
+ * restoration, Escape/outside-click) instead of a second bespoke menu.
+ * Honest by the slice-A discipline: anything unbuilt is visibly disabled with
+ * its reason as the tooltip.
  */
-import { useEffect, useRef, useState } from 'react'
+import { DropdownMenu, type MenuItem } from '../ui/DropdownMenu'
 
 export interface FileMenuItem {
   label: string
@@ -16,58 +19,21 @@ export interface FileMenuItem {
 }
 
 export function FileMenu({ items }: { items: FileMenuItem[] }) {
-  const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-
-  // Close on outside click / Escape.
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('pointerdown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('pointerdown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
+  const menuItems: MenuItem[] = items.map((it) => ({
+    key: it.label,
+    label: it.label,
+    disabledReason: it.enabled ? null : (it.title ?? 'unavailable'),
+    title: it.enabled ? it.title : undefined,
+    sepBefore: it.sep,
+  }))
   return (
-    <div className="file-menu" ref={rootRef}>
-      <button
-        type="button"
-        className={`fm-btn ${open ? 'on' : ''}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        File
-      </button>
-      {open && (
-        <div className="fm-pop" role="menu">
-          {items.map((it) => (
-            <button
-              key={it.label}
-              type="button"
-              role="menuitem"
-              className={`fm-item ${it.sep ? 'sep' : ''}`}
-              disabled={!it.enabled}
-              title={it.title}
-              onClick={() => {
-                if (!it.enabled) return
-                setOpen(false)
-                it.onClick?.()
-              }}
-            >
-              {it.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <DropdownMenu
+      label="File"
+      className="file-menu"
+      items={menuItems}
+      onSelect={(key) => items.find((it) => it.label === key)?.onClick?.()}
+    >
+      File
+    </DropdownMenu>
   )
 }

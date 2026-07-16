@@ -844,6 +844,11 @@ function Workbench({
       setShellNote(reason)
       return
     }
+    // Codex2 B2: references are MODELING-SCOPED — clear every import (ready
+    // AND in-flight, tombstoned through the session) BEFORE the viewport
+    // tears down, so a row can never say ready against geometry no viewport
+    // owns, and a late parse completion lands on a tombstone.
+    referenceImport.clearAll()
     setAppSession('home')
   }
 
@@ -997,7 +1002,7 @@ function Workbench({
   useCandidatePreview({ store: operationStore, viewportApi, ready, restoreBaseDisplay: restoreBase })
 
   // Command actions (Codex1 N3) — injected into the taxonomy's `run`, never
-  // captured by descriptors. Mode/grid flow through the store (so toolbar, menu,
+  // captured by descriptors. The display mode flows through the store (so toolbar,
   // and keyboard agree); fit/reset are imperative one-shots on the viewport API.
   const actions: CommandActions = useMemo(
     () => ({
@@ -1321,7 +1326,7 @@ export default function App() {
   if (!viewStoreRef.current) {
     // Live view-state store (6b). Seeded from built-in defaults now; re-seeded
     // from the hydrated registry in the boot effect before `ready` flips, so the
-    // persisted startup mode/grid (6a N3) apply on first viewport mount.
+    // the persisted startup mode (6a N3) applies on first viewport mount.
     viewStoreRef.current = createViewStateStore({
       mode: registry.get('defaultDisplayMode') as DisplayMode,
       datumsVisible: true, // the empty-part scaffold shows by default (EP1)
@@ -1358,7 +1363,7 @@ export default function App() {
           }
         }
         // Re-seed the view-state store from the (now hydrated) registry so the
-        // persisted startup mode/grid apply on the first viewport mount.
+        // the persisted startup mode applies on the first viewport mount.
         viewStore.setMode(registry.get('defaultDisplayMode') as DisplayMode)
         setReady(true)
       })

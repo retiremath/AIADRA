@@ -6,7 +6,6 @@
  * Enablement (Codex1 B1): view + display-mode commands gate on
  * `hasRenderableScene` (canonical OR imported reference geometry), so the
  * milestone-1b imported-only inspection lane keeps fit/reset + mode switching.
- * Grid is always available (the ground plane is useful even with no geometry).
  * The `operations` group is a reserved disabled placeholder only — no
  * model-changing command leaks into the display shell (Codex1 N6 / D10 boundary).
  */
@@ -57,8 +56,8 @@ export const COMMANDS: Command[] = [
   // this entry. A future sketch mode mints its OWN mode-scoped command.
   // The datum overlay (arc 20260714-2 EP1) — the empty-part scaffold's
   // visibility toggle (origin triad + the three principal planes). Always
-  // available, like the grid (datums are useful with no geometry — that IS
-  // the empty-part paradigm).
+  // available (datums are useful with no geometry — that IS the empty-part
+  // paradigm).
   { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'Datum planes', shortLabel: 'Datums', iconKey: 'datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
   // Selection filters + clear (arc 20260625-1 / 6c). Selection is canonical-only,
   // so these gate on `hasCanonicalPart`. Vertex selection is deferred (no vertex

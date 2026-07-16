@@ -52,7 +52,7 @@ export type IconKey =
   | 'component-interface' | 'menu-more' | 'overflow'
   | 'fit' | 'reset' | 'display-style' | 'views' | 'sel-filter' | 'datums'
 
-export type MenuFamilyId = 'editing-more'
+export type MenuFamilyId = 'body-ops' | 'editing-more' | 'surfaces-all' | 'model-intent-all'
 
 /** A cell in a group's dense grid: anchors own a whole column (row 0 only);
  *  smalls stack up to three per column (rows 0–2). */
@@ -81,7 +81,14 @@ export interface RibbonMenuFamily {
 }
 
 export const RIBBON_MENU_FAMILIES: RibbonMenuFamily[] = [
+  // Codex2 B4 (measured): the 1600 benchmark width must render ALL TEN groups
+  // direct — the flat Body/Surfaces/Model Intent columns blew that budget, so
+  // their commands live in declared families (the Creo pattern: dropdown
+  // clusters), each child keeping its own tri-state + reason.
+  { id: 'body-ops', label: 'Body Ops', group: 'Body', icon: 'boolean-ops', size: 'small', slot: { column: 0, row: 0 } },
   { id: 'editing-more', label: 'More', group: 'Editing', icon: 'menu-more', size: 'small', slot: { column: 2, row: 0 } },
+  { id: 'surfaces-all', label: 'Surface', group: 'Surfaces', icon: 'boundary-blend', size: 'small', slot: { column: 0, row: 0 } },
+  { id: 'model-intent-all', label: 'Intent', group: 'Model Intent', icon: 'component-interface', size: 'small', slot: { column: 0, row: 0 } },
 ]
 
 const P = (icon: IconKey, size: 'anchor' | 'small', column: number, row = 0): RibbonPresentation =>
@@ -229,9 +236,9 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // so no authoring gate. The ribbon exists only in the modeling workspace,
   // which is exactly the B1 availability predicate.
   { key: 'get-data', label: 'Get Data', group: 'Get Data', derive: () => ({ state: 'working' }), dispatch: 'reference-import', presentation: P('get-data', 'anchor', 0) },
-  { key: 'boolean-ops', label: 'Boolean Operations', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('boolean-ops', 'small', 0, 0) },
-  { key: 'split-trim-body', label: 'Split/Trim Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('split-trim-body', 'small', 0, 1) },
-  { key: 'new-body', label: 'New Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: P('new-body', 'small', 0, 2) },
+  { key: 'boolean-ops', label: 'Boolean Operations', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: M('boolean-ops', 'body-ops', 0) },
+  { key: 'split-trim-body', label: 'Split/Trim Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: M('split-trim-body', 'body-ops', 1) },
+  { key: 'new-body', label: 'New Body', group: 'Body', derive: ROADMAP('arrives with the multi-body strand'), presentation: M('new-body', 'body-ops', 2) },
   // Datum — EP3 is its own design arc (D-R6); Sketch is live
   { key: 'datum-plane', label: 'Plane', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-plane', 'small', 1, 0) },
   { key: 'datum-axis', label: 'Axis', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-axis', 'small', 1, 1) },
@@ -264,11 +271,11 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   { key: 'split', label: 'Split', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('split', 'editing-more', 3) },
   { key: 'remove', label: 'Remove', group: 'Editing', derive: ROADMAP('arrives with the editing strand'), presentation: M('remove', 'editing-more', 4) },
   { key: 'unify', label: 'Unify', group: 'Editing', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('unify', 'editing-more', 5) },
-  { key: 'boundary-blend', label: 'Boundary Blend', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('boundary-blend', 'small', 0, 0) },
-  { key: 'fill', label: 'Fill', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('fill', 'small', 0, 1) },
-  { key: 'style', label: 'Style', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('style', 'small', 0, 2) },
-  { key: 'freestyle', label: 'Freestyle', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: P('freestyle', 'small', 1, 0) },
-  { key: 'component-interface', label: 'Component Interface', group: 'Model Intent', derive: ROADMAP('arrives with the model-intent strand'), presentation: P('component-interface', 'small', 0, 0) },
+  { key: 'boundary-blend', label: 'Boundary Blend', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('boundary-blend', 'surfaces-all', 0) },
+  { key: 'fill', label: 'Fill', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('fill', 'surfaces-all', 1) },
+  { key: 'style', label: 'Style', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('style', 'surfaces-all', 2) },
+  { key: 'freestyle', label: 'Freestyle', group: 'Surfaces', derive: ROADMAP('arrives with the surfacing strand'), presentation: M('freestyle', 'surfaces-all', 3) },
+  { key: 'component-interface', label: 'Component Interface', group: 'Model Intent', derive: ROADMAP('arrives with the model-intent strand'), presentation: M('component-interface', 'model-intent-all', 0) },
 ]
 
 export const RIBBON_GROUP_ORDER: RibbonGroup[] = [

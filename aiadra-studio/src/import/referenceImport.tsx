@@ -33,16 +33,29 @@ export interface ReferenceImport {
   openPicker(): void
   items: ImportItem[]
   remove(id: string): void
+  /** Codex2 B2 — the ONE lifecycle policy: references are MODELING-SCOPED.
+   *  Called as modeling closes (before viewport teardown): every item —
+   *  ready AND in-flight — is removed through the session (tombstoning
+   *  in-flight parses so a late completion can never report ready against a
+   *  viewport that no longer owns its geometry). */
+  clearAll(): void
   /** Render ONCE inside the modeling view (the hidden file input). */
   inputElement: ReactElement
 }
 
-export function useReferenceImport(api: MutableRefObject<ViewportApi | null>): ReferenceImport {
+export function useReferenceImport(
+  api: MutableRefObject<ViewportApi | null>,
+  /** TEST SEAM: the importer factory (production = the worker importer). */
+  makeImporter: () => Importer = () => createImporter({ workerFactory: spawnImportWorker }),
+): ReferenceImport {
   const inputRef = useRef<HTMLInputElement>(null)
   const importerRef = useRef<Importer | null>(null)
   const sessionRef = useRef<ImportSession | null>(null)
   const seq = useRef(0)
   const [items, setItems] = useState<ImportItem[]>([])
+  // items mirrored for clearAll (a ref so the File-menu closure never goes stale)
+  const itemsRef = useRef<ImportItem[]>([])
+  itemsRef.current = items
 
   useEffect(() => () => importerRef.current?.dispose(), [])
 
@@ -77,7 +90,7 @@ export function useReferenceImport(api: MutableRefObject<ViewportApi | null>): R
     session().begin(id)
     setItems((xs) => [...xs, { id, name: file.name, status: 'loading' }])
     try {
-      if (!importerRef.current) importerRef.current = createImporter({ workerFactory: spawnImportWorker })
+      if (!importerRef.current) importerRef.current = makeImporter()
       const meshes = await importerRef.current.import(file)
       if (session().complete(id, meshes)) {
         patch(id, { status: 'ready', detail: `${triangleCount(meshes).toLocaleString()} triangles` })
@@ -94,10 +107,16 @@ export function useReferenceImport(api: MutableRefObject<ViewportApi | null>): R
     setItems((xs) => xs.filter((it) => it.id !== id))
   }
 
+  const clearAll = () => {
+    for (const it of itemsRef.current) session().remove(it.id)
+    setItems([])
+  }
+
   return {
     openPicker: () => inputRef.current?.click(),
     items,
     remove,
+    clearAll,
     inputElement: (
       <input
         ref={inputRef}

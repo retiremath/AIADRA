@@ -5,12 +5,12 @@
  * gives every consumer the same value with no ad-hoc subscription drift.
  *
  * Flow is bidirectional but unambiguous: the UI surfaces write `mode` /
- * `gridVisible`; the viewport subscribes and applies them imperatively. The
+ * the display mode; the viewport subscribes and applies them imperatively. The
  * viewport writes the scene facts (`hasCanonicalPart` / `hasReferenceGeometry`)
  * as parts load and imports come and go; the command predicates read them.
  *
  * Transient UI state — NOT persisted (the 6a registry's `defaultDisplayMode` /
- * `gridVisibleDefault` remain startup defaults only; live toggles do not write
+ * settings remain startup defaults only; live toggles do not write
  * settings — Codex 6a N3).
  */
 import { useSyncExternalStore } from 'react'

@@ -18,6 +18,10 @@ export interface MenuItem {
   disabledReason?: string | null
   /** Marks the currently-active option (display modes, named views). */
   current?: boolean
+  /** Optional tooltip for an ENABLED item (disabled items show their reason). */
+  title?: string
+  /** Draw a separator line above this item (File-menu groups; Codex2 B1). */
+  sepBefore?: boolean
 }
 
 export function DropdownMenu({
@@ -132,10 +136,13 @@ export function DropdownMenu({
               role="menuitem"
               tabIndex={i === focusIdx ? 0 : -1}
               aria-disabled={it.disabledReason ? true : undefined}
-              className={`dd-item${it.disabledReason ? ' disabled' : ''}${it.current ? ' current' : ''}`}
-              title={it.disabledReason ?? undefined}
+              className={`dd-item${it.disabledReason ? ' disabled' : ''}${it.current ? ' current' : ''}${it.sepBefore ? ' sep' : ''}`}
+              title={it.disabledReason ?? it.title ?? undefined}
               onClick={() => {
-                if (!it.disabledReason) { onSelect(it.key); close(false) }
+                // Codex2 B1: pointer activation restores trigger focus exactly
+                // like Enter/Space — the activated item unmounts, so without
+                // this, focus falls to <body>. Outside-click stays non-stealing.
+                if (!it.disabledReason) { onSelect(it.key); close() }
               }}
             >
               {it.current ? '✓ ' : ''}{it.label}

@@ -41,10 +41,40 @@ describe('THE light default — one palette authority (B2)', () => {
     expect(roots).toHaveLength(1)
   })
 
-  it('disabled styling never rides opacity over a readable token (the trap)', () => {
-    // explicit tokens exist; no rule may combine var(--text) with opacity<1
+  it('disabled styling never rides opacity over a readable token (the trap — Codex2 B3: MECHANICAL)', () => {
+    // The explicit tokens exist…
     expect(CHROME['--text-disabled']).toBeDefined()
     expect(CHROME['--text-roadmap']).toBeDefined()
+    // …and the STYLESHEET ITSELF is inspected, not just the token pairs: the
+    // whole chrome bans the `opacity` property outright. Alpha-compositing a
+    // readable color is exactly how a passing token matrix ships a failing
+    // rendered contrast (Codex2 measured 2.2–2.5:1 on three such rules).
+    // A future DECORATIVE opacity must be whitelisted here, with its rule
+    // named, and must never apply to text or icons.
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, '') // strip prose comments
+    expect(rules).not.toMatch(/opacity\s*:/)
+  })
+
+  it('every disabled-state rule that sets a text color uses an explicit full-opacity token (Codex2 B3)', () => {
+    const rules = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    // every rule block whose selector is disabled-ish and which sets `color:`
+    const re = /([^{}]+)\{([^}]*)\}/g
+    let m: RegExpExecArray | null
+    let inspected = 0
+    while ((m = re.exec(rules)) !== null) {
+      // `:not(:disabled)` is an ENABLED state — strip :not() before testing
+      const selector = m[1].replace(/:not\([^)]*\)/g, '')
+      if (!/(?::disabled|\.disabled|\.off\b|\.rb-roadmap)/.test(selector)) continue
+      const body = m[2]
+      const color = /(?:^|[;\s])color\s*:\s*([^;]+);?/.exec(body)?.[1]?.trim()
+      if (!color) continue
+      inspected += 1
+      expect(
+        ['var(--text-disabled)', 'var(--text-roadmap)', 'var(--muted)', 'var(--warn)'].includes(color),
+        `${m[1].trim()} sets color ${color} — not an approved full-opacity token`,
+      ).toBe(true)
+    }
+    expect(inspected).toBeGreaterThanOrEqual(5) // the sweep actually inspected the surface
   })
 })
 

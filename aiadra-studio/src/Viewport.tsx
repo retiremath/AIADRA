@@ -45,7 +45,7 @@ import {
 import { commandsInGroup } from './commands/registry'
 import type { Command, CommandActions } from './commands/types'
 
-/** Imperative viewport API the App drives. Mode + grid are NOT here anymore —
+/** Imperative viewport API the App drives. The display mode is NOT here —
  * they flow through the shared view-state store (arc 20260619-2 / 6b). */
 export type ViewportApi = {
   fit: () => void
@@ -76,9 +76,9 @@ export type ViewportApi = {
 
 /**
  * AIADRA Studio viewport (arc 20260610-1 canonical lane live; 20260619-1 / 6a
- * theme-driven; 20260619-2 / 6b store-driven mode+grid).
+ * theme-driven; 20260619-2 / 6b store-driven mode).
  *
- * Live display state (mode, grid) lives in the shared `viewStore` (Codex1 N1):
+ * Live display state (the mode) lives in the shared `viewStore` (Codex1 N1):
  * the toolbar / context menu / keyboard write it; the viewport SUBSCRIBES and
  * applies it imperatively, and REPORTS scene facts (canonical part present?
  * reference imports present?) back so command enablement stays correct for the
@@ -139,8 +139,13 @@ export default function Viewport({
       camera.bottom = -frustumHalf
       camera.updateProjectionMatrix()
     }
-    const HOME_DIR = new THREE.Vector3(-1, -1, -1).normalize()
+    // Codex2 B4: home = the ISO row of the ONE orientation authority
+    // (viewOrientation.ts) — direction AND canonical up, shared with the nav
+    // cube and the standard views. Reset restores BOTH.
+    const HOME_VIEW = standardViewOrientation('iso')
+    const HOME_DIR = new THREE.Vector3(HOME_VIEW.direction[0], HOME_VIEW.direction[1], HOME_VIEW.direction[2])
     const HOME_TARGET = new THREE.Vector3(0, 0, 0) // the datum intersection
+    camera.up.set(HOME_VIEW.up[0], HOME_VIEW.up[1], HOME_VIEW.up[2])
     camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
     applyFrustum()
 
@@ -539,13 +544,13 @@ export default function Viewport({
       controls.update()
     }
 
+    // Codex2 B4: Reset restores the CANONICAL home orientation — direction
+    // AND up, through the same authority path as the standard views — never
+    // the prior view's up (Top/Bottom/roll left a stale up before).
     const reset = () => {
       controls.target.copy(HOME_TARGET)
-      camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
       camera.zoom = 1
-      camera.updateProjectionMatrix()
-      controls.update()
-      fit()
+      orientMainCamera(HOME_VIEW)
     }
 
     const snapToView = (viewId: string) => {
