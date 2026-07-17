@@ -35,6 +35,58 @@ describe('mock backend Class-1 defence-in-depth (Codex6 B2)', () => {
   })
 })
 
+describe('the FOLDED-recipe display (SK-C1.0 Codex5 B1.2)', () => {
+  it('a sketch-only commit onto a BASED Part keeps the body (never emptiness)', async () => {
+    const mock = createMockAuthoringBackend()
+    // the REAL stepwise flow (and the acceptance runner's): commit the
+    // rectangle sketch alone, then extrude it entry-A in a second commit
+    const s0 = await mock.begin([
+      { kind: 'create_part', params: { number: 'P-9', name: 'Box' } },
+      { kind: 'mechanical.add_sketch_feature', params: {
+        part_number: 'P-9', plane: { kind: 'principal', orientation: 'xy' },
+        primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 30, height_mm: 20 }] } },
+    ])
+    await mock.commit(s0.sessionId, 'P-9')
+    const s1 = await mock.begin([
+      { kind: 'mechanical.add_extrude_feature', params: {
+        part_number: 'P-9', sketch_feature_id: 'feat_0001', depth_mm: 10, direction: 'normal+' } },
+    ])
+    const r1 = await mock.commit(s1.sessionId, 'P-9')
+    const d1 = await r1.display.getDisplay()
+    expect(d1.render.faces.some((f) => f.face_id.includes('wall_'))).toBe(true) // the body exists
+    // commit 2: a LATER sketch-only feature — the display must come from the
+    // WHOLE folded recipe, not the current delta (which has no base op)
+    const s2 = await mock.begin([
+      { kind: 'mechanical.add_sketch_feature', params: {
+        part_number: 'P-9', plane: { kind: 'principal', orientation: 'yz' },
+        primitives: [{ type: 'contour', segments: [
+          { kind: 'line', x1_mm: 0, y1_mm: 0, x2_mm: 10, y2_mm: 0 },
+          { kind: 'line', x1_mm: 10, y1_mm: 0, x2_mm: 10, y2_mm: 10 },
+          { kind: 'line', x1_mm: 10, y1_mm: 10, x2_mm: 0, y2_mm: 0 },
+        ] }] } },
+    ])
+    const r2 = await mock.commit(s2.sessionId, 'P-9')
+    const d2 = await r2.display.getDisplay()
+    expect(d2.render.faces.some((f) => f.face_id.includes('wall_'))).toBe(true) // the BODY SURVIVED
+    // …and the new sketch wire derives from the UPDATED recipe (the mirror)
+    const raw = mock.inspectRaw('P-9') as { sidecar: { feature: Array<{ feature_type: string }> } }
+    expect(raw.sidecar.feature.filter((f) => f.feature_type === 'sketch')).toHaveLength(2)
+  })
+
+  it('a sketch-only commit on a base-LESS Part still shows honest emptiness', async () => {
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin([
+      { kind: 'create_part', params: { number: 'P-8', name: 'Sketchy' } },
+      { kind: 'mechanical.add_sketch_feature', params: {
+        part_number: 'P-8', plane: { kind: 'principal', orientation: 'xy' },
+        primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 5, height_mm: 5 }] } },
+    ])
+    const r1 = await mock.commit(s1.sessionId, 'P-8')
+    const d1 = await r1.display.getDisplay()
+    expect(d1.render.faces).toHaveLength(0) // no base → honest emptiness
+  })
+})
+
 describe('backend lane selection (Codex1 B2 — the desktop NEVER mocks)', () => {
   it('browser dev (no bridge) → the badged mock', () => {
     expect(chooseBackendLane(false, null)).toBe('mock')
@@ -123,7 +175,7 @@ describe('the RECTANGLE sketch through the mirror and the REAL decoder (R2/D-R9)
     await mock.commit(s2.sessionId, 'P-1')
     const part = decodeInspectedPart(mock.inspectRaw('P-1'))
     const [sk] = unconsumedSketches(part)
-    expect(sk.plane).toBe('xy')
+    expect(sk.plane).toEqual({ kind: 'principal', orientation: 'xy' })
     expect(sk.profile).toEqual({ kind: 'simple_rectangle', rectangle: rect })
     expect(sk.rings[0]).toHaveLength(4) // the wire overlay renders it
   })
@@ -205,7 +257,7 @@ describe('the mock Truth mirror feeds the REAL decoder (Codex3 B1 fallout)', () 
     const part = decodeInspectedPart(mock.inspectRaw('P-867967'))
     const candidates = unconsumedSketches(part)
     expect(candidates).toHaveLength(1)
-    expect(candidates[0]).toMatchObject({ id: sketchId, plane: 'zx' })
+    expect(candidates[0]).toMatchObject({ id: sketchId, plane: { kind: 'principal', orientation: 'zx' } })
     expect(candidates[0].rings[0].length).toBeGreaterThanOrEqual(3)
     expect(buildTreeRows(part)).toEqual([
       { featureId: sketchId, label: 'Sketch 1', depth: 0, kind: 'sketch' },
@@ -262,5 +314,110 @@ describe('provisional part numbers (Codex2 B2)', () => {
     for (const bad of ['P-12345', 'P-1234567', 'X-123456', 'p-123456', '123456', 'P-12A456']) {
       expect(PART_NUMBER_RE.test(bad)).toBe(false)
     }
+  })
+})
+
+describe('S3 — face-bound sketches + the depth-edit RIDE through the mock mirror', () => {
+  /** The standard S3 fixture: P-30 with a 30x20 xy rectangle extruded 10. */
+  const buildBox = async (mock: ReturnType<typeof createMockAuthoringBackend>) => {
+    const s0 = await mock.begin([
+      { kind: 'create_part', params: { number: 'P-30', name: 'S3 Box' } },
+      { kind: 'mechanical.add_sketch_feature', params: {
+        part_number: 'P-30', plane: { kind: 'principal', orientation: 'xy' },
+        primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 30, height_mm: 20 }] } },
+    ])
+    await mock.commit(s0.sessionId, 'P-30')
+    const s1 = await mock.begin([
+      { kind: 'mechanical.add_extrude_feature', params: {
+        part_number: 'P-30', sketch_feature_id: 'feat_0001', depth_mm: 10, direction: 'normal+' } },
+    ])
+    await mock.commit(s1.sessionId, 'P-30')
+  }
+  const faceSketchOps = [
+    { kind: 'mechanical.add_sketch_feature', params: {
+      part_number: 'P-30', plane: { kind: 'face', target_face_id: 'mock:cap_top' },
+      primitives: [{ type: 'contour', segments: [
+        { kind: 'line', x1_mm: 5, y1_mm: 5, x2_mm: 15, y2_mm: 5 },
+        { kind: 'line', x1_mm: 15, y1_mm: 5, x2_mm: 10, y2_mm: 12 },
+        { kind: 'line', x1_mm: 10, y1_mm: 12, x2_mm: 5, y2_mm: 5 },
+      ] }] } },
+  ]
+
+  it('a cap face input translates to the ENGINE record shape and emits its v1.2 frame', async () => {
+    const mock = createMockAuthoringBackend()
+    await buildBox(mock)
+    const s2 = await mock.begin(faceSketchOps)
+    expect((await mock.simulate(s2.sessionId)).valid).toBe(true)
+    const res = await mock.commit(s2.sessionId, 'P-30')
+    // the committed record carries the engine's stored face shape VERBATIM
+    const raw = mock.inspectRaw('P-30') as { sidecar: { feature: Array<Record<string, unknown>> } }
+    const sk = raw.sidecar.feature.find((f) => f.id === 'feat_0003')!
+    expect((sk.adapter_payload as Record<string, unknown>).plane).toEqual({
+      kind: 'face',
+      face_role: 'feat_0002:face:cap_top',
+      resolved_against_topology_signature: 'mock-topo',
+    })
+    // Display v1.2: every mock face honestly planar + the sketch frame ON the cap
+    const d = (await res.display.getDisplay()) as unknown as Record<string, unknown>
+    const faces = (d.render as { faces: Array<{ surface_kind?: string }> }).faces
+    expect(faces.length).toBeGreaterThan(0)
+    expect(faces.every((f) => f.surface_kind === 'plane')).toBe(true)
+    const frames = d.sketch_frames as Array<Record<string, unknown>>
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toEqual({
+      sketch_feature_id: 'feat_0003',
+      origin_mm: [0, 0, 10],
+      u_axis: [1, 0, 0],
+      v_axis: [0, 1, 0],
+      normal: [0, 0, 1],
+    })
+  })
+
+  it('a WALL face input refuses loudly (the mock has no topology extraction)', async () => {
+    const mock = createMockAuthoringBackend()
+    await buildBox(mock)
+    await expect(
+      mock.begin([{ kind: 'mechanical.add_sketch_feature', params: {
+        part_number: 'P-30', plane: { kind: 'face', target_face_id: 'mock:wall_0' },
+        primitives: [] } }]),
+    ).rejects.toThrow(/caps only/)
+  })
+
+  it('THE RIDE: adjusting the base depth regenerates the folded body AND the frame', async () => {
+    const mock = createMockAuthoringBackend()
+    await buildBox(mock)
+    const s2 = await mock.begin(faceSketchOps)
+    await mock.commit(s2.sessionId, 'P-30')
+    const s3 = await mock.begin([
+      { kind: 'mechanical.adjust_feature_parameter', params: {
+        part_number: 'P-30', feature_id: 'feat_0002', parameter_name: 'depth_mm', new_value: 25 } },
+    ])
+    expect((await mock.simulate(s3.sessionId)).valid).toBe(true)
+    const res = await mock.commit(s3.sessionId, 'P-30')
+    const d = (await res.display.getDisplay()) as unknown as Record<string, unknown>
+    // the FOLDED body regenerated at 25 (the depth authority is the mirror's
+    // parameters catalogue — the payload never carried depth_mm)
+    const faces = (d.render as { faces: Array<{ face_id: string; positions: number[] }> }).faces
+    const cap = faces.find((f) => f.face_id === 'mock:cap_top')!
+    for (let i = 2; i < cap.positions.length; i += 3) expect(cap.positions[i]).toBe(25)
+    // ...and the face-bound sketch frame RIDES the moved cap
+    const frames = d.sketch_frames as Array<Record<string, unknown>>
+    expect(frames[0].origin_mm).toEqual([0, 0, 25])
+    // the mirror parameter itself persisted (the catalogue reopens at 25)
+    const raw = mock.inspectRaw('P-30') as { sidecar: { feature: Array<Record<string, unknown>> } }
+    const ext = raw.sidecar.feature.find((f) => f.id === 'feat_0002')!
+    expect((ext.parameters as Array<{ name: string; value: unknown }>).find((p) => p.name === 'depth_mm')!.value).toBe(25)
+  })
+
+  it('an adjust op naming an unknown parameter is INVALID at simulate (never a silent commit)', async () => {
+    const mock = createMockAuthoringBackend()
+    await buildBox(mock)
+    const s = await mock.begin([
+      { kind: 'mechanical.adjust_feature_parameter', params: {
+        part_number: 'P-30', feature_id: 'feat_0002', parameter_name: 'girth_mm', new_value: 1 } },
+    ])
+    const sim = await mock.simulate(s.sessionId)
+    expect(sim.valid).toBe(false)
+    expect(sim.message).toMatch(/unknown feature\/parameter/)
   })
 })

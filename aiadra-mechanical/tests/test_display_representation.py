@@ -91,7 +91,7 @@ def test_box_with_hole_edge_kinds():
 def test_contract_round_trips_through_dto():
     d = _gen(_recipe())
     dr = DisplayRepresentation.from_engine_dict(d)
-    assert dr.display_representation_version == "1.1"
+    assert dr.display_representation_version == "1.2"
     assert dr.view_dependent is None  # base display never inlines HLR
     assert dr.selection.id_space == "canonical"
     assert dr.counters.face_count == 7
@@ -118,6 +118,13 @@ def test_dto_v1_0_still_rejects_any_populated_view_dependent():
     claiming contract 1.0 must ship a null slot, even a well-formed payload."""
     d = _gen(_recipe())
     d["display_representation_version"] = "1.0"
+    # an honest 1.0 producer ships NEITHER v1.2 field (S2: their presence
+    # under a legacy identity is its own rejection, tested separately)
+    d.pop("sketch_frames", None)
+    d["render"]["faces"] = [
+        {k: v for k, v in f.items() if k != "surface_kind"}
+        for f in d["render"]["faces"]
+    ]
     d["view_dependent"] = {"identity_echo": {}, "views": []}
     with pytest.raises(DisplayContractError, match="view_dependent must be null"):
         DisplayRepresentation.from_engine_dict(d)

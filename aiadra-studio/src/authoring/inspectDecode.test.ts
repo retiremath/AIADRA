@@ -58,11 +58,11 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
     expect(p.number).toBe('P-000001')
     expect(p.features).toHaveLength(3)
     const [sk, ex, rect] = p.features
-    expect(sk).toMatchObject({ kind: 'sketch', id: 'feat_0001', plane: 'zx' })
+    expect(sk).toMatchObject({ kind: 'sketch', id: 'feat_0001', plane: { kind: 'principal', orientation: 'zx' } })
     expect((sk as { rings: unknown[][] }).rings[0]).toHaveLength(4)
     expect(ex).toMatchObject({ kind: 'extrude', consumesSketchId: 'feat_0001', depthMm: 5.0 })
     // A plane-less sketch is xy (the EP2 legacy default); a rectangle ring has 4 corners.
-    expect(rect).toMatchObject({ kind: 'sketch', plane: 'xy' })
+    expect(rect).toMatchObject({ kind: 'sketch', plane: { kind: 'principal', orientation: 'xy' } })
     expect((rect as { rings: { x: number; y: number }[][] }).rings[0]).toEqual([
       { x: 1, y: 2 },
       { x: 11, y: 2 },
@@ -138,7 +138,7 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
 
   it('B1: a supported mechanical record still decodes normally under the guard', () => {
     const p = decodeInspectedPart(view([SKETCH_CONTOUR]))
-    expect(p.features[0]).toMatchObject({ kind: 'sketch', plane: 'zx' })
+    expect(p.features[0]).toMatchObject({ kind: 'sketch', plane: { kind: 'principal', orientation: 'zx' } })
   })
 
   it('FAILS LOUD on a non-Part and on a malformed dependency edge', () => {
@@ -174,5 +174,104 @@ describe('unconsumedSketches — ONE derivation for the wire overlay + the Extru
   it('returns only sketches no base feature consumes', () => {
     const p = decodeInspectedPart(view([SKETCH_CONTOUR, EXTRUDE, SKETCH_RECT]))
     expect(unconsumedSketches(p).map((s) => s.id)).toEqual(['feat_0003'])
+  })
+})
+
+describe('the DISCRIMINATED face plane binding (SK-C1.0 S2, Codex2 B3.4)', () => {
+  const facePart = () => ({
+    sidecar: {
+      object: { type: 'Part', number: 'P-1', name: 'p', uuid: 'u1' },
+      feature: [{
+        id: 'feat_0003', feature_type: 'sketch', engine: 'mechanical',
+        adapter_schema_version: '0.1.10',
+        adapter_payload: {
+          primitives: [{ id: 'skp_0001', type: 'rectangle', x_mm: 2, y_mm: 2, width_mm: 5, height_mm: 5 }],
+          plane: {
+            kind: 'face',
+            face_role: 'feat_0002:face:cap_top',
+            resolved_against_topology_signature: 'topo_abc123',
+          },
+        },
+      }],
+    },
+  })
+
+  it('a face-bound sketch decodes as its STRUCTURED binding (never forced principal)', () => {
+    const part = decodeInspectedPart(facePart())
+    const sk = part.features[0]
+    expect(sk.kind).toBe('sketch')
+    if (sk.kind === 'sketch') {
+      expect(sk.plane).toEqual({
+        kind: 'face',
+        faceRole: 'feat_0002:face:cap_top',
+        resolvedAgainst: 'topo_abc123',
+      })
+    }
+  })
+
+  it('a malformed face record FAILS LOUD (role/signature structure)', () => {
+    const bad = facePart()
+    ;(bad.sidecar.feature[0].adapter_payload.plane as Record<string, unknown>).face_role = 'not-a-role'
+    expect(() => decodeInspectedPart(bad)).toThrow(/face_role/)
+  })
+})
+
+describe('deriveSelectorFacts — the ONE v1.2 fact derivation (SK-C1.0 S2)', () => {
+  it('planar eligibility is FAIL-CLOSED (absent surface_kind ≠ planar); frames join by id', async () => {
+    const { deriveSelectorFacts } = await import('./partContext')
+    const facts = deriveSelectorFacts({
+      render: {
+        edges: [{ edge_id: 'e1', kind: 'sharp' }],
+        faces: [
+          { face_id: 'f-plane', surface_kind: 'plane' },
+          { face_id: 'f-cyl', surface_kind: 'other' },
+          { face_id: 'f-legacy' }, // a 1.1 payload face — unknown kind
+        ],
+      },
+      sketch_frames: [{
+        sketch_feature_id: 'feat_0003',
+        origin_mm: [0, 0, 10], u_axis: [1, 0, 0], v_axis: [0, 1, 0], normal: [0, 0, 1],
+      }],
+    })
+    expect(facts.faceIds).toEqual(new Set(['f-plane', 'f-cyl', 'f-legacy']))
+    expect(facts.planarFaceIds).toEqual(new Set(['f-plane'])) // fail-closed
+    expect(facts.edgeKinds.get('e1')).toBe('sharp')
+    expect(facts.sketchFrames.get('feat_0003')?.origin_mm).toEqual([0, 0, 10])
+  })
+})
+
+describe('the FAIL-CLOSED frame join (Codex7 B4)', () => {
+  const FRAME = {
+    sketch_feature_id: 'feat_0003',
+    origin_mm: [0, 0, 10] as [number, number, number],
+    u_axis: [1, 0, 0] as [number, number, number],
+    v_axis: [0, 1, 0] as [number, number, number],
+    normal: [0, 0, 1] as [number, number, number],
+  }
+  const base = { render: { edges: [], faces: [] } }
+
+  it('a DUPLICATE frame id refuses the whole publication (never silently overwrites)', async () => {
+    const { deriveSelectorFacts } = await import('./partContext')
+    expect(() => deriveSelectorFacts({ ...base, sketch_frames: [FRAME, { ...FRAME }] }))
+      .toThrow(/duplicate sketch frame/)
+  })
+
+  it('a structurally invalid frame refuses at the TS boundary too (mocks bypass Core)', async () => {
+    const { deriveSelectorFacts } = await import('./partContext')
+    expect(() => deriveSelectorFacts({
+      ...base,
+      sketch_frames: [{ ...FRAME, v_axis: [0, -1, 0] as [number, number, number] }], // left-handed
+    })).toThrow(/right-handed/)
+    expect(() => deriveSelectorFacts({
+      ...base,
+      sketch_frames: [{ ...FRAME, normal: [0, 0, Number.NaN] as [number, number, number] }],
+    })).toThrow(/malformed vector/)
+  })
+
+  it('a MISSING frame stays absent — unavailable, never guessed', async () => {
+    const { deriveSelectorFacts } = await import('./partContext')
+    const facts = deriveSelectorFacts({ ...base, sketch_frames: [FRAME] })
+    expect(facts.sketchFrames.get('feat_0003')).toBeTruthy()
+    expect(facts.sketchFrames.get('feat_0099')).toBeUndefined()
   })
 })

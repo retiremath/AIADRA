@@ -21,6 +21,13 @@ import { decodeInspectedPart, stackingRefusal, type InspectedPart } from './insp
  *  they die with the generation — a selector id from an older display can
  *  never qualify. */
 export interface SelectorFacts {
+  /** v1.2 (SK-C1.0 S2): faces the engine classified PLANAR — the pick
+   *  filter's eligibility authority (absent surface_kind ⇒ NOT here). */
+  planarFaceIds: ReadonlySet<string>
+  /** v1.2: engine-resolved face-bound sketch frames, joined by sketch
+   *  feature id under THIS generation (missing ⇒ that wire/pick is
+   *  honestly unavailable, never mis-framed). */
+  sketchFrames: ReadonlyMap<string, import('../display/contract').SketchFrame>
   /** display edge_id → its contract `kind` (sharp/tangent/seam/…). */
   edgeKinds: ReadonlyMap<string, string>
   /** The face ids present on THIS display. */
@@ -298,5 +305,69 @@ export function authoringFacts(s: PartContextState): {
     // B3's UI mirror of the engine's one-base rule: a Part that already has a
     // base creation feature cannot take another (the engine enforces it too).
     canExtrude: readyPart !== null && !readyPart.hasExtrudeBase && !readyPart.hasRevolveBase,
+  }
+}
+
+
+/** Derive the v1.2 selector facts from an INSTALLED display package (one
+ *  derivation for the App's publish path — pure and testable; SK-C1.0 S2). */
+export function deriveSelectorFacts(display: {
+  render: { edges: Array<{ edge_id: string; kind: string }>; faces: Array<{ face_id: string; surface_kind?: string }> }
+  sketch_frames?: Array<import('../display/contract').SketchFrame>
+}): SelectorFacts {
+  const edgeKinds = new Map<string, string>()
+  for (const e of display.render.edges) edgeKinds.set(e.edge_id, e.kind)
+  const faceIds = new Set<string>()
+  const planarFaceIds = new Set<string>()
+  for (const f of display.render.faces) {
+    faceIds.add(f.face_id)
+    if (f.surface_kind === 'plane') planarFaceIds.add(f.face_id) // fail-closed: absent ≠ planar
+  }
+  const sketchFrames = new Map<string, import('../display/contract').SketchFrame>()
+  for (const fr of display.sketch_frames ?? []) {
+    // Codex7 B4: the join FAILS CLOSED — a duplicate id or a structurally
+    // invalid frame refuses the WHOLE publication (fixtures/mocks can bypass
+    // Core, so the TS boundary validates finiteness + right-handedness too;
+    // an ambiguous generation must never publish).
+    if (sketchFrames.has(fr.sketch_feature_id)) {
+      throw new Error(`selector facts: duplicate sketch frame ${fr.sketch_feature_id}`)
+    }
+    validateSketchFrame(fr)
+    sketchFrames.set(fr.sketch_feature_id, fr)
+  }
+  return { edgeKinds, faceIds, planarFaceIds, sketchFrames }
+}
+
+const FRAME_TOL = 1e-9
+
+/** TS-boundary frame validation (Codex7 B4): finite 3-vectors, unit +
+ *  orthogonal axes, right-handed v = normal × u — the same discipline the
+ *  Core validator enforces, held HERE too because dev fixtures and the mock
+ *  lane do not pass through Core. */
+export function validateSketchFrame(fr: import('../display/contract').SketchFrame): void {
+  // Codex8 NB (absorbed early): the id is validated at runtime too — the
+  // fixture/mock boundary cannot rely on TypeScript alone.
+  if (typeof fr.sketch_feature_id !== 'string' || fr.sketch_feature_id.length === 0) {
+    throw new Error('selector facts: a sketch frame lacks its sketch_feature_id')
+  }
+  const vecs = [fr.origin_mm, fr.u_axis, fr.v_axis, fr.normal]
+  for (const v of vecs) {
+    if (!Array.isArray(v) || v.length !== 3 || !v.every((x) => Number.isFinite(x))) {
+      throw new Error(`selector facts: sketch frame ${fr.sketch_feature_id} has a malformed vector`)
+    }
+  }
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+  const norm = (a: number[]) => Math.sqrt(dot(a, a))
+  const u = fr.u_axis, v = fr.v_axis, n = fr.normal
+  if (
+    Math.abs(norm(u) - 1) > FRAME_TOL || Math.abs(norm(v) - 1) > FRAME_TOL ||
+    Math.abs(norm(n) - 1) > FRAME_TOL || Math.abs(dot(u, v)) > FRAME_TOL ||
+    Math.abs(dot(u, n)) > FRAME_TOL || Math.abs(dot(v, n)) > FRAME_TOL
+  ) {
+    throw new Error(`selector facts: sketch frame ${fr.sketch_feature_id} fails orthonormality`)
+  }
+  const cross = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
+  if (Math.max(Math.abs(cross[0] - v[0]), Math.abs(cross[1] - v[1]), Math.abs(cross[2] - v[2])) > FRAME_TOL) {
+    throw new Error(`selector facts: sketch frame ${fr.sketch_feature_id} is not right-handed`)
   }
 }

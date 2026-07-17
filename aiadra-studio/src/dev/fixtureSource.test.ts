@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DISPLAY_REPRESENTATION_VERSION } from '../display/contract'
+import { LEGACY_FIXTURE_DISPLAY_VERSION } from '../display/contract'
 import { assertFixtureVersion, FixtureVersionError } from './fixtureSource'
 
 /**
@@ -10,7 +10,7 @@ import { assertFixtureVersion, FixtureVersionError } from './fixtureSource'
 describe('fixture version gate', () => {
   it('passes at the current contract version', () => {
     expect(() =>
-      assertFixtureVersion({ display_representation_version: DISPLAY_REPRESENTATION_VERSION }),
+      assertFixtureVersion({ display_representation_version: LEGACY_FIXTURE_DISPLAY_VERSION }),
     ).not.toThrow()
   })
 
@@ -23,7 +23,7 @@ describe('fixture version gate', () => {
     } catch (e) {
       const msg = (e as Error).message
       expect(msg).toContain('1.0')
-      expect(msg).toContain(DISPLAY_REPRESENTATION_VERSION)
+      expect(msg).toContain(LEGACY_FIXTURE_DISPLAY_VERSION)
       expect(msg).toContain('gen-dev-fixtures')
     }
   })

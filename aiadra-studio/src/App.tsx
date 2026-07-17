@@ -1,5 +1,5 @@
 import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import Viewport, { type ViewportApi } from './Viewport'
+import Viewport, { type SketchInteractionMode, type ViewportApi } from './Viewport'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
 import { createOperationStore, useOperation, type OperationStore } from './operation/store'
@@ -32,24 +32,24 @@ import {
   INTRINSIC_PLANE_IDS,
   PLANE_LABELS,
   sketchAuthoringGate,
+  supportFrame,
   type AuthoringBackend,
-  type PlaneOrientation,
 } from './authoring/backend'
 import {
   authoringFacts,
+  deriveSelectorFacts,
   authoringStartRefusal,
   captureAuthoringTarget,
   captureSelectorTarget,
   createPartContextStore,
   type InspectFetcher,
   type PartContextStore,
-  type SelectorFacts,
 } from './authoring/partContext'
 import { createPendingDisplayCoordinator } from './authoring/pendingDisplay'
 import { buildTreeRows, holeBaseRefusal, revolveSketchRefusal, unconsumedSketches } from './authoring/inspectDecode'
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
-import { SketchPad } from './sketch/SketchPad'
+import { routeSketchPlacement, SketchChrome } from './sketch/SketchChrome'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
 import { IMPORT_HOME_REASON, IMPORT_MENU_LABEL, ReferencesList, useReferenceImport } from './import/referenceImport'
@@ -335,12 +335,16 @@ function ModelTreePanel({
   session,
   context,
   onEditFeature,
+  onPlaneRow,
 }: {
   session: AuthoringSessionStore
   context: PartContextStore
   /** R6: open the edit-dimension session for a committed feature (null =
    *  the affordance is unavailable, with the reason as tooltip). */
   onEditFeature?: { start: (featureId: string) => void; gate: string | null }
+  /** SK-C1.0 S1 (Codex1 B4.5): non-null ONLY in plane-pick mode — the
+   *  FRONT/RIGHT/TOP rows become real pick surfaces. */
+  onPlaneRow?: ((ori: 'xy' | 'yz' | 'zx') => void) | null
 }) {
   const s = useAuthoringSession(session)
   const pc = useSyncExternalStore(context.subscribe, context.getSnapshot)
@@ -361,7 +365,16 @@ function ModelTreePanel({
         </li>
       )}
       {(['xy', 'yz', 'zx'] as const).map((ori) => (
-        <li key={ori} className="feat-row intrinsic" data-intrinsic-id={INTRINSIC_PLANE_IDS[ori]}>
+        <li
+          key={ori}
+          className={'feat-row intrinsic' + (onPlaneRow ? ' pickable' : '')}
+          data-intrinsic-id={INTRINSIC_PLANE_IDS[ori]}
+          role={onPlaneRow ? 'button' : undefined}
+          tabIndex={onPlaneRow ? 0 : undefined}
+          title={onPlaneRow ? 'Sketch on ' + PLANE_LABELS[ori] : undefined}
+          onClick={onPlaneRow ? () => onPlaneRow(ori) : undefined}
+          onKeyDown={onPlaneRow ? (e) => { if (e.key === 'Enter') onPlaneRow(ori) } : undefined}
+        >
           <span className="feat-glyph">▱</span>
           <span className="feat-name">{PLANE_LABELS[ori]}</span>
           <span className="muted small feat-state">intrinsic</span>
@@ -604,10 +617,9 @@ function Workbench({
       // transition's generation — edge kinds + face ids die with it.
       if (display && stillCurrent()) {
         const gen = partContext.getSnapshot().generation
-        const edgeKinds = new Map<string, string>()
-        for (const ed of display.render.edges) edgeKinds.set(ed.edge_id, ed.kind)
-        const faceIds = new Set<string>(display.render.faces.map((f) => f.face_id))
-        partContext.publishSelectorFacts(gen, { edgeKinds, faceIds } satisfies SelectorFacts)
+        // ONE pure derivation (S2): edge kinds + face ids + v1.2 planar
+        // eligibility + face-bound sketch frames, all under THIS generation.
+        partContext.publishSelectorFacts(gen, deriveSelectorFacts(display))
       }
     },
     [viewportApi, partContext],
@@ -670,16 +682,24 @@ function Workbench({
   // PICKING A PLANE (EP1 — Petre's pinned semantics; all three live via EP2).
   // The picker serves BOTH the stepwise sketch and Extrude's chained
   // "New sketch…" (D-S3 entry B) — the purpose decides where the plane goes.
-  const [planePicker, setPlanePicker] = useState<null | 'sketch' | 'chained'>(null)
-  /** R6: the tree's edit-dimension entry — real lane only (the dev mock does
-   *  not model mutation/regeneration, Codex2 N4); captures the authority
-   *  tuple + the feature's CATALOGUED parameters at start. */
+  // SK-C1.0 S1 (Codex1 B4.1): plane picking is a SESSION substate — the old
+  // App-local planePicker state is deleted. Only the list-dialog visibility
+  // stays local (presentation, not mode).
+  const [planeListOpen, setPlaneListOpen] = useState(false)
+  // SK-C1.0 Codex4 B1.3: the hovered canonical id while sketching — the
+  // observable SK-E seam (hover-only; no reference is created).
+  const [contextHover, setContextHover] = useState<{ kind: 'face' | 'edge'; id: string } | null>(null)
+  const planeListOpenRef = useRef(false)
+  planeListOpenRef.current = planeListOpen
+  /** R6: the tree's edit-dimension entry — captures the authority tuple +
+   *  the feature's CATALOGUED parameters at start. S3 lifts the former
+   *  real-lane-only gate: the dev mock now models adjust_feature_parameter
+   *  on catalogued parameters (mutating its mirror + regenerating the folded
+   *  display and sketch_frames), so enabling it here stays honest. */
   const editFeatureEntry = {
-    gate:
-      authoringGate ??
-      (!window.aiadra ? 'requires the desktop real-engine lane (the dev mock does not model mutation/regeneration)' : null),
+    gate: authoringGate,
     start: (featureId: string) => {
-      if (authoringGate || !window.aiadra) return
+      if (authoringGate) return
       const tuple = captureAuthoringTarget(partContext.getSnapshot())
       const part = partFacts.readyPart
       if (!tuple || !part) {
@@ -705,9 +725,15 @@ function Workbench({
         'xy',
         target ? { number: target.number, name: target.name } : null,
         'rectangle',
+        partContext.getSnapshot().generation,
       )
     } else {
-      setPlanePicker('chained')
+      const target = partFacts.readyPart
+      authoringStore.startChainedPlanePick(
+        partContext.getSnapshot().generation,
+        'contour',
+        target ? { number: target.number, name: target.name } : null,
+      )
     }
   }
   // V-3 (Codex1 B1): ONE reference-import controller behind File -> Import,
@@ -739,7 +765,16 @@ function Workbench({
         setShellNote(refusal)
         return
       }
-      setPlanePicker('sketch')
+      {
+        const target = partFacts.readyPart
+        authoringStore.startPlanePick(
+          {
+            targetPart: target ? { number: target.number, name: target.name } : null,
+            targetAuth: target ? captureAuthoringTarget(partContext.getSnapshot()) : null,
+          },
+          partContext.getSnapshot().generation,
+        )
+      }
     } else if (kind === 'extrude' || kind === 'revolve') {
       // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
       // without a ready context or when the one-base rule already holds.
@@ -812,24 +847,7 @@ function Workbench({
       authoringStore.startHoleFeature(captured)
     }
   }
-  const onPlanePicked = (plane: PlaneOrientation) => {
-    const purpose = planePicker
-    setPlanePicker(null)
-    if (authoringGate) return
-    const target = partFacts.readyPart
-    const targetRef = target ? { number: target.number, name: target.name } : null
-    if (purpose === 'chained') {
-      // The chained sketch keeps the EXTRUDE session's captured tuple — the
-      // store copies it at the hand-off (Codex4 B1.4).
-      authoringStore.beginChainedSketch(plane, targetRef)
-    } else {
-      authoringStore.startSketch({
-        plane,
-        targetPart: targetRef,
-        targetAuth: targetRef ? captureAuthoringTarget(partContext.getSnapshot()) : null,
-      })
-    }
-  }
+
   /** The ONE adoption path — returns the refusal reason (null = adopted). */
   const switchWorkspace = async (ws: OpenedWorkspace): Promise<string | null> => {
     setShellNote(null)
@@ -837,6 +855,7 @@ function Workbench({
     if (reason === null) setAppSession('modeling')
     return reason
   }
+
   const closeToHome = async () => {
     setShellNote(null)
     const reason = await switcher.close()
@@ -942,7 +961,10 @@ function Workbench({
     const push = () => {
       const s = partContext.getSnapshot()
       const part = s.inspection.status === 'ready' ? s.inspection.part : null
-      viewportApi.current?.setSketchWires(part ? unconsumedSketches(part) : [])
+      viewportApi.current?.setSketchWires(
+        part ? unconsumedSketches(part) : [],
+        partContext.getSnapshot().selectorFacts?.sketchFrames,
+      )
     }
     push()
     return partContext.subscribe(push)
@@ -1027,14 +1049,60 @@ function Workbench({
   // Keyboard shortcuts (Codex1 N4) — guarded: no command fires while typing in
   // an input / select / textarea / contenteditable, or with modifier chords the
   // browser should own.
+  // SK-C1.0 S1: the viewport's interaction mode is DERIVED from the ONE
+  // session (Codex3 bar 2 — the store owns pure state; the viewport owns the
+  // imperative consequences). Principal frames are TS-known; face frames
+  // arrive from the engine in S2/S3.
+  const interactionMode = useMemo<SketchInteractionMode | null>(() => {
+    if (authoringSession.mode === 'planePick') return { kind: 'planePick' }
+    if (authoringSession.mode === 'sketch') {
+      return {
+        kind: 'sketch',
+        // S3 (Codex10 B1): the SUPPORT is the frame authority, through the
+        // ONE projection — a face session draws on its mirror frame (the
+        // engine re-derives at commit)
+        frame: supportFrame(authoringSession.support),
+        tool: authoringSession.tool,
+        construction: authoringSession.construction,
+      }
+    }
+    return null
+  }, [authoringSession])
+
+  // A generation change INVALIDATES the whole pick→sketch interaction
+  // FAIL-CLOSED (Codex4 B2) — a DISTINCT transition from user Escape/cancel:
+  // it terminates to idle and never resurrects a captured chained session
+  // from the old generation. The viewport unwinds (ghost/datums/overlay)
+  // through the normal state transition.
+  useEffect(() => {
+    if (
+      (authoringSession.mode === 'planePick' || authoringSession.mode === 'sketch') &&
+      pc.generation !== authoringSession.generation
+    ) {
+      authoringStore.invalidateForGeneration()
+    }
+  }, [authoringSession, pc.generation, authoringStore])
+
   useEffect(() => {
     if (!ready) return
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null
       const tag = t?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t?.isContentEditable) return
-      // Escape clears the committed selection (Codex1 Q7) — guarded like the rest.
+      // Escape routes to the active continuation FIRST (SK-C1.0 Codex1
+      // B4.6): plane-pick cancels (restoring a chained base session); the
+      // list dialog owns its own Escape; sketch mode's chrome owns its
+      // cancel — only then does Escape clear the committed selection.
       if (e.key === 'Escape') {
+        const mode = authoringStore.getSnapshot().mode
+        if (mode === 'planePick') {
+          if (!planeListOpenRef.current) {
+            authoringStore.cancelPlanePick()
+            e.preventDefault()
+          }
+          return
+        }
+        if (mode === 'sketch') return // SketchChrome owns sketch Escape
         if (selectionStore.getSnapshot().selected) {
           selectionStore.clearSelected()
           e.preventDefault()
@@ -1186,7 +1254,16 @@ function Workbench({
           <ReferencesList imports={referenceImport} />
           <AppearancePanel />
           <div className="panel-title">Model tree</div>
-          <ModelTreePanel session={authoringStore} context={partContext} onEditFeature={editFeatureEntry} />
+          <ModelTreePanel
+            session={authoringStore}
+            context={partContext}
+            onEditFeature={editFeatureEntry}
+            onPlaneRow={
+              authoringSession.mode === 'planePick'
+                ? (ori) => authoringStore.resolvePlanePick(ori)
+                : null
+            }
+          />
           <div className="muted small pad">
             Create features from the <b>Model</b> ribbon above.
           </div>
@@ -1207,6 +1284,24 @@ function Workbench({
                 viewStore={viewStore}
                 selectionStore={selectionStore}
                 commandActions={actions}
+                interactionMode={interactionMode}
+                planarFaceIds={
+                  // S3: faces are eligible only for the STANDALONE pick (a
+                  // chained base profile cannot lie on a face — the engine
+                  // refuses; the picker honestly never offers it)
+                  authoringSession.mode === 'planePick' && authoringSession.continuation.type === 'sketch'
+                    ? pc.selectorFacts?.planarFaceIds ?? new Set<string>()
+                    : new Set<string>()
+                }
+                onPlanePick={(hit) => {
+                  if (hit.kind === 'datum') authoringStore.resolvePlanePick(hit.orientation)
+                  else authoringStore.resolvePlanePick({ faceId: hit.faceId, frame: hit.frame })
+                }}
+                onSketchPlace={(uv) =>
+                  routeSketchPlacement(authoringStore, uv, partContext.getSnapshot().generation)
+                }
+                onSketchCursor={(uv) => authoringStore.setCursor(uv ? { x: uv.u, y: uv.v } : null)}
+                onContextHover={setContextHover}
               />
             </>
           ) : (
@@ -1250,17 +1345,45 @@ function Workbench({
             store={authoringStore}
             backend={featureBackend}
             context={partContext}
-            onClose={restoreBase}
+            onClose={() => {
+              // Codex5 B1.1 (same rule as SketchChrome): edit-dimension
+              // Cancel has NO candidate display to discard — it previews
+              // nothing, so the canonical Part display stays installed.
+              // restoreBase (which nulls the dev-lane display) belongs to
+              // the AI-candidate preview lane only. Exposed by D-S3.1
+              // lifting the panel's real-lane-only gate.
+            }}
             onCommitted={(display) => {
               refreshPartContext(display)
               setPartsRefresh((n) => n + 1)
             }}
           />
-          <SketchPad
+          {authoringSession.mode === 'planePick' && (
+            <div className="pick-prompt">
+              <span>Select a sketch plane — a datum plane or a flat face of the Part</span>
+              <button type="button" className="btn small" onClick={() => setPlaneListOpen(true)}>
+                Choose from list…
+              </button>
+              <span className="muted small">Esc cancels</span>
+            </div>
+          )}
+          <SketchChrome
             store={authoringStore}
             backend={featureBackend}
             context={partContext}
-            onClose={restoreBase}
+            onClose={() => {
+              // Codex5 B1.1: sketch Cancel has NO candidate display to
+              // discard — the canonical Part display stays installed; the
+              // interaction-mode exit already unghosts/restyles. restoreBase
+              // belongs to the AI-candidate preview lane only.
+            }}
+            onSketchView={() => {
+              // Codex10 B1: the SUPPORT is the sole frame authority — a
+              // face-bound session reorients to ITS face frame, never to the
+              // legacy principal `st.plane`.
+              const st = authoringStore.getSnapshot()
+              if (st.mode === 'sketch') viewportApi.current?.sketchView(supportFrame(st.support))
+            }}
             onCommitted={(info) => {
               // S2 / Codex3 B2: ONE transition — a fresh dev-lane Part is
               // ADOPTED (display + Truth together); features onto the context
@@ -1294,13 +1417,25 @@ function Workbench({
       <div className="statusbar">
         <SessionPill store={operationStore} dockOpen={dockOpen} onShowDock={() => setDockOpen(true)} />
         {shellNote && <span className="small err">{shellNote}</span>}
+        {authoringSession.mode === 'sketch' && contextHover && (
+          <span className="small muted context-hover" data-context-id={contextHover.id}>
+            context {contextHover.kind}: <span className="mono">{contextHover.id}</span>
+          </span>
+        )}
         <span className="grow" />
         <span className="chipbar byo" title="AIADRA Core ships no AI — MVP-1 uses a scripted configurator">
           ● BYO-AI: scripted (MVP-1)
         </span>
       </div>
       <NewDialog open={newDialogOpen} onCancel={() => setNewDialogOpen(false)} onCreate={(c) => void createNew(c)} />
-      <PlanePicker open={planePicker !== null} onPick={onPlanePicked} onCancel={() => setPlanePicker(null)} />
+      <PlanePicker
+        open={planeListOpen && authoringSession.mode === 'planePick'}
+        onPick={(pl) => {
+          setPlaneListOpen(false)
+          authoringStore.resolvePlanePick(pl)
+        }}
+        onCancel={() => setPlaneListOpen(false)} // closing returns to pick mode
+      />
     </div>
   )
 }

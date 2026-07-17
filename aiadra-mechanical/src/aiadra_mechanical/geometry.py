@@ -137,6 +137,20 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
             f"{'extrude' if n_extrudes > 1 else 'revolve'} base features; "
             f"v1 supports exactly one base creation per Part"
         )
+    # SK-C1.0 S2 (Codex1 B1.4): EVERY face-bound sketch resolves at its fold
+    # position on EVERY evaluation — including committed sketches no base
+    # consumes. The resolver validates the stored parent-prefix signature,
+    # existence/uniqueness, and planarity (typed refusals); recursion through
+    # the prefix terminates (indexes strictly decrease).
+    for _idx, _feat in enumerate(features):
+        if _feat.get("feature_type") != "sketch":
+            continue
+        _plane = (_feat.get("adapter_payload") or {}).get("plane")
+        if isinstance(_plane, dict) and _plane.get("kind") == "face":
+            from . import face_frame as _face_frame
+
+            _face_frame.resolve_face_plane(features[:_idx], _plane)
+
     base = extrude if extrude is not None else revolve
     if base is not None:
         # EP2 (arc 20260714-2, Codex1 B2): the base feature consumes EXACTLY the
@@ -148,6 +162,21 @@ def _evaluate(features: list[dict[str, Any]]) -> EvalResult:
         if sketch is None:
             # Nothing geometric to evaluate yet (e.g. an empty Part). No-op gate.
             return EvalResult(shape=TopoDS_Shape())
+    # SK-C1.0 S2: the ONE base's profile sketch cannot live on a face of the
+    # solid it creates (the support would not exist before the base) — refuse
+    # loudly; a face-bound sketch stays unconsumed until sequential extrudes.
+    _sketch_plane = (sketch.get("adapter_payload") or {}).get("plane")
+    if isinstance(_sketch_plane, dict) and _sketch_plane.get("kind") == "face":
+        if base is not None:
+            raise TransactionError(
+                f"{ENGINE_OP_PREFIX}: the base feature consumes a FACE-BOUND sketch "
+                f"{sketch.get('id')!r} — a base profile cannot lie on a face of the "
+                f"solid it creates (sequential features arrive in a later arc)"
+            )
+        # Unconsumed face-bound preview: the binding was validated in the fold
+        # loop above; the no-base display lane renders its wires from the
+        # resolved frame (Display v1.2 `sketch_frames`) — no BREP here.
+        return EvalResult(shape=TopoDS_Shape())
     # The effective plane frame (EP2) — validated on EVERY evaluation, so a
     # corrupt stored plane record fails loud at regeneration too.
     frame = effective_plane_frame(sketch)

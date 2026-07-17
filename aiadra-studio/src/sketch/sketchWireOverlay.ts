@@ -14,6 +14,7 @@
 import * as THREE from 'three'
 import type { InspectedSketch } from '../authoring/inspectDecode'
 import type { PlaneOrientation } from '../authoring/backend'
+import type { SketchFrame } from '../display/contract'
 
 export const SKETCH_WIRE_PREFIX = 'sketch-wire:'
 
@@ -41,8 +42,11 @@ function toWorld(ori: PlaneOrientation, u: number, v: number): THREE.Vector3 {
 
 export interface SketchWireOverlay {
   group: THREE.Group
-  /** Replace the wire set (idempotent; disposes what it removes). */
-  setSketches(sketches: InspectedSketch[]): void
+  /** Replace the wire set (idempotent; disposes what it removes). S3: the
+   *  ENGINE-resolved frames (Display v1.2 sketch_frames) join by sketch
+   *  feature id — a face-bound wire renders through ITS frame; a missing
+   *  frame keeps the wire honestly unavailable (never guessed). */
+  setSketches(sketches: InspectedSketch[], frames?: ReadonlyMap<string, SketchFrame>): void
   dispose(): void
 }
 
@@ -59,9 +63,12 @@ export function createSketchWireOverlay(color = 0xd9a441): SketchWireOverlay {
 
   return {
     group,
-    setSketches(sketches) {
+    setSketches(sketches, frames) {
       clear()
       for (const sk of sketches) {
+        // S3: resolve the sketch's WORLD mapping — principal via the mirror
+        // table; face-bound via the ENGINE frame from the display package.
+        const faceFrame = sk.plane.kind === 'face' ? frames?.get(sk.id) ?? null : null
         // SK-C0: per-entity wires — construction guides render DASHED
         // (LineDashedMaterial + computeLineDistances, unit-asserted).
         const wires = sk.wires?.length
@@ -69,7 +76,16 @@ export function createSketchWireOverlay(color = 0xd9a441): SketchWireOverlay {
           : sk.rings.map((points) => ({ points, construction: false, closed: true }))
         for (const wire of wires) {
           if (wire.points.length < 2) continue
-          const pts = wire.points.map((p) => toWorld(sk.plane, p.x, p.y))
+          // Principal renders via the mirror table; face-bound renders via
+          // the ENGINE frame — or stays honestly unavailable without one.
+          if (sk.plane.kind !== 'principal' && !faceFrame) continue
+          const pts = sk.plane.kind === 'principal'
+            ? wire.points.map((p) => toWorld((sk.plane as { orientation: PlaneOrientation }).orientation, p.x, p.y))
+            : wire.points.map((p) => new THREE.Vector3(
+                faceFrame!.origin_mm[0] + p.x * faceFrame!.u_axis[0] + p.y * faceFrame!.v_axis[0],
+                faceFrame!.origin_mm[1] + p.x * faceFrame!.u_axis[1] + p.y * faceFrame!.v_axis[1],
+                faceFrame!.origin_mm[2] + p.x * faceFrame!.u_axis[2] + p.y * faceFrame!.v_axis[2],
+              ))
           if (wire.closed) pts.push(pts[0].clone())
           const geom = new THREE.BufferGeometry().setFromPoints(pts)
           const mat = wire.construction

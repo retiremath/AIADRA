@@ -17,7 +17,7 @@
  */
 import type { HlrViewRequest } from '../aiadra'
 import {
-  DISPLAY_REPRESENTATION_VERSION,
+  LEGACY_FIXTURE_DISPLAY_VERSION,
   type DisplayRepresentation,
   type ViewDependentPayload,
 } from '../display/contract'
@@ -33,7 +33,7 @@ type FixtureViewId = (typeof FIXTURE_VIEW_IDS)[number]
 export class FixtureVersionError extends Error {
   constructor(found: string) {
     super(
-      `dev fixture is contract version ${found}, expected ${DISPLAY_REPRESENTATION_VERSION} — ` +
+      `dev fixture is contract version ${found}, expected ${LEGACY_FIXTURE_DISPLAY_VERSION} — ` +
         'regenerate with scripts/gen-dev-fixtures.py',
     )
     this.name = 'FixtureVersionError'
@@ -42,7 +42,7 @@ export class FixtureVersionError extends Error {
 
 /** Exported for the version-gate unit test (pure check, no imports). */
 export function assertFixtureVersion(display: { display_representation_version: string }): void {
-  if (display.display_representation_version !== DISPLAY_REPRESENTATION_VERSION) {
+  if (display.display_representation_version !== LEGACY_FIXTURE_DISPLAY_VERSION) {
     throw new FixtureVersionError(display.display_representation_version)
   }
 }

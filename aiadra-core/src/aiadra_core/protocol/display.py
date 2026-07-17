@@ -39,8 +39,18 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-DISPLAY_REPRESENTATION_VERSION = "1.1"
-ACCEPTED_VERSIONS = ("1.0", "1.1")
+# SK-C1.0 S2 (arc 20260716-2): contract v1.2 — additive optional
+# `surface_kind` per face + top-level `sketch_frames` (the resolved frames of
+# face-bound sketches, identity-bound by living INSIDE the package). The FULL
+# compatibility matrix survives (Codex6 S2 boundary): display accepts
+# 1.0/1.1/1.2; standalone HLR attaches for the HLR-CAPABLE set {1.1, 1.2}
+# only (1.0 keeps its populated-slot rejection verbatim).
+DISPLAY_REPRESENTATION_VERSION = "1.2"
+ACCEPTED_VERSIONS = ("1.0", "1.1", "1.2")
+HLR_CAPABLE_VERSIONS = ("1.1", "1.2")
+
+# sketch-frame numeric discipline (Codex2 B3.1.5)
+_FRAME_TOL = 1e-9
 
 _UNIT_TOL = 1e-6
 
@@ -66,6 +76,10 @@ class FaceBuffer:
     normals: tuple[float, ...]     # flat (x,y,z) triples, true surface normals
     triangles: tuple[int, ...]     # flat (i,j,k) index triples into this face's nodes
     appearance_slot: str = "default"
+    # v1.2 (SK-C1.0 S2): engine-classified surface kind — 'plane' | 'other'.
+    # OPTIONAL/None on pre-1.2 payloads; consumers treat absent as unknown and
+    # FAIL CLOSED (no planar-pick eligibility), never guess.
+    surface_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,13 +231,90 @@ class ViewDependentPayload:
             raise DisplayContractError(
                 f"malformed view-dependent payload from producer: {e!r}"
             ) from e
-        if payload.identity_echo.display_representation_version != "1.1":
+        echoed = payload.identity_echo.display_representation_version
+        if echoed not in HLR_CAPABLE_VERSIONS:
             raise DisplayContractError(
-                f"view-dependent payload requires contract version '1.1'; "
-                f"producer echoed "
-                f"{payload.identity_echo.display_representation_version!r}"
+                f"view-dependent payload requires an HLR-capable contract version "
+                f"{HLR_CAPABLE_VERSIONS!r}; producer echoed {echoed!r}"
             )
         return payload
+
+
+@dataclass(frozen=True)
+class SketchFrame:
+    """v1.2: the RESOLVED plane frame of one face-bound sketch — derived
+    display data (never Truth), identity-bound to THIS package by containment
+    (it inherits object_uuid/geometry_ref/cache_key/topology_signature/version
+    from the package it rides in — Codex2 B3.1)."""
+
+    sketch_feature_id: str
+    origin_mm: tuple[float, float, float]
+    u_axis: tuple[float, float, float]
+    v_axis: tuple[float, float, float]
+    normal: tuple[float, float, float]
+
+
+def _validate_sketch_frames(raw: Any, version: str) -> tuple[SketchFrame, ...]:
+    """The B3.1.5 validator: unique ids, finite 3-vectors, unit + orthogonal
+    axes, right-handed v = normal × u. Empty/absent is valid; a populated list
+    on a pre-1.2 version is a producer error."""
+    if raw in (None, []):
+        return ()
+    if version not in ("1.2",):
+        raise DisplayContractError(
+            f"sketch_frames requires contract v1.2; producer declared {version!r}"
+        )
+    if not isinstance(raw, list):
+        raise DisplayContractError("sketch_frames must be a list")
+    frames: list[SketchFrame] = []
+    seen: set[str] = set()
+    for i, f in enumerate(raw):
+        if not isinstance(f, dict):
+            raise DisplayContractError(f"sketch_frames[{i}] must be an object")
+        sid = f.get("sketch_feature_id")
+        if not isinstance(sid, str) or not sid:
+            raise DisplayContractError(f"sketch_frames[{i}] lacks sketch_feature_id")
+        if sid in seen:
+            raise DisplayContractError(f"sketch_frames duplicates {sid!r}")
+        seen.add(sid)
+        vecs: dict[str, tuple[float, float, float]] = {}
+        for key in ("origin_mm", "u_axis", "v_axis", "normal"):
+            v = f.get(key)
+            if not (isinstance(v, (list, tuple)) and len(v) == 3):
+                raise DisplayContractError(f"sketch_frames[{i}].{key} must be a 3-vector")
+            vec = tuple(float(x) for x in v)
+            if not all(math.isfinite(x) for x in vec):
+                raise DisplayContractError(f"sketch_frames[{i}].{key} must be finite")
+            vecs[key] = vec  # type: ignore[assignment]
+        u, vv, n = vecs["u_axis"], vecs["v_axis"], vecs["normal"]
+        dot = lambda a, b: a[0] * b[0] + a[1] * b[1] + a[2] * b[2]  # noqa: E731
+        for name, val in (
+            ("|u|", abs(math.sqrt(dot(u, u)) - 1.0)),
+            ("|v|", abs(math.sqrt(dot(vv, vv)) - 1.0)),
+            ("|n|", abs(math.sqrt(dot(n, n)) - 1.0)),
+            ("u·v", abs(dot(u, vv))),
+            ("u·n", abs(dot(u, n))),
+            ("v·n", abs(dot(vv, n))),
+        ):
+            if val > _FRAME_TOL:
+                raise DisplayContractError(
+                    f"sketch_frames[{i}] fails orthonormality ({name} off by {val:.3e})"
+                )
+        cross = (
+            n[1] * u[2] - n[2] * u[1],
+            n[2] * u[0] - n[0] * u[2],
+            n[0] * u[1] - n[1] * u[0],
+        )
+        if max(abs(cross[k] - vv[k]) for k in range(3)) > _FRAME_TOL:
+            raise DisplayContractError(
+                f"sketch_frames[{i}] is not right-handed (v != normal × u)"
+            )
+        frames.append(SketchFrame(
+            sketch_feature_id=sid,
+            origin_mm=vecs["origin_mm"],  # type: ignore[arg-type]
+            u_axis=u, v_axis=vv, normal=n,  # type: ignore[arg-type]
+        ))
+    return tuple(frames)
 
 
 @dataclass(frozen=True)
@@ -236,6 +327,7 @@ class DisplayRepresentation:
     invalidation: DisplayInvalidation
     counters: DisplayCounters
     view_dependent: ViewDependentPayload | None = None
+    sketch_frames: tuple[SketchFrame, ...] = ()
     display_representation_version: str = DISPLAY_REPRESENTATION_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -269,6 +361,7 @@ class DisplayRepresentation:
                         normals=tuple(float(x) for x in f["normals"]),
                         triangles=tuple(int(i) for i in f["triangles"]),
                         appearance_slot=f.get("appearance_slot", "default"),
+                        surface_kind=_surface_kind(f, version),
                     )
                     for f in r["faces"]
                 ),
@@ -338,6 +431,7 @@ class DisplayRepresentation:
                 ) from e
             _check_echo_matches_identity(
                 view_dependent.identity_echo, identity, version)
+        sketch_frames = _validate_sketch_frames(d.get("sketch_frames"), version)
 
         return cls(
             identity=identity,
@@ -346,6 +440,7 @@ class DisplayRepresentation:
             invalidation=invalidation,
             counters=counters,
             view_dependent=view_dependent,
+            sketch_frames=sketch_frames,
             display_representation_version=version,
         )
 
@@ -593,6 +688,25 @@ def _check_echo_matches_identity(
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+
+def _surface_kind(f: dict, version: str) -> str | None:
+    sk = f.get("surface_kind")
+    if sk is None:
+        return None
+    # Codex7 B3: v1.1 -> v1.2 is a DECLARED-shape amendment — a legacy
+    # package carrying the new field is a producer error, exactly like
+    # populated sketch_frames (never an additive mutation of v1.1).
+    if version not in ("1.2",):
+        raise DisplayContractError(
+            f"face {f.get('face_id')!r} carries surface_kind under contract "
+            f"{version!r}; the field requires v1.2"
+        )
+    if sk not in ("plane", "other"):
+        raise DisplayContractError(
+            f"face {f.get('face_id')!r} surface_kind must be 'plane'|'other', got {sk!r}"
+        )
+    return sk
 
 
 def _req(d: dict[str, Any], key: str) -> dict[str, Any]:

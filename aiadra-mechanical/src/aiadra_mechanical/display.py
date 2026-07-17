@@ -39,7 +39,10 @@ from .topology import (  # re-exported for compatibility (tests import from here
     compute_topology_signature,
 )
 
-DISPLAY_REPRESENTATION_VERSION = "1.1"
+# SK-C1.0 S2: v1.2 — additive `surface_kind` per face + top-level
+# `sketch_frames` (the resolved frames of face-bound sketches). The HLR
+# producer echoes THIS constant too (Codex2 B3.1: one version authority).
+DISPLAY_REPRESENTATION_VERSION = "1.2"
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ def generate_display_representation(
         angular_deflection_rad=angular_deflection_rad,
         cache_material=cache_material,
     )
-    return build_display_payload(topo)
+    return build_display_payload(topo, sketch_frames=build_sketch_frames(features))
 
 
 def _no_solid_display(
@@ -206,6 +209,7 @@ def _no_solid_display(
             "pickable_kinds": [],
             "names": {},
         },
+        "sketch_frames": [],
         "view_dependent": None,
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],
@@ -220,12 +224,46 @@ def _no_solid_display(
     }
 
 
-def build_display_payload(topo: "topology.PartTopology") -> dict[str, Any]:
+def build_sketch_frames(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Display v1.2 `sketch_frames`: the RESOLVED frame of every face-bound
+    sketch (derived display data, never Truth). Resolution runs the full typed
+    refusal set at the sketch's fold position — a display of a Part with a
+    stale/broken binding fails loud, exactly like regeneration."""
+    from . import face_frame
+
+    frames: list[dict[str, Any]] = []
+    for idx, feat in enumerate(features):
+        if feat.get("feature_type") != "sketch":
+            continue
+        plane = (feat.get("adapter_payload") or {}).get("plane")
+        if not (isinstance(plane, dict) and plane.get("kind") == "face"):
+            continue
+        frame = face_frame.resolve_face_plane(features[:idx], plane)
+        frames.append({
+            "sketch_feature_id": feat.get("id"),
+            "origin_mm": list(frame.origin_mm),
+            "u_axis": list(frame.u_axis),
+            "v_axis": list(frame.v_axis),
+            "normal": list(frame.normal),
+        })
+    return frames
+
+
+def build_display_payload(
+    topo: "topology.PartTopology",
+    sketch_frames: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Assemble the contract dict from extracted topology records (B1: ids come
     from the records, never derived here)."""
     role_by_index = topo.face_id_by_index()
 
     faces_payload, triangle_count = _build_faces(topo.face_map, role_by_index)
+    # v1.2: additive engine-classified surface kind per face (the pick filter's
+    # planarity authority — absent means unknown, consumers fail closed).
+    kind_by_id = {f.face_id: f.surface_kind for f in topo.faces}
+    for fp in faces_payload:
+        sk = kind_by_id.get(fp.get("face_id"))
+        fp["surface_kind"] = "plane" if sk == "plane" else "other"
 
     edges_payload = [
         {
@@ -271,6 +309,7 @@ def build_display_payload(topo: "topology.PartTopology") -> dict[str, Any]:
             "pickable_kinds": ["face", "edge", "vertex"],
             "names": names,
         },
+        "sketch_frames": list(sketch_frames or []),
         "view_dependent": None,  # populated only by the HLR read lane (hlr.py)
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],

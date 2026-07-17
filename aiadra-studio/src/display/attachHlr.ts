@@ -30,7 +30,9 @@ export function checkAttachHlr(
   if (echo.cache_key !== id.cache_key) mismatches.push('cache_key')
   if (echo.topology_signature !== id.topology_signature)
     mismatches.push('topology_signature')
-  if (echo.display_representation_version !== '1.1')
+  // Codex2 B3.1.3: the echo must equal the HELD package's declared version —
+  // never a literal (1.1↔1.1 and 1.2↔1.2 attach; cross-versions drop+refetch).
+  if (echo.display_representation_version !== display.display_representation_version)
     mismatches.push('display_representation_version')
   return { ok: mismatches.length === 0, mismatches }
 }

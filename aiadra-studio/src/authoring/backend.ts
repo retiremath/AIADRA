@@ -8,6 +8,7 @@
  */
 import type { DisplaySource } from '../display/displaySource'
 import { pointsToSegments, type Pt } from '../sketch/contour'
+import { principalFrame, type PlaneFrameTS } from '../sketch/planeFrame'
 
 /** A single feature op: an allowlisted Ring-2 kind + its (main-validated) params. */
 export interface FeatureOp {
@@ -197,6 +198,34 @@ export function createUnavailableBackend(): AuthoringBackend {
 // (The parametric-rectangle `buildExtrudeOps` retired in S2 with its dashboard
 //  — Extrude is now dual-entry over real sketches, never a canned rectangle.)
 
+/** S3 (SK-C1.0): the sketch SUPPORT — a principal datum or an engine-planar
+ *  face. The face variant carries the DISPLAY id (input vocabulary only —
+ *  the engine mints the stored reference at commit) and the TRANSIENT mirror
+ *  frame for pre-commit drawing (never persisted; the engine re-derives). */
+export type SketchSupport =
+  | { kind: 'principal'; orientation: PlaneOrientation }
+  | { kind: 'face'; faceId: string; frame: PlaneFrameTS }
+
+/** ONE projection from a support to the op's plane param (the face variant
+ *  sends ONLY the display id — the exact S2 handler input shape). */
+export function supportPlaneParam(
+  support: PlaneOrientation | SketchSupport,
+): Record<string, unknown> {
+  if (typeof support === 'string') return { kind: 'principal', orientation: support }
+  return support.kind === 'principal'
+    ? { kind: 'principal', orientation: support.orientation }
+    : { kind: 'face', target_face_id: support.faceId }
+}
+
+/** ONE projection from a support to its drawing/camera frame (Codex10 B1):
+ *  a face support's frame IS the stored mirror frame — returned by reference,
+ *  never re-derived — and a principal support maps through `principalFrame`.
+ *  Every camera/interaction consumer (Sketch view, the interaction mode)
+ *  goes through here; `st.plane` is never a frame authority. */
+export function supportFrame(support: SketchSupport): PlaneFrameTS {
+  return support.kind === 'face' ? support.frame : principalFrame(support.orientation)
+}
+
 /** The three principal sketch planes (EP2). Studio labels follow the Creo
  *  convention; the ENGINE speaks geometry — labels never cross the wire. */
 export type PlaneOrientation = 'xy' | 'yz' | 'zx'
@@ -239,7 +268,7 @@ export function buildContourFeatureOps(
       params: {
         part_number: partNumber,
         primitives: [{ type: 'contour', segments: pointsToSegments(points, bulges) }],
-        plane: { kind: 'principal', orientation: plane },
+        plane: supportPlaneParam(plane),
       },
     },
     {
@@ -314,7 +343,7 @@ export function normalizeRectangle(a: Pt, b: Pt, epsMm: number = RECT_EPS_MM): R
 export function buildRectangleSketchOps(
   partNumber: string,
   rect: RectDims,
-  plane: PlaneOrientation,
+  plane: PlaneOrientation | SketchSupport,
   construction = false,
 ): FeatureOp[] {
   return [
@@ -323,7 +352,7 @@ export function buildRectangleSketchOps(
       params: {
         part_number: partNumber,
         primitives: [{ type: 'rectangle', ...rect, ...(construction ? { construction: true } : {}) }],
-        plane: { kind: 'principal', orientation: plane },
+        plane: supportPlaneParam(plane),
       },
     },
   ]
@@ -346,7 +375,7 @@ export function buildCreateWithRectangleOps(
 export function buildSketchOnlyOps(
   partNumber: string,
   points: Pt[],
-  plane: PlaneOrientation,
+  plane: PlaneOrientation | SketchSupport,
   opts?: { bulges?: number[]; construction?: boolean },
 ): FeatureOp[] {
   return [
@@ -359,7 +388,7 @@ export function buildSketchOnlyOps(
           segments: pointsToSegments(points, opts?.bulges),
           ...(opts?.construction ? { construction: true } : {}),
         }],
-        plane: { kind: 'principal', orientation: plane },
+        plane: supportPlaneParam(plane),
       },
     },
   ]
@@ -370,7 +399,7 @@ export function buildSketchOnlyOps(
 export function buildCircleSketchOps(
   partNumber: string,
   circle: CircleDims,
-  plane: PlaneOrientation,
+  plane: PlaneOrientation | SketchSupport,
   construction = false,
 ): FeatureOp[] {
   return [
@@ -379,7 +408,7 @@ export function buildCircleSketchOps(
       params: {
         part_number: partNumber,
         primitives: [{ type: 'circle', ...circle, ...(construction ? { construction: true } : {}) }],
-        plane: { kind: 'principal', orientation: plane },
+        plane: supportPlaneParam(plane),
       },
     },
   ]

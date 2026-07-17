@@ -125,11 +125,25 @@ describe('checkAttachHlr (Codex1 B3)', () => {
     expect(checkAttachHlr(heldPackage(), p).mismatches).toEqual(['geometry_ref'])
   })
 
-  it('rejects an overlay not produced at contract 1.1', () => {
+  it('rejects an overlay not produced at the HELD package version', () => {
     const p = overlay()
     p.identity_echo.display_representation_version = '1.0'
     expect(checkAttachHlr(heldPackage(), p).mismatches).toEqual([
       'display_representation_version',
     ])
+  })
+
+  it('S2 (Codex2 B3.1.3): the version check is the HELD package MATRIX, never a literal — 1.1↔1.1 and 1.2↔1.2 attach; BOTH cross directions refuse', () => {
+    const at = (held: string, echoed: string) => {
+      const d = heldPackage()
+      ;(d as { display_representation_version: string }).display_representation_version = held
+      const p = overlay()
+      p.identity_echo.display_representation_version = echoed
+      return checkAttachHlr(d, p)
+    }
+    expect(at('1.1', '1.1').mismatches).toEqual([])
+    expect(at('1.2', '1.2').mismatches).toEqual([])
+    expect(at('1.2', '1.1').mismatches).toEqual(['display_representation_version'])
+    expect(at('1.1', '1.2').mismatches).toEqual(['display_representation_version'])
   })
 })

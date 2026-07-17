@@ -43,6 +43,7 @@ from .arc_geometry import arc_geometry, point_on_arc_span
 from .recipe import (
     PlaneFrame,
     effective_plane_frame,
+    plane_skeleton,
     extrude_sign,
     resolve_consumed_sketch,
 )
@@ -84,7 +85,7 @@ def require_skp_id(primitive: dict[str, Any], label: str) -> str:
 class FaceRecord:
     face_id: str               # canonical recipe-anchored role id
     occt_index: int            # 1-based index into `PartTopology.face_map`
-    surface_kind: str          # "plane" | "cylinder" (v0.0.1 surface set)
+    surface_kind: str          # "plane" | "cylinder" | "other" (exact; Codex7 B2)
     face: Any                  # live TopoDS_Face handle (NEVER identity)
 
 
@@ -125,6 +126,21 @@ class PartTopology:
 # ---------------------------------------------------------------------------
 # Extraction — the single entry point (B1)
 # ---------------------------------------------------------------------------
+
+
+def producing_feature_id(face_id: str) -> str:
+    """The DIRECT producing feature of a canonical face id — the ONE tested
+    grammar authority (ADR/0035: '<feature>[/<primitive>]:<kind>:<role>'; a
+    wall id like 'feat_0002/skp_0001:face:wall_y_min' is produced by
+    'feat_0002'). Used AFTER exact fresh-topology matching confirms the id
+    exists — this extracts ownership, never existence (Codex7 B1)."""
+    if ":face:" not in face_id:
+        raise TransactionError(
+            f"mechanical: {face_id!r} is not a canonical face id "
+            f"('<feature>[/<primitive>]:face:<role>')"
+        )
+    anchor = face_id.split(":", 1)[0]
+    return anchor.split("/", 1)[0]
 
 
 def extract_part_topology(
@@ -213,7 +229,15 @@ def correlate_shape(
     for i in range(1, face_map.Extent() + 1):
         face = TopoDS.Face_s(face_map.FindKey(i))
         stype = BRepAdaptor_Surface(face).GetType()
-        surface_kind = "cylinder" if stype == GeomAbs_Cylinder else "plane"
+        # SK-C1.0 S2 Codex7 B2: EXACT classification — planarity is a safety
+        # boundary (face-sketch eligibility); every non-plane/non-cylinder or
+        # unknown surface is 'other', never assumed planar.
+        if stype == GeomAbs_Plane:
+            surface_kind = "plane"
+        elif stype == GeomAbs_Cylinder:
+            surface_kind = "cylinder"
+        else:
+            surface_kind = "other"
         faces.append(FaceRecord(
             face_id=role_by_face_index[i],
             occt_index=i,
@@ -370,9 +394,9 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             # non-default, so absent-plane and explicit principal-xy recipes
             # keep byte-identical signatures. The direction SIGN stays out (an
             # orientation value, not a role-set change).
-            ori = effective_plane_frame(f).orientation
-            if ori != "xy":
-                entry["plane"] = ori
+            plane_sk = plane_skeleton(f)
+            if plane_sk is not None:
+                entry["plane"] = plane_sk
         elif ftype == "extrude":
             # Codex3 B2: the signature consumer enforces the exact-sketch
             # discipline too — a missing/mismatched/duplicate consumed sketch

@@ -18,6 +18,16 @@ import { checkAttachHlr } from './display/attachHlr'
 import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
+import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
+import {
+  arbitratePlanePick,
+  frameFromNormalAndPoint,
+  projectedExtent,
+  rayPlaneUV,
+  sketchViewOrientation,
+  type PlaneFrameTS,
+} from './sketch/planeFrame'
+import type { SketchTool } from './authoring/authoringSession'
 import { createSketchWireOverlay } from './sketch/sketchWireOverlay'
 import type { InspectedSketch } from './authoring/inspectDecode'
 import type { DisplaySource } from './display/displaySource'
@@ -71,8 +81,27 @@ export type ViewportApi = {
   removeImported: (id: string) => void
   /** Replace the UNCONSUMED-sketch wire overlay (S2 D-S2 — derived from the
    *  inspected recipe; overlay lane, never canonical identity). */
-  setSketchWires: (sketches: InspectedSketch[]) => void
+  setSketchWires: (
+    sketches: InspectedSketch[],
+    frames?: ReadonlyMap<string, import('./display/contract').SketchFrame>,
+  ) => void
+  /** SK-C1.0 S1: the `Sketch view` camera action — reorient normal to the
+   *  given frame (look = −normal, up = v; Codex2 B5.4). Camera-only. */
+  sketchView: (frame: PlaneFrameTS) => void
 }
+
+/** The in-context interaction mode (SK-C1.0 S1) — derived by the Workbench
+ *  from the ONE authoring session; the viewport renders/serves it and owns
+ *  every imperative three.js consequence (Codex3 bar 2). */
+export type SketchInteractionMode =
+  | { kind: 'planePick' }
+  | { kind: 'sketch'; frame: PlaneFrameTS; tool: SketchTool; construction: boolean }
+
+/** S3: the resolved pick — a datum enum, or an ENGINE-PLANAR face enriched
+ *  with the TRANSIENT mirror frame (drawing-only; the engine re-derives). */
+export type ResolvedPlanePick =
+  | { kind: 'datum'; orientation: 'xy' | 'yz' | 'zx' }
+  | { kind: 'face'; faceId: string; frame: PlaneFrameTS }
 
 /**
  * AIADRA Studio viewport (arc 20260610-1 canonical lane live; 20260619-1 / 6a
@@ -94,6 +123,12 @@ export default function Viewport({
   viewStore,
   selectionStore,
   commandActions,
+  interactionMode = null,
+  planarFaceIds,
+  onPlanePick,
+  onSketchPlace,
+  onSketchCursor,
+  onContextHover,
 }: {
   apiRef?: MutableRefObject<ViewportApi | null>
   theme: Theme
@@ -101,18 +136,41 @@ export default function Viewport({
   viewStore: ViewStateStore
   selectionStore: SelectionStore
   commandActions: CommandActions
+  /** SK-C1.0 S1: null = ordinary display shell; the Workbench derives it. */
+  interactionMode?: SketchInteractionMode | null
+  /** S3: the ENGINE-classified planar faces of the current generation — the
+   *  ONLY face-pick eligibility authority (Studio never classifies). */
+  planarFaceIds?: ReadonlySet<string>
+  onPlanePick?: (hit: ResolvedPlanePick) => void
+  onSketchPlace?: (uv: { u: number; v: number }) => void
+  onSketchCursor?: (uv: { u: number; v: number } | null) => void
+  /** SK-C1.0 Codex4 B1.3: sketch-mode canonical-topology hover — the actual
+   *  engine-owned/display-package id, surfaced (hover-only; the SK-E seam). */
+  onContextHover?: (hit: { kind: 'face' | 'edge'; id: string } | null) => void
 }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const localApi = useRef<ViewportApi | null>(null)
   const apiRef = externalApi ?? localApi
 
   const [menu, setMenu] = useState<Menu>(null)
+  // Callback + mode refs: the mount effect runs ONCE; handlers read these live.
+  const sketchCbRef = useRef({ onPlanePick, onSketchPlace, onSketchCursor, onContextHover })
+  sketchCbRef.current = { onPlanePick, onSketchPlace, onSketchCursor, onContextHover }
+  const planarFaceIdsRef = useRef<ReadonlySet<string>>(new Set())
+  planarFaceIdsRef.current = planarFaceIds ?? new Set()
+  const interactionModeRef = useRef(interactionMode)
+  interactionModeRef.current = interactionMode
+  const applyInteractionRef = useRef<((m: SketchInteractionMode | null) => void) | null>(null)
   const [snapIds, setSnapIds] = useState<string[]>([])
   const selState = useSelectionState(selectionStore)
   const ctx = toCommandContext(useViewState(viewStore), {
     filter: selState.filter,
     hasSelection: selState.selected !== null,
   })
+
+  useEffect(() => {
+    applyInteractionRef.current?.(interactionMode)
+  }, [interactionMode])
 
   useEffect(() => {
     const mount = mountRef.current!
@@ -690,6 +748,176 @@ export default function Viewport({
     }
     const unsubSelection = selectionStore.subscribe(reconcileSelection)
 
+    // ---- SK-C1.0 S1: plane-pick + in-context sketch mode ------------------
+    // The session store owns the pure state (Codex3 bar 2); THIS block owns
+    // every imperative consequence: the edit overlay, datum-quad hover, the
+    // mode-scoped datum exposure, part ghosting, and the entry camera.
+    const sketchEdit = createSketchEditOverlay()
+    sketchEdit.group.visible = false
+    scene.add(sketchEdit.group)
+    let modeKind: 'none' | 'planePick' | 'sketch' = 'none'
+    let sketchFrame: PlaneFrameTS | null = null
+    let hoveredQuad: THREE.Mesh | null = null
+    let datumsPriorVisible: boolean | null = null
+    let ghosted = false
+
+    const setQuadHover = (quad: THREE.Mesh | null) => {
+      if (hoveredQuad === quad) return
+      if (hoveredQuad) (hoveredQuad.material as THREE.MeshBasicMaterial).opacity = 0.08
+      hoveredQuad = quad
+      if (hoveredQuad) (hoveredQuad.material as THREE.MeshBasicMaterial).opacity = 0.22
+    }
+    const datumQuadAt = (clientX: number, clientY: number): THREE.Mesh | null => {
+      const r = canvas.getBoundingClientRect()
+      ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const hits = raycaster.intersectObjects(datums.group.children, false)
+      const hit = hits.find((h) => (h.object.userData as { kind?: string }).kind === 'intrinsic-plane')
+      return (hit?.object as THREE.Mesh) ?? null
+    }
+    // S3: the ELIGIBLE planar-face hit in pick mode — canonical faces only,
+    // filtered by the engine's planarFaceIds; the hit carries the TRANSIENT
+    // mirror frame derived from the engine-provided normal attribute + point.
+    const planarFaceAt = (
+      clientX: number,
+      clientY: number,
+    ): { faceId: string; frame: PlaneFrameTS } | null => {
+      if (!part) return null
+      const r = canvas.getBoundingClientRect()
+      ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const hits = raycaster.intersectObjects(part.faces, false)
+      const hit = hits.find((h) =>
+        planarFaceIdsRef.current.has((h.object.userData as { displayId?: string }).displayId ?? ''))
+      if (!hit || !hit.face) return null
+      const faceId = (hit.object.userData as { displayId: string }).displayId
+      // the ENGINE's true normal attribute at the hit triangle (outward)
+      const geom = (hit.object as THREE.Mesh).geometry as THREE.BufferGeometry
+      const na = geom.getAttribute('normal') as THREE.BufferAttribute
+      const i = hit.face.a
+      const frame = frameFromNormalAndPoint(
+        [na.getX(i), na.getY(i), na.getZ(i)],
+        [hit.point.x, hit.point.y, hit.point.z],
+      )
+      if (!frame) return null
+      return { faceId, frame }
+    }
+
+    const sketchUvAt = (clientX: number, clientY: number): { u: number; v: number } | null => {
+      if (!sketchFrame) return null
+      const r = canvas.getBoundingClientRect()
+      ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const o = raycaster.ray.origin
+      const d = raycaster.ray.direction
+      return rayPlaneUV(sketchFrame, [o.x, o.y, o.z], [d.x, d.y, d.z])
+    }
+    // Ghosting is a reversible PROJECTION of the display authorities (Codex3
+    // bar 4): entry dims the shaded materials; exit re-applies the current
+    // mode + selection styling rather than restoring cached guesses.
+    const ghostPart = (on: boolean) => {
+      if (ghosted === on) return
+      ghosted = on
+      if (!part) return
+      for (const f of part.faces) {
+        const m = f.userData.shadedMaterial as THREE.MeshStandardMaterial
+        m.transparent = on
+        m.opacity = on ? 0.3 : 1
+        m.needsUpdate = true
+      }
+      if (!on) {
+        applyModeChange(currentMode)
+        repaintHighlights()
+      }
+    }
+    // Codex4 B1.1: the ENTRY EXTENT — the canonical Part's bounds projected
+    // onto the sketch plane, expanded by a margin, floored at the minimum
+    // sheet. Renderer-side, generation-bound presentation state — not Truth.
+    const SHEET_MIN_HALF: readonly [number, number] = [130, 85]
+    // Codex5 B1.1: bounds from the CANONICAL Part ONLY — reference imports
+    // stay visible context but never define the support sheet or entry fit.
+    const sketchEntryExtent = (
+      f: PlaneFrameTS,
+    ): { halfU: number; halfV: number; centerU: number; centerV: number } => {
+      const box = new THREE.Box3()
+      if (partGroup) box.expandByObject(partGroup)
+      if (box.isEmpty()) {
+        return { halfU: SHEET_MIN_HALF[0], halfV: SHEET_MIN_HALF[1], centerU: 0, centerV: 0 }
+      }
+      // ONE pure derivation (planeFrame.projectedExtent) feeds BOTH the sheet
+      // and the camera — they cannot disagree (the off-origin test pins it).
+      return projectedExtent(
+        [box.min.x, box.min.y, box.min.z],
+        [box.max.x, box.max.y, box.max.z],
+        f,
+        1.15,
+        SHEET_MIN_HALF,
+      )
+    }
+    const fitSketchExtent = (f: PlaneFrameTS, e: { halfU: number; halfV: number; centerU: number; centerV: number }) => {
+      const aspect = w() / h()
+      frustumHalf = Math.max(e.halfV, e.halfU / Math.max(aspect, 0.1)) * 1.06
+      camera.zoom = 1
+      const c = new THREE.Vector3(
+        f.origin[0] + e.centerU * f.u[0] + e.centerV * f.v[0],
+        f.origin[1] + e.centerU * f.u[1] + e.centerV * f.v[1],
+        f.origin[2] + e.centerU * f.u[2] + e.centerV * f.v[2],
+      )
+      const dir = camera.position.clone().sub(controls.target).normalize()
+      controls.target.copy(c)
+      camera.position.copy(c).addScaledVector(dir, 120)
+      applyFrustum()
+      controls.update()
+    }
+
+    /** The ONE sketch framing (Codex4 B1.1 extended by Codex10 B1): the
+     *  Sketch-view orientation PLUS the sheet extent + entry fit, shared by
+     *  the auto entry AND the mid-session `Sketch view` return — a bare
+     *  orientMainCamera would end in a scene fit() that discards the sketch
+     *  extent (and with it the drawing scale). */
+    const applySketchFraming = (frame: PlaneFrameTS) => {
+      const o = sketchViewOrientation(frame)
+      orientMainCamera({ direction: [o.direction[0], o.direction[1], o.direction[2]], up: [o.up[0], o.up[1], o.up[2]] })
+      const extent = sketchEntryExtent(frame)
+      sketchEdit.setExtent(extent.halfU, extent.halfV, extent.centerU, extent.centerV)
+      fitSketchExtent(frame, extent)
+    }
+
+    const applyInteraction = (m: SketchInteractionMode | null) => {
+      const kind = m?.kind ?? 'none'
+      if (kind !== 'planePick' && modeKind === 'planePick') {
+        setQuadHover(null)
+        if (datumsPriorVisible !== null) {
+          datums.setVisible(datumsPriorVisible)
+          datumsPriorVisible = null
+        }
+      }
+      if (kind === 'planePick' && modeKind !== 'planePick') {
+        // mode-scoped datum exposure (Codex1 B4.4) — restored on exit above
+        datumsPriorVisible = viewStore.getSnapshot().datumsVisible
+        datums.setVisible(true)
+      }
+      if (kind === 'sketch' && modeKind !== 'sketch' && m?.kind === 'sketch') {
+        ghostPart(true)
+        sketchEdit.group.visible = true
+        // AUTO Sketch view on entry (Codex2 B5.4 — the Creo default); the
+        // frame and every sketch fact stay camera-independent.
+        applySketchFraming(m.frame)
+      }
+      if (kind !== 'sketch' && modeKind === 'sketch') {
+        ghostPart(false)
+        sketchEdit.group.visible = false
+        sketchFrame = null
+        sketchCbRef.current.onContextHover?.(null)
+      }
+      modeKind = kind
+      if (m?.kind === 'sketch') {
+        sketchFrame = m.frame
+        sketchEdit.update(m.frame, m.tool, m.construction)
+      }
+    }
+    applyInteractionRef.current = applyInteraction
+
     const onLeftDown = (e: PointerEvent) => {
       if (e.button === 0) {
         downX = e.clientX
@@ -698,7 +926,33 @@ export default function Viewport({
     }
     const onLeftUp = (e: PointerEvent) => {
       if (e.button !== 0) return
+      // the slop guard doubles as the orbit-vs-place distinction (Codex3
+      // bar 6): a drag gesture never places a point or picks a plane
       if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return
+      if (modeKind === 'planePick') {
+        // ONE arbitration rule (hover = click winner): an ELIGIBLE planar
+        // canonical face wins over a datum quad (S3 — planarFaceIds is the
+        // engine's authority); otherwise the datum decides.
+        const face = planarFaceAt(e.clientX, e.clientY)
+        const quad = datumQuadAt(e.clientX, e.clientY)
+        const orientation = quad
+          ? ((quad.userData as { orientation?: 'xy' | 'yz' | 'zx' }).orientation ?? null)
+          : null
+        const winner = arbitratePlanePick(face?.faceId ?? null, orientation, planarFaceIdsRef.current)
+        if (winner?.kind === 'face' && face) {
+          sketchCbRef.current.onPlanePick?.({ kind: 'face', faceId: face.faceId, frame: face.frame })
+        } else if (winner?.kind === 'datum') {
+          sketchCbRef.current.onPlanePick?.(winner)
+        }
+        return // never canonical selection from pick mode (Codex1 B4.3)
+      }
+      if (modeKind === 'sketch') {
+        // drawing tools own placement clicks (Codex3 bar 5); canonical
+        // topology stays hover-only in this arc
+        const uv = sketchUvAt(e.clientX, e.clientY)
+        if (uv) sketchCbRef.current.onSketchPlace?.(uv)
+        return
+      }
       if (!part) return
       const filter = selectionStore.getSnapshot().filter
       const r = canvas.getBoundingClientRect()
@@ -721,11 +975,38 @@ export default function Viewport({
         navCube.setHover(navCube.pickRegion(nx, ny))
         if (hovId) {
           hovId = null
+          if (modeKind === 'sketch') sketchCbRef.current.onContextHover?.(null)
           repaintHighlights()
         }
         return
       }
       navCube.setHover(null)
+      if (modeKind === 'planePick') {
+        // the SAME winner as click (Codex1 B4.3): an eligible planar face
+        // highlights through the canonical hover; else the datum quad
+        const face = planarFaceAt(e.clientX, e.clientY)
+        if (face) {
+          setQuadHover(null)
+          const next: SelId = { kind: 'face', id: face.faceId }
+          if (!sameId(next, hovId)) {
+            hovId = next
+            repaintHighlights()
+          }
+        } else {
+          setQuadHover(datumQuadAt(e.clientX, e.clientY))
+          if (hovId) {
+            hovId = null
+            repaintHighlights()
+          }
+        }
+        return
+      }
+      if (modeKind === 'sketch') {
+        // the live cursor rides the TRUE plane (display lift is render-only)…
+        sketchCbRef.current.onSketchCursor?.(sketchUvAt(e.clientX, e.clientY))
+        // …and canonical topology stays HOVERABLE (Codex2 B5.7 — the SK-E
+        // seam: engine-owned ids recoverable while sketching, hover-only).
+      }
       if (!part) return
       const filter = selectionStore.getSnapshot().filter
       ndc.set((px / w()) * 2 - 1, -((py / h()) * 2) + 1)
@@ -734,6 +1015,9 @@ export default function Viewport({
       const next: SelId = hit ? { kind: hit.kind, id: hit.displayId } : null
       if (sameId(next, hovId)) return
       hovId = next
+      // Codex4 B1.3: while sketching, the hovered canonical id is SURFACED —
+      // observable evidence + the operator affordance the SK-E tools build on.
+      if (modeKind === 'sketch') sketchCbRef.current.onContextHover?.(next)
       repaintHighlights()
     }
     const onPointerMove = (e: PointerEvent) => {
@@ -742,6 +1026,11 @@ export default function Viewport({
     }
     const onPointerLeave = () => {
       navCube.setHover(null)
+      setQuadHover(null)
+      if (modeKind === 'sketch') {
+        sketchCbRef.current.onSketchCursor?.(null)
+        sketchCbRef.current.onContextHover?.(null)
+      }
       if (hovId) {
         hovId = null
         repaintHighlights()
@@ -872,8 +1161,11 @@ export default function Viewport({
       orbitView,
       addImported,
       removeImported,
-      setSketchWires: (sketches) => sketchWires.setSketches(sketches),
+      setSketchWires: (sketches, frames) => sketchWires.setSketches(sketches, frames),
+      sketchView: (frame) => applySketchFraming(frame),
     }
+    // apply the mode that CAPTURED before the scene mounted (Codex4 NB1)
+    applyInteraction(interactionModeRef.current)
 
     const onResize = () => {
       applyFrustum()
@@ -915,6 +1207,8 @@ export default function Viewport({
       canvas.removeEventListener('contextmenu', onContextMenu)
       canvas.removeEventListener('wheel', onWheelCapture, true)
       navCube.dispose()
+      applyInteractionRef.current = null
+      sketchEdit.dispose()
       controls.dispose()
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)

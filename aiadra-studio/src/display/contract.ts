@@ -8,7 +8,10 @@
  * the SAME shape the bridge ships as JSON (`{ display: DisplayRepresentation }`
  * / `{ view_dependent: ViewDependentPayload }`).
  */
-export const DISPLAY_REPRESENTATION_VERSION = '1.1' as const
+// The CURRENT contract version (SK-C1.0 S2) — mirrors the engine authority.
+export const DISPLAY_REPRESENTATION_VERSION = '1.2'
+/** Legacy fixture producers still emit 1.1 (accepted by the version matrix). */
+export const LEGACY_FIXTURE_DISPLAY_VERSION = '1.1'  as const
 
 export interface DisplayIdentity {
   object_uuid: string
@@ -25,6 +28,19 @@ export interface FaceBuffer {
   normals: number[] // flat (x,y,z) triples — true surface normals
   triangles: number[] // flat (i,j,k) index triples into this face's nodes
   appearance_slot: string
+  /** v1.2 (SK-C1.0 S2): engine-classified surface kind. ABSENT = unknown —
+   *  consumers FAIL CLOSED (no planar-pick eligibility), never guess. */
+  surface_kind?: 'plane' | 'other'
+}
+
+/** v1.2: the RESOLVED plane frame of one face-bound sketch — derived display
+ *  data, identity-bound by CONTAINMENT in this package (Codex2 B3.1). */
+export interface SketchFrame {
+  sketch_feature_id: string
+  origin_mm: [number, number, number]
+  u_axis: [number, number, number]
+  v_axis: [number, number, number]
+  normal: [number, number, number]
 }
 
 export type EdgeKind = 'sharp' | 'tangent' | 'seam' | 'boundary' | 'free'
@@ -155,6 +171,8 @@ export interface DisplayRepresentation {
   selection: SelectionPayload
   /** Populated only at contract ≥1.1 (the HLR lane); null otherwise. */
   view_dependent: ViewDependentPayload | null
+  /** v1.2: resolved face-bound sketch frames (absent on 1.0/1.1). */
+  sketch_frames?: SketchFrame[]
   invalidation: DisplayInvalidation
   counters: DisplayCounters
 }

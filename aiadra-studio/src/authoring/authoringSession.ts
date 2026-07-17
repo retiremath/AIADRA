@@ -20,7 +20,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { Pt } from '../sketch/contour'
-import type { CircleDims, PlaneOrientation, RectDims } from './backend'
+import type { CircleDims, PlaneOrientation, RectDims, SketchSupport } from './backend'
 import { normalizeCircle, normalizeRectangle } from './backend'
 import type { AuthoringTarget, SelectorCapture } from './partContext'
 import type { EditableParameter } from './inspectDecode'
@@ -66,6 +66,9 @@ export interface SketchMeta {
   /** The SIGNED authority tuple captured at start (Codex4 B1.4) — must be
    *  present whenever `targetPart` is; the terminal commit revalidates it. */
   targetAuth?: AuthoringTarget | null
+  /** SK-C1.0 Codex4/Codex5 B2: the LIVE Part-context generation at entry —
+   *  REQUIRED (no sentinel defaults; every entry path captures it). */
+  generation: number
 }
 
 interface SketchSubstate {
@@ -85,9 +88,16 @@ interface SketchSubstate {
   objectRef: string | null
   partName: string | null
   partNumber: string | null
+  /** LEGACY principal orientation (the chained/pending paths are
+   *  principal-only by design); `support` is THE authority (S3). */
   plane: PlaneOrientation
+  /** S3: the sketch's support — principal datum or engine-planar face. */
+  support: SketchSupport
   targetPart: { number: string; name: string } | null
   targetAuth: AuthoringTarget | null
+  /** SK-C1.0 Codex4 B2: the ENTRY generation, carried unconditionally from
+   *  planePick/chained entry — the App invalidates on mismatch. */
+  generation: number
 }
 
 interface ExtrudeSubstate {
@@ -151,8 +161,27 @@ interface EditParameterSubstate {
   message: string | null
 }
 
+/** The plane-pick continuation (arc 20260716-2 SK-C1.0, Codex1 B4.1): what
+ *  resolving/cancelling the pick flows into. `chained` captures the WHOLE
+ *  base-feature substate so Escape restores the session VERBATIM. */
+export type PlanePickContinuation =
+  | { type: 'sketch'; meta: Omit<SketchMeta, 'generation'> }
+  | { type: 'chained'; captured: ExtrudeSubstate; selectedSketchId: string | null; tool: SketchTool['kind']; targetPart: { number: string; name: string } | null }
+
+/** The in-viewport sketch-plane pick (SK-C1.0 S1): a FIRST-CLASS state of the
+ *  ONE session — entered synchronously when Sketch starts, so every global
+ *  gate sees active work. Carries the generation captured at entry; a
+ *  generation/workspace change cancels fail-closed (Codex1 B4.2). */
+interface PlanePickSubstate {
+  mode: 'planePick'
+  continuation: PlanePickContinuation
+  generation: number
+  message: string | null
+}
+
 export type AuthoringSessionState = (
   | { mode: 'idle' }
+  | PlanePickSubstate
   | SketchSubstate
   | ExtrudeSubstate
   | EdgeFeatureSubstate
@@ -169,8 +198,26 @@ export interface AuthoringSessionStore {
   subscribe(fn: () => void): () => void
   // -- selection (tree) --
   selectSketch(id: string | null): void
+  // -- the plane-pick mode (SK-C1.0 S1) --
+  /** Enter the pick for a STANDALONE sketch (from idle). The pick's OWN
+   *  generation capture is the authority the sketch inherits. */
+  startPlanePick(meta: Omit<SketchMeta, 'generation'>, generation: number): void
+  /** Enter the pick from a base-feature SELECT step ("New sketch…") — the
+   *  current extrude substate is captured for verbatim restore on cancel. */
+  startChainedPlanePick(generation: number, tool?: SketchTool['kind'], targetPart?: { number: string; name: string } | null): void
+  /** A plane was picked (viewport quad / tree row / list dialog) — flow into
+   *  the continuation. S1 resolves principal planes; face targets are S3. */
+  resolvePlanePick(target: PlaneOrientation | { faceId: string; frame: import('../sketch/planeFrame').PlaneFrameTS }): void
+  /** Escape/cancel: standalone → idle; chained → the captured base-feature
+   *  session restored verbatim (Codex1 B4.6). */
+  cancelPlanePick(): void
+  /** SK-C1.0 Codex4 B2: CONTEXT INVALIDATION — distinct from user cancel.
+   *  A generation/workspace change terminates planePick AND sketch to a safe
+   *  idle (stale selection cleared); it NEVER restores a captured chained
+   *  session from the old generation. */
+  invalidateForGeneration(): void
   // -- sketch mode --
-  startSketch(meta?: SketchMeta): void
+  startSketch(meta: SketchMeta): void
   addPoint(p: Pt): void
   /** SK-C0: set the bulge of the LAST placed segment (the 3-point-arc via). */
   setLastBulge(b: number): void
@@ -199,7 +246,8 @@ export interface AuthoringSessionStore {
   beginChainedSketch(
     plane: PlaneOrientation,
     target: { number: string; name: string } | null,
-    tool?: SketchTool['kind'],
+    tool: SketchTool['kind'] | undefined,
+    generation: number,
   ): void
   /** Chained sketch OK: carry the drawn rings back into the extrude session. */
   finishChainedSketch(): void
@@ -265,6 +313,93 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       emit({ ...state, selectedSketchId: id })
     },
 
+    startPlanePick: (meta, generation) => {
+      if (state.mode !== 'idle') return
+      emit({
+        mode: 'planePick',
+        continuation: { type: 'sketch', meta },
+        generation,
+        message: null,
+        selectedSketchId: state.selectedSketchId,
+      })
+    },
+    startChainedPlanePick: (generation, tool = 'contour', targetPart = null) => {
+      const e = extrude()
+      if (!e || e.phase === 'busy') return
+      const { selectedSketchId, ...captured } = e
+      emit({
+        mode: 'planePick',
+        continuation: { type: 'chained', captured, selectedSketchId, tool, targetPart },
+        generation,
+        message: null,
+        selectedSketchId,
+      })
+    },
+    resolvePlanePick: (target) => {
+      if (state.mode !== 'planePick') return
+      const c = state.continuation
+      const isFace = typeof target !== 'string'
+      // the CHAINED continuation is principal-only (the pick surfaces never
+      // offer faces there; this guard keeps it true defensively)
+      if (isFace && c.type === 'chained') return
+      const plane: PlaneOrientation = isFace ? 'xy' : target
+      const support: SketchSupport = isFace
+        ? { kind: 'face', faceId: target.faceId, frame: target.frame }
+        : { kind: 'principal', orientation: target }
+      if (c.type === 'sketch') {
+        emit({
+          ...SKETCH_DEFAULTS,
+          chainToExtrude: false,
+          chainedFeature: 'extrude',
+          chainedDepthMm: 10,
+          chainedAxis: 'x',
+          tool: freshTool(c.meta.tool ?? 'contour'),
+          construction: false,
+          plane,
+          support,
+          generation: state.generation,
+          partName: c.meta.partName?.trim() || null,
+          partNumber: c.meta.partNumber?.trim() || null,
+          targetPart: c.meta.targetPart ?? null,
+          targetAuth: c.meta.targetAuth ?? null,
+          selectedSketchId: state.selectedSketchId,
+        })
+        return
+      }
+      // chained: the same hand-off beginChainedSketch performs, sourced from
+      // the CAPTURED session (the authority tuple is the capture's — B4.1).
+      emit({
+        ...SKETCH_DEFAULTS,
+        chainToExtrude: true,
+        chainedFeature: c.captured.feature,
+        chainedDepthMm: c.captured.depthMm,
+        chainedAxis: c.captured.axis,
+        tool: freshTool(c.tool),
+        construction: false,
+        plane,
+        support,
+        generation: state.generation,
+        targetPart: c.targetPart,
+        targetAuth: c.captured.target,
+        selectedSketchId: state.selectedSketchId,
+      })
+    },
+    invalidateForGeneration: () => {
+      if (state.mode !== 'planePick' && state.mode !== 'sketch') return
+      // FAIL-CLOSED: never the chained restore (that session belongs to the
+      // OLD generation); the part-scoped selection is stale too.
+      emit({ mode: 'idle', selectedSketchId: null })
+    },
+    cancelPlanePick: () => {
+      if (state.mode !== 'planePick') return
+      const c = state.continuation
+      if (c.type === 'chained') {
+        emit({ ...c.captured, selectedSketchId: c.selectedSketchId })
+        return
+      }
+      emit({ mode: 'idle', selectedSketchId: state.selectedSketchId })
+    },
+
     startSketch: (meta) => {
       if (state.mode !== 'idle') return
       emit({
@@ -276,6 +411,8 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         tool: freshTool(meta?.tool ?? 'contour'),
         construction: false,
         plane: meta?.plane ?? 'xy',
+        support: { kind: 'principal', orientation: meta?.plane ?? 'xy' },
+        generation: meta.generation,
         partName: meta?.partName?.trim() || null,
         partNumber: meta?.partNumber?.trim() || null,
         targetPart: meta?.targetPart ?? null,
@@ -408,7 +545,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (!e || e.phase === 'busy') return
       emit({ ...e, step: 'depth', source: { kind: 'committed', sketchId }, message: null })
     },
-    beginChainedSketch: (plane, target, tool = 'contour') => {
+    beginChainedSketch: (plane, target, tool = 'contour', generation) => {
       const e = extrude()
       if (!e || e.phase === 'busy') return
       // The base-feature session HANDS OFF to the sketch surface; OK hands
@@ -425,6 +562,8 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         tool: freshTool(tool),
         construction: false,
         plane,
+        support: { kind: 'principal', orientation: plane },
+        generation,
         targetPart: target,
         targetAuth: e.target,
         selectedSketchId: state.selectedSketchId,

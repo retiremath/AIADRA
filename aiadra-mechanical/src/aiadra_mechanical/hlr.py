@@ -60,7 +60,9 @@ from OCP.BRep import BRep_Tool
 from . import topology
 from .display import load_display_material
 
-DISPLAY_REPRESENTATION_VERSION = "1.1"
+# SK-C1.0 S2 (Codex2 B3.1.1): ONE contract-version authority — the HLR echo
+# consumes the display module's constant; no second literal.
+from .display import DISPLAY_REPRESENTATION_VERSION
 DEFAULT_CORRELATION_MIN_LENGTH_MM = 0.01  # probe: exact slivers 0; poly >= 0.145
 _UNIT_TOL = 1e-6
 _DEPTH_TIE_TOL_MM = 1e-6

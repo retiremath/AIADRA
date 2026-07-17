@@ -115,6 +115,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     store.publishSelectorFacts(store.getSnapshot().generation, {
       edgeKinds: new Map([['feat_0002:edge:sharp1', 'sharp'], ['feat_0002:edge:t1', 'tangent']]),
       faceIds: new Set(['feat_0002:face:cap_hi']),
+      planarFaceIds: new Set<string>(),
+      sketchFrames: new Map(),
     })
     const pc = store.getSnapshot()
     // dev lane: honest topology reason
@@ -154,6 +156,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     store.publishSelectorFacts(store.getSnapshot().generation, {
       edgeKinds: new Map(),
       faceIds: new Set(['feat_0002:face:cap_hi']),
+      planarFaceIds: new Set<string>(),
+      sketchFrames: new Map(),
     })
     const sel = { kind: 'face' as const, id: 'feat_0002:face:cap_hi' }
     const faceExistsOf = (snap: ReturnType<typeof store.getSnapshot>) => (id: string) =>
@@ -168,6 +172,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     store.publishSelectorFacts(store.getSnapshot().generation, {
       edgeKinds: new Map(),
       faceIds: new Set(['feat_0002:face:cap_hi']),
+      planarFaceIds: new Set<string>(),
+      sketchFrames: new Map(),
     })
     expect(
       deriveCommandState('hole', inputs({ pc: store.getSnapshot(), selection: sel, faceExists: faceExistsOf(store.getSnapshot()) })),
@@ -185,7 +191,7 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
       { id: 'feat_0003', feature_type: 'hole', engine: 'mechanical', adapter_schema_version: '0.1.8',
         adapter_payload: {} }]
     await store.setPart('ws-1', 'P-3', { fetchInspect: async () => RAW('P-3', WITH_HOLE) })
-    store.publishSelectorFacts(store.getSnapshot().generation, { edgeKinds: new Map(), faceIds: new Set([sel.id]) })
+    store.publishSelectorFacts(store.getSnapshot().generation, { edgeKinds: new Map(), faceIds: new Set([sel.id]), planarFaceIds: new Set<string>(), sketchFrames: new Map() })
     expect(
       deriveCommandState('hole', inputs({ pc: store.getSnapshot(), selection: sel, faceExists: faceExistsOf(store.getSnapshot()) })),
     ).toMatchObject({
@@ -204,6 +210,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
     store.publishSelectorFacts(store.getSnapshot().generation, {
       edgeKinds: new Map([['e:s', 'sharp']]),
       faceIds: new Set(['f:cap']),
+      planarFaceIds: new Set<string>(),
+      sketchFrames: new Map(),
     })
     const pc = store.getSnapshot()
     const kindOf = (id: string) => pc.selectorFacts?.edgeKinds.get(id) ?? null

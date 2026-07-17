@@ -69,10 +69,18 @@ export interface SketchWire {
   closed: boolean
 }
 
+/** SK-C1.0 S2 (Codex2 B3.4): the DISCRIMINATED plane binding — a face-bound
+ *  sketch decodes as its structured Truth reference, never forced through a
+ *  principal orientation. The derived FRAME joins separately (Display v1.2
+ *  `sketch_frames`, by sketch feature id). */
+export type SketchPlaneBinding =
+  | { kind: 'principal'; orientation: PlaneOrientation }
+  | { kind: 'face'; faceRole: string; resolvedAgainst: string }
+
 export interface InspectedSketch {
   kind: 'sketch'
   id: string
-  plane: PlaneOrientation
+  plane: SketchPlaneBinding
   /** The wire polyline(s) in plane (u,v) coords — one closed ring per
    *  NON-construction primitive (compat view; arcs tessellated). */
   rings: Pt[][]
@@ -161,15 +169,31 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
 
-function decodePlane(payload: Record<string, unknown>): PlaneOrientation {
+function decodePlane(payload: Record<string, unknown>): SketchPlaneBinding {
   const plane = payload.plane
-  if (plane === undefined) return 'xy' // EP2: absent ≡ xy (legacy byte-identity)
+  if (plane === undefined) return { kind: 'principal', orientation: 'xy' } // EP2: absent ≡ xy
   if (typeof plane !== 'object' || plane === null) fail('sketch plane record malformed')
   const p = plane as Record<string, unknown>
+  if (p.kind === 'face') {
+    // Codex7 NB3: the EXACT stored-record shape (engine parity) — extra keys
+    // fail loud at the mock/fixture boundary too.
+    for (const k of Object.keys(p)) {
+      if (k !== 'kind' && k !== 'face_role' && k !== 'resolved_against_topology_signature') {
+        fail(`face plane record carries unknown key ${JSON.stringify(k)}`)
+      }
+    }
+    // the STORED engine reference (adapter 0.1.10) — structural checks only;
+    // resolution/frames are the engine's (the display's sketch_frames join)
+    const role = p.face_role
+    const sig = p.resolved_against_topology_signature
+    if (typeof role !== 'string' || !role.includes(':face:')) fail('face plane record lacks its face_role')
+    if (typeof sig !== 'string' || sig.length === 0) fail('face plane record lacks its resolved-against signature')
+    return { kind: 'face', faceRole: role, resolvedAgainst: sig }
+  }
   if (p.kind !== 'principal') fail(`sketch plane kind ${JSON.stringify(p.kind)} not understood`)
   const ori = p.orientation
   if (ori !== 'xy' && ori !== 'yz' && ori !== 'zx') fail(`sketch plane orientation ${JSON.stringify(ori)}`)
-  return ori
+  return { kind: 'principal', orientation: ori }
 }
 
 function constructionFlag(prim: Record<string, unknown>, featId: string): boolean {
@@ -477,7 +501,7 @@ export function holeBaseRefusal(part: InspectedPart): string | null {
 /** Revolve eligibility for a decoded sketch (P1): xy plane + the EXACT
  *  simple_rectangle profile + at least one non-straddling axis. */
 export function revolveSketchRefusal(sk: InspectedSketch): string | null {
-  if (sk.plane !== 'xy') return 'v1 revolve requires a sketch on the xy (FRONT) plane'
+  if (sk.plane.kind !== 'principal' || sk.plane.orientation !== 'xy') return 'v1 revolve requires a sketch on the xy (FRONT) plane'
   if (sk.profile.kind !== 'simple_rectangle') {
     return 'v1 revolve requires exactly one rectangle primitive (no extras)'
   }

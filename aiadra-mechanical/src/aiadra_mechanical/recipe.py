@@ -37,31 +37,46 @@ _FRAME_AXES: dict[str, tuple[tuple[float, float, float], ...]] = {
 
 @dataclass(frozen=True)
 class PlaneFrame:
-    """A principal sketch-plane frame: right-handed (u, v, n), through origin."""
+    """A sketch-plane frame: right-handed (u, v, n) through `origin_mm`.
+
+    SK-C1.0 S2 (Codex1 B1.5/B1.6): `origin_mm` is (0,0,0) for every principal
+    plane — all pre-S2 recipes are numerically IDENTICAL (the goldens prove
+    byte parity). Face-bound frames (resolved in `face_frame.py`) carry the
+    projected world origin. The origin lives INSIDE these methods so every
+    consumer (geometry construction, cap classification, correlation, wire
+    derivation) migrates at once and none can forget it.
+    """
 
     orientation: str
     u_axis: tuple[float, float, float]
     v_axis: tuple[float, float, float]
     normal: tuple[float, float, float]
+    origin_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def to_3d(self, u: float, v: float, w: float = 0.0) -> tuple[float, float, float]:
-        """Sketch-local (u, v) + normal offset w → global 3D."""
+        """Sketch-local (u, v) + normal offset w → global 3D (origin-aware)."""
         return (
-            u * self.u_axis[0] + v * self.v_axis[0] + w * self.normal[0],
-            u * self.u_axis[1] + v * self.v_axis[1] + w * self.normal[1],
-            u * self.u_axis[2] + v * self.v_axis[2] + w * self.normal[2],
+            self.origin_mm[0] + u * self.u_axis[0] + v * self.v_axis[0] + w * self.normal[0],
+            self.origin_mm[1] + u * self.u_axis[1] + v * self.v_axis[1] + w * self.normal[1],
+            self.origin_mm[2] + u * self.u_axis[2] + v * self.v_axis[2] + w * self.normal[2],
         )
 
     def project_uv(self, p: tuple[float, float, float]) -> tuple[float, float]:
-        """Global 3D → sketch-local (u, v)."""
+        """Global 3D → sketch-local (u, v) (origin-aware)."""
+        lx = p[0] - self.origin_mm[0]
+        ly = p[1] - self.origin_mm[1]
+        lz = p[2] - self.origin_mm[2]
         return (
-            p[0] * self.u_axis[0] + p[1] * self.u_axis[1] + p[2] * self.u_axis[2],
-            p[0] * self.v_axis[0] + p[1] * self.v_axis[1] + p[2] * self.v_axis[2],
+            lx * self.u_axis[0] + ly * self.u_axis[1] + lz * self.u_axis[2],
+            lx * self.v_axis[0] + ly * self.v_axis[1] + lz * self.v_axis[2],
         )
 
     def normal_coord(self, p: tuple[float, float, float]) -> float:
-        """The signed coordinate of a global point along the plane normal."""
-        return p[0] * self.normal[0] + p[1] * self.normal[1] + p[2] * self.normal[2]
+        """The signed coordinate along the normal, measured FROM the origin."""
+        lx = p[0] - self.origin_mm[0]
+        ly = p[1] - self.origin_mm[1]
+        lz = p[2] - self.origin_mm[2]
+        return lx * self.normal[0] + ly * self.normal[1] + lz * self.normal[2]
 
 
 def principal_frame(orientation: str) -> PlaneFrame:
@@ -91,11 +106,37 @@ def validate_plane_record(plane: Any, *, op_kind: str) -> str:
     if kind in ("datum", "offset"):
         raise TransactionError(
             f"{op_kind}: plane kind {kind!r} is RESERVED — datum-plane and offset "
-            f"bindings arrive in a later slice; v1 supports kind 'principal'"
+            f"bindings arrive in a later slice; supported kinds: 'principal', 'face'"
         )
+    if kind == "face":
+        # SK-C1.0 S2 (adapter 0.1.10): the ENGINE-OWNED face binding — the
+        # hole-pattern reference shape (a recipe-anchored face role + the
+        # parent-prefix signature it was resolved against). This pure layer
+        # validates STRUCTURE and extracts the skeleton; the OCCT resolution
+        # lives in face_frame.py (Codex1 B1.2) and is NEVER called from the
+        # signature path (B1.5 — no recursion).
+        allowed = {"kind", "face_role", "resolved_against_topology_signature"}
+        extra = set(plane.keys()) - allowed
+        if extra:
+            raise TransactionError(
+                f"{op_kind}: face plane record carries unknown keys {sorted(extra)}"
+            )
+        role = plane.get("face_role")
+        sig = plane.get("resolved_against_topology_signature")
+        if not isinstance(role, str) or ":face:" not in role:
+            raise TransactionError(
+                f"{op_kind}: face plane 'face_role' must be a recipe-anchored face "
+                f"role id ('<feature>:face:<role>'), got {role!r}"
+            )
+        if not isinstance(sig, str) or not sig:
+            raise TransactionError(
+                f"{op_kind}: face plane 'resolved_against_topology_signature' must be "
+                f"the non-empty parent-prefix signature captured at commit"
+            )
+        return "face"
     if kind != "principal":
         raise TransactionError(
-            f"{op_kind}: unknown plane kind {kind!r}; v1 supports 'principal' "
+            f"{op_kind}: unknown plane kind {kind!r}; supported: 'principal', 'face' "
             f"('datum'/'offset' reserved)"
         )
     orientation = plane.get("orientation")
@@ -122,7 +163,41 @@ def effective_plane_frame(sketch_feature: dict[str, Any]) -> PlaneFrame:
     if plane is None:
         return _frame("xy")
     orientation = validate_plane_record(plane, op_kind="mechanical.sketch-plane")
+    if orientation == "face":
+        # SK-C1.0 S2 (Codex1 B1): a face-bound sketch has NO pure-layer frame —
+        # the evaluator resolves it against the parent prefix through
+        # `face_frame.resolve_face_plane`; the signature path uses
+        # `plane_skeleton`. Reaching here means a consumer skipped the fold.
+        raise TransactionError(
+            "mechanical.sketch-plane: a face-bound sketch resolves through the "
+            "evaluator's parent prefix (face_frame.resolve_face_plane), never the "
+            "pure principal-frame table"
+        )
     return _frame(orientation)
+
+
+def plane_skeleton(sketch_feature: dict[str, Any]) -> Any:
+    """The plane binding's TOPOLOGY-SKELETON contribution (SK-C1.0 S2, Codex1
+    B1.5): what the signature hashes. NEVER calls the OCCT resolver and never
+    includes derived origin/axes — no recursion, by construction.
+
+    Returns None for absent/principal-xy (byte-parity with the pre-S2
+    default-elision), the orientation string for other principal planes (the
+    EXACT pre-S2 bytes), and the structured skeleton dict for a face binding.
+    """
+    payload = sketch_feature.get("adapter_payload") or {}
+    plane = payload.get("plane")
+    if plane is None:
+        return None
+    kind = validate_plane_record(plane, op_kind="mechanical.sketch-plane")
+    if kind == "face":
+        return {
+            "kind": "face",
+            "face_role": plane["face_role"],
+            "resolved_against": plane["resolved_against_topology_signature"],
+        }
+    orientation = plane.get("orientation")
+    return None if orientation == "xy" else orientation
 
 
 def resolve_consumed_sketch(

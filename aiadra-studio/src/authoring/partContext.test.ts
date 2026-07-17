@@ -271,6 +271,8 @@ describe('captureSelectorTarget (R4 D-R8 — generation-bound, fail-closed captu
   const FACTS = {
     edgeKinds: new Map([['e:sharp', 'sharp'], ['e:tang', 'tangent']]),
     faceIds: new Set(['f:cap']),
+      planarFaceIds: new Set<string>(),
+      sketchFrames: new Map(),
   }
   const ready = async () => {
     const store = createPartContextStore()

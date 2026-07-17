@@ -36,6 +36,11 @@ import {
   type RevolveAxis,
 } from './inspectDecode'
 
+/** S2: a face-bound sketch labels by its support role; principal by plane. */
+function planeLabel(p: import('./inspectDecode').SketchPlaneBinding): string {
+  return p.kind === 'principal' ? PLANE_LABELS[p.orientation] : `face ${p.faceRole}`
+}
+
 export function ExtrudePanel({
   store,
   backend,
@@ -166,10 +171,10 @@ export function ExtrudePanel({
               type="button"
               className="btn small"
               disabled={busy || refusal !== null}
-              title={refusal ?? `Sketch ${n} · ${PLANE_LABELS[sk.plane]}`}
+              title={refusal ?? `Sketch ${n} · ${planeLabel(sk.plane)}`}
               onClick={() => refusal === null && store.chooseCommittedSketch(sk.id)}
             >
-              Sketch {n} · {PLANE_LABELS[sk.plane]}
+              Sketch {n} · {planeLabel(sk.plane)}
             </button>
           ))}
           {candidates.length === 0 && <span className="muted small">no unconsumed sketches</span>}

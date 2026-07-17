@@ -12,6 +12,7 @@
  * for the parametric-rectangle path it falls back to the baked `extrude-box`.
  */
 import { loadExtrudeBoxSource } from '../dev/fixtureSource'
+import type { DisplaySource } from '../display/displaySource'
 import {
   emptyMockSource,
   proceduralContourSource,
@@ -19,6 +20,7 @@ import {
   type PlaneOrientation,
 } from '../sketch/proceduralExtrude'
 import { segmentsProblem, type Pt, type Segment } from '../sketch/contour'
+import { frameFromNormalAndPoint } from '../sketch/planeFrame'
 import { classifySketch } from '../sketch/profileClassify'
 import { tessellateCircle, tessellateSegments } from '../sketch/arcGeometry'
 import {
@@ -112,7 +114,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'sketch',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.9',
+      adapter_schema_version: '0.1.10',
       adapter_payload: payload,
     }
   }
@@ -121,7 +123,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'extrude',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.9',
+      adapter_schema_version: '0.1.10',
       depends_on_feature_ids: [params.sketch_feature_id],
       parameters: [{ id: 'featp_mock', name: 'depth_mm', value: params.depth_mm, datatype: 'number', unit: 'mm' }],
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, direction: params.direction },
@@ -134,7 +136,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'revolve',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.9',
+      adapter_schema_version: '0.1.10',
       depends_on_feature_ids: [params.sketch_feature_id],
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, axis: params.axis },
     }
@@ -212,6 +214,108 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
     return { points, depthMm: Number(ext.params.depth_mm ?? 6), plane }
   }
 
+  /** Codex5 B1.2: the display for a commit that adds NO base op must come
+   *  from the WHOLE FOLDED mock recipe — a Part whose earlier commits built a
+   *  base keeps its body when a later sketch-only feature lands. */
+  const foldedBaseDisplay = (partNumber: string | null, badge: string): DisplaySource | null => {
+    if (!partNumber) return null
+    const part = parts.get(partNumber)
+    const base = part?.features.find(
+      (f) => f.feature_type === 'extrude' || f.feature_type === 'revolve',
+    )
+    if (!part || !base) return null
+    const basePayload = (base.adapter_payload ?? {}) as Record<string, unknown>
+    if (base.feature_type === 'revolve') {
+      const rec = part.features.find(
+        (f) => f.id === basePayload.sketch_feature_id && f.feature_type === 'sketch',
+      )
+      const prim = (((rec?.adapter_payload as Record<string, unknown> | undefined)?.primitives ??
+        []) as Array<Record<string, unknown>>)[0]
+      if (!prim || prim.type !== 'rectangle') return null
+      const rect = {
+        x_mm: Number(prim.x_mm), y_mm: Number(prim.y_mm),
+        width_mm: Number(prim.width_mm), height_mm: Number(prim.height_mm),
+      }
+      return proceduralRevolveSource(rect, (basePayload.axis as 'x' | 'y') ?? 'x', badge)
+    }
+    const baseDepth = ((base.parameters as Array<{ name: string; value: unknown }> | undefined) ?? [])
+      .find((pr) => pr.name === 'depth_mm')?.value
+    const solid = mirroredContour(
+      [{ kind: 'mechanical.add_extrude_feature', params: {
+        sketch_feature_id: basePayload.sketch_feature_id, depth_mm: baseDepth } }],
+      partNumber,
+    )
+    if (!solid) return null
+    return proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
+  }
+
+  /** S3: synthesize Display v1.2 sketch_frames for every face-bound sketch
+   *  in the folded recipe — the SAME pinned rule as the engine, through the
+   *  shared TS mirror (cap frames on the mock's analytic box). */
+  const foldedSketchFrames = (
+    partNumber: string | null,
+    sessionFeatures: Record<string, unknown>[],
+  ): Array<Record<string, unknown>> => {
+    const committed = partNumber ? parts.get(partNumber)?.features ?? [] : []
+    const all = [...committed, ...sessionFeatures]
+    const base = all.find((f) => f.feature_type === 'extrude')
+    if (!base) return []
+    const basePayload = (base.adapter_payload ?? {}) as Record<string, unknown>
+    const baseSketch = all.find((f) => f.id === basePayload.sketch_feature_id)
+    const ori = (((baseSketch?.adapter_payload as Record<string, unknown> | undefined)?.plane as
+      | { orientation?: string }
+      | undefined)?.orientation ?? 'xy') as 'xy' | 'yz' | 'zx'
+    const N: Record<string, [number, number, number]> = {
+      xy: [0, 0, 1], yz: [1, 0, 0], zx: [0, 1, 0],
+    }
+    const depth = Number(
+      ((base.parameters as Array<{ name: string; value: unknown }> | undefined) ?? []).find(
+        (pr) => pr.name === 'depth_mm',
+      )?.value ?? 6,
+    )
+    const frames: Array<Record<string, unknown>> = []
+    for (const f of all) {
+      if (f.feature_type !== 'sketch') continue
+      const plane = ((f.adapter_payload ?? {}) as Record<string, unknown>).plane as
+        | { kind?: string; face_role?: string }
+        | undefined
+      if (plane?.kind !== 'face' || typeof plane.face_role !== 'string') continue
+      const role = plane.face_role.split(':face:')[1]
+      const n = N[ori]
+      const outward: [number, number, number] =
+        role === 'cap_base' ? [-n[0], -n[1], -n[2]] : n
+      const point: [number, number, number] =
+        role === 'cap_base' ? [0, 0, 0] : [n[0] * depth, n[1] * depth, n[2] * depth]
+      const frame = frameFromNormalAndPoint(outward, point)
+      if (!frame) continue
+      frames.push({
+        sketch_feature_id: f.id,
+        origin_mm: [...frame.origin],
+        u_axis: [...frame.u],
+        v_axis: [...frame.v],
+        normal: [...frame.normal],
+      })
+    }
+    return frames
+  }
+
+  /** Attach mock sketch_frames to a display source (payload-level append). */
+  const withSketchFrames = (
+    source: DisplaySource,
+    frames: Array<Record<string, unknown>>,
+  ): DisplaySource => {
+    if (frames.length === 0) return source
+    return {
+      ...source,
+      getDisplay: async () => {
+        const d = (await source.getDisplay()) as unknown as Record<string, unknown>
+        return { ...d, sketch_frames: frames } as unknown as Awaited<
+          ReturnType<DisplaySource['getDisplay']>
+        >
+      },
+    }
+  }
+
   return {
     isReal: false,
     async begin(ops: FeatureOp[]): Promise<BeginResult> {
@@ -227,13 +331,51 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
         (createOp?.params.number as string | undefined) ??
         (ops.find((o) => typeof o.params.part_number === 'string')?.params.part_number as string | undefined) ??
         null
+      // S3 (dev-lane parity): a FACE-plane sketch input translates to the
+      // engine's stored shape against the mock's own committed base — CAPS
+      // ONLY (the mock has no topology extraction; walls refuse honestly).
+      ops = ops.map((op) => {
+        if (op.kind !== 'mechanical.add_sketch_feature') return op
+        const plane = op.params.plane as { kind?: string; target_face_id?: unknown } | undefined
+        if (plane?.kind !== 'face') return op
+        const tid = plane.target_face_id
+        if (typeof tid !== 'string') throw new Error('mock: a face plane needs target_face_id')
+        const partNumber = op.params.part_number as string | undefined
+        const part = partNumber ? parts.get(partNumber) : undefined
+        const base = part?.features.find((f) => f.feature_type === 'extrude')
+        if (!part || !base) {
+          throw new Error('mock: face-bound sketches need a committed extruded base')
+        }
+        const m = /^mock:(cap_top|cap_base)$/.exec(tid)
+        if (!m) {
+          throw new Error(
+            'mock: dev-lane face-bound sketches support the caps only (mock:cap_top / mock:cap_base)',
+          )
+        }
+        return {
+          ...op,
+          params: {
+            ...op.params,
+            plane: {
+              kind: 'face',
+              face_role: `${base.id as string}:face:${m[1]}`,
+              resolved_against_topology_signature: 'mock-topo',
+            },
+          },
+        }
+      })
       const perOpIds: string[][] = []
       const features: Record<string, unknown>[] = []
       // Continue the target Part's numbering, like the engine does.
       let featSeq = targetNumber ? (parts.get(targetNumber)?.features.length ?? 0) : 0
       const resolved: FeatureOp[] = ops.map((op, i) => {
         const params = resolveOpAliases(op.params, i, perOpIds) as Record<string, unknown>
-        if (op.kind.startsWith('mechanical.add_')) {
+        if (op.kind === 'mechanical.adjust_feature_parameter') {
+          // S3: a parameter EDIT mints no feature — it retargets a committed
+          // one; the mirror mutation happens at commit, existence is checked
+          // at simulate (the same honesty split as the real engine).
+          perOpIds.push([])
+        } else if (op.kind.startsWith('mechanical.add_')) {
           const id = `feat_${String(++featSeq).padStart(4, '0')}`
           perOpIds.push([id])
           const raw = rawFeatureFromOp(op.kind, params, id)
@@ -317,6 +459,18 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           }
         }
       }
+      // S3: an adjust op must target an existing committed parameter — the
+      // mock never reports valid for what its own commit would throw on.
+      for (const op of session.ops) {
+        if (op.kind !== 'mechanical.adjust_feature_parameter') continue
+        const p = parts.get((op.params.part_number as string) ?? session.partNumber ?? '')
+        const feat = p?.features.find((f) => f.id === op.params.feature_id)
+        const prm = ((feat?.parameters as Array<{ name: string; value: unknown }> | undefined) ?? [])
+          .find((pr) => pr.name === op.params.parameter_name)
+        if (!prm) {
+          return { valid: false, message: 'mock: unknown feature/parameter for adjust_feature_parameter' }
+        }
+      }
       // S2 B3 mirror: the engine rejects a second base creation — so does the mock.
       const target = session.partNumber ? parts.get(session.partNumber) : undefined
       const priorBase = target?.features.some((f) => f.feature_type === 'extrude' || f.feature_type === 'revolve')
@@ -330,6 +484,19 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       const session = open.get(sessionId)
       if (!session) throw new Error('mock: no open session')
       const { ops } = session
+      // S3: dev-lane ADJUST parity (R6) — a parameter edit mutates the
+      // committed mirror (the folded display + frames then REGENERATE
+      // from the updated value, so a depth edit visibly moves the cap
+      // and every face-bound sketch riding it).
+      for (const op of ops) {
+        if (op.kind !== 'mechanical.adjust_feature_parameter') continue
+        const part = parts.get((op.params.part_number as string) ?? objectRef)
+        const feat = part?.features.find((f) => f.id === op.params.feature_id)
+        const prm = ((feat?.parameters as Array<{ name: string; value: unknown }> | undefined) ?? [])
+          .find((pr) => pr.name === op.params.parameter_name)
+        if (!prm) throw new Error('mock: unknown feature/parameter for adjust_feature_parameter')
+        prm.value = op.params.new_value
+      }
       const badge = `${objectRef} — dev mock (procedural, not a real Part)`
       const contour = contourFromOps(ops)
       // A session WITHOUT a base creation op produces NO solid (S2 stepwise:
@@ -347,7 +514,8 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       const solid = (contour && !contour.construction ? contour : null) ?? (circleSolid && !circleSolid.construction ? circleSolid : null) ?? mirrored
       const display =
         isCreateOnly(ops) || !hasBase
-          ? emptyMockSource(objectRef, `${objectRef} — dev mock (not Truth)`)
+          ? (foldedBaseDisplay(session.partNumber ?? objectRef, badge) ??
+             emptyMockSource(objectRef, `${objectRef} — dev mock (not Truth)`))
           : revolve
             ? proceduralRevolveSource(revolve.rect, revolve.axis, badge)
             : solid
@@ -360,6 +528,10 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
                   )
                 })()
       if (!display) throw new Error('mock: display unavailable')
+      const framed = withSketchFrames(
+        display,
+        foldedSketchFrames(session.partNumber ?? objectRef, session.features),
+      )
       // Register the commit in the mock's Truth mirror (feeds inspectRaw).
       const number = session.partNumber ?? objectRef
       const entry = parts.get(number) ?? { name: session.partName ?? number, features: [] }
@@ -367,7 +539,7 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       entry.features.push(...session.features)
       parts.set(number, entry)
       open.delete(sessionId)
-      return { objectRef, display }
+      return { objectRef, display: framed }
     },
     async rollback(sessionId: string): Promise<void> {
       open.delete(sessionId)

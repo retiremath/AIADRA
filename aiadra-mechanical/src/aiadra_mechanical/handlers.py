@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from aiadra_core.transaction.boundary import TransactionError
 
 from . import cache
+from . import face_frame, topology
 from .adapter_payload import (
     build_chamfer_payload,
     build_extrude_payload,
@@ -66,7 +67,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.9"
+ADAPTER_SCHEMA_VERSION = "0.1.10"
 
 
 # =============================================================================
@@ -83,6 +84,43 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
 
+    # SK-C1.0 S2 (adapter 0.1.10; Codex1 B1.3): the FACE-plane input — the
+    # caller sends the DISPLAY face id (input vocabulary only, ADR/0038); the
+    # handler resolves it against a FRESH extraction of the current prefix
+    # (the hole pattern), mints the engine-owned structured reference, and
+    # records the DIRECT PRODUCER in depends_on_feature_ids (the canonical
+    # cascade edge). The display string is never parsed-and-trusted.
+    sketch_depends_on: list[str] = []
+    if isinstance(plane, dict) and plane.get("kind") == "face":
+        if set(plane.keys()) != {"kind", "target_face_id"}:
+            raise TransactionError(
+                "mechanical.add_sketch_feature: a face-plane INPUT carries exactly "
+                "{'kind': 'face', 'target_face_id': <display face id>}; the engine "
+                "mints the stored reference itself"
+            )
+        target_face_id = _require_param(
+            plane, "target_face_id", str, "mechanical.add_sketch_feature"
+        )
+        prefix = list(sidecar.get("feature", []))
+        fresh = topology.extract_part_topology(prefix)
+        stored_plane = {
+            "kind": "face",
+            "face_role": target_face_id,
+            "resolved_against_topology_signature": fresh.topology_signature,
+        }
+        # ONE refusal authority: the resolver runs the full typed set
+        # (missing / ambiguous / non-planar; the signature matches trivially).
+        face_frame.resolve_face_plane(prefix, stored_plane)
+        producer = topology.producing_feature_id(target_face_id)
+        if producer not in {f.get("id") for f in prefix}:
+            raise TransactionError(
+                f"mechanical.add_sketch_feature: the support face {target_face_id!r} "
+                f"names producer {producer!r}, which is not a committed feature of "
+                f"Part {part_number}"
+            )
+        sketch_depends_on = [producer]
+        plane = stored_plane
+
     feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
     geom_id = _next_id(sidecar.get("geometry_ref", []), prefix="geom_")
 
@@ -95,6 +133,8 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
         "adapter_payload": build_sketch_payload(primitives, plane),
         "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
     }
+    if sketch_depends_on:
+        feature_record["depends_on_feature_ids"] = sketch_depends_on
     sidecar = copy.deepcopy(sidecar)
     sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
 

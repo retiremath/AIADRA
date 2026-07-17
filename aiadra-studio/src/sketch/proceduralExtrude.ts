@@ -61,8 +61,10 @@ export function buildContourDisplay(
   const tris = THREE.ShapeUtils.triangulateShape(ring.map((p) => new THREE.Vector2(p.x, p.y)), [])
 
   const [, , N] = FRAME_AXES[plane]
-  const capBase: FaceBuffer = { face_id: 'mock:cap_base', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
-  const capTop: FaceBuffer = { face_id: 'mock:cap_top', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
+  const capBase: FaceBuffer = { face_id: 'mock:cap_base',
+      surface_kind: 'plane', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
+  const capTop: FaceBuffer = { face_id: 'mock:cap_top',
+      surface_kind: 'plane', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
   for (const p of ring) {
     capBase.positions.push(...to3d(plane, p.x, p.y, 0))
     capBase.normals.push(-N[0], -N[1], -N[2])
@@ -86,6 +88,7 @@ export function buildContourDisplay(
     const [nx3, ny3, nz3] = to3d(plane, ey / len, -ex / len)
     faces.push({
       face_id: `mock:wall_${i}`,
+      surface_kind: 'plane',
       appearance_slot: 'default',
       positions: [
         ...to3d(plane, p.x, p.y, 0), ...to3d(plane, q.x, q.y, 0),

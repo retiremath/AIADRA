@@ -93,7 +93,7 @@ def require_consistent_for_display(sidecar: dict[str, Any], object_ref: str) -> 
 
 
 def build_empty_display(object_uuid: str, object_number: str) -> dict[str, Any]:
-    """The empty Display Representation (contract v1.1) — validated by the
+    """The empty Display Representation (current contract; v1.2 since SK-C1.0 S2) — validated by the
     caller through the standard `DisplayRepresentation.from_engine_dict`."""
     return {
         "display_representation_version": DISPLAY_REPRESENTATION_VERSION,
@@ -116,6 +116,7 @@ def build_empty_display(object_uuid: str, object_number: str) -> dict[str, Any]:
         },
         # Nothing is pickable in the empty state (Codex2 build bar 2).
         "selection": {"id_space": "canonical", "pickable_kinds": [], "names": {}},
+        "sketch_frames": [],
         "view_dependent": None,
         # Machine-readable, the SAME predicates the engine emits — Studio's
         # existing invalidation/attach gates work unchanged.

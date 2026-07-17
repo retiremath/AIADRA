@@ -2,7 +2,7 @@
 
 Per ADR/0029 D7 sketch primitives + extrude op-data stay OPAQUE to
 aiadra-core (the bundle schema only checks `adapter_payload` IS an object).
-This module pins the payload format (adapter_schema_version 0.1.9 since SK-C0: arc segments + circle-as-outer + construction; 0.1.1 since arc
+This module pins the payload format (adapter_schema_version 0.1.10 since SK-C1.0 S2: the face-plane binding; 0.1.9 since SK-C0: arc segments + circle-as-outer + construction; 0.1.1 since arc
 20260609-1 added engine-minted `skp_` primitive ids — see `build_sketch_payload`)
 and performs **domain/payload validation** — Class-1 failures per ADR/0031
 D6/B2: malformed or out-of-domain inputs raise `TransactionError` (a
@@ -100,8 +100,18 @@ def build_sketch_payload(
     # record, validated EXACTLY at write time; stored faithfully as passed.
     # Absent ≡ principal xy (legacy semantics preserved byte-for-byte).
     if plane is not None:
-        orientation = validate_plane_record(plane, op_kind="mechanical.add_sketch_feature")
-        payload["plane"] = {"kind": "principal", "orientation": orientation}
+        kind = validate_plane_record(plane, op_kind="mechanical.add_sketch_feature")
+        if kind == "face":
+            # SK-C1.0 S2 (Codex7 B1): the STORED face reference persists
+            # VERBATIM (kind + face_role + resolved_against — the validated
+            # exact shape); normalization is a principal-plane concern.
+            payload["plane"] = {
+                "kind": "face",
+                "face_role": plane["face_role"],
+                "resolved_against_topology_signature": plane["resolved_against_topology_signature"],
+            }
+        else:
+            payload["plane"] = {"kind": "principal", "orientation": kind}
     return payload
 
 

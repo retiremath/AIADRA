@@ -139,13 +139,14 @@ def test_native_engine_api_in___all__():
         assert sym in p.__all__
 
 
-def test_aiadra_core_version_bumped_to_0_14_0():
-    """Arc 20260714-2 EP0 MINOR bump: the EMPTY-Part display state (ADR/0035
-    Amendment A4) — `display_representation()`/`display_hlr()` gain the
-    kernel-neutral, Core-owned empty branch with the reserved `empty:v1`
-    identity. Additive public behavior → minor bump per the project's prior
-    discipline (prior: 0.13.0, arc 20260609-2 — display_hlr + contract v1.1)."""
-    assert aiadra_version == "0.14.0"
+def test_aiadra_core_version_bumped_to_0_15_0():
+    """Arc 20260716-2 SK-C1.0 S2 MINOR bump: Display Representation contract
+    v1.2 — additive optional `surface_kind` per face + top-level
+    `sketch_frames` (resolved face-bound sketch frames) with the full
+    1.0/1.1/1.2 compatibility matrix and the standalone-HLR capable set
+    {1.1, 1.2}. Additive public behavior → minor bump (prior: 0.14.0,
+    arc 20260714-2 EP0 — the empty-Part display state)."""
+    assert aiadra_version == "0.15.0"
 
 
 # =============================================================================

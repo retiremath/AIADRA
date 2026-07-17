@@ -343,7 +343,9 @@ body { background: var(--bg); overflow: hidden; }
   right: 192px;
   width: fit-content;
   margin-inline: auto;
-  z-index: 15;
+  /* above the sketch chrome (z 20): the toolbar's OPEN dropdowns must stack
+     over it — a dd-menu's z-index lives inside THIS stacking context */
+  z-index: 25;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -557,7 +559,56 @@ body { background: var(--bg); overflow: hidden; }
 .fd-actions { display: flex; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
 .fd-actions .btn { flex: 1; }
 
-/* Sketch pad (arc 20260711-11 slice S/X) — the 2D contour drawing surface */
+/* The in-context sketch CHROME (SK-C1.0 S1) — the compact strip that
+   replaced the opaque SVG pad: the VIEWPORT is the drawing surface now.
+   .sketchpad survives below as the shared shell of the feature dashboards. */
+.sketch-chrome {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  right: 192px; /* clear of the nav-cube reserve, like the toolbar */
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: fit-content;
+  max-width: calc(100% - 204px);
+}
+.sc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sc-row .grow { flex: 1; }
+.sc-title { color: var(--text-h); font-weight: 600; font-size: 13px; }
+.sc-tools { display: flex; gap: 4px; }
+
+/* The plane-pick prompt strip (SK-C1.0 S1, Codex1 B4.5) */
+.pick-prompt {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  right: 192px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  margin-inline: auto;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+/* pick-mode tree rows are REAL buttons (Codex1 B4.5) */
+.feat-row.pickable { cursor: pointer; }
+.feat-row.pickable:hover { background: var(--panel-2); color: var(--text-h); }
+
+/* Sketch pad shell (arc 20260711-11 slice S/X) — kept for the feature
+   dashboards (.extrude-panel et al.); the SVG surface itself is retired. */
 .sketchpad {
   position: absolute;
   inset: 12px;
@@ -572,18 +623,6 @@ body { background: var(--bg); overflow: hidden; }
 }
 .sp-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .sp-title { color: var(--text-h); font-weight: 600; }
-.sp-svg { flex: 1; width: 100%; min-height: 0; background: var(--bg); cursor: crosshair; touch-action: none; }
-.sp-gridline { stroke: var(--border); stroke-width: 0.3; }
-.sp-axis { stroke: color-mix(in srgb, var(--accent) 45%, var(--border)); stroke-width: 0.5; }
-.sp-ring { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-linejoin: round; }
-.sp-ring.closed { fill: color-mix(in srgb, var(--accent) 16%, transparent); }
-/* SK-C0 D-C3: construction guides draw dashed, never filled */
-.sp-ring.construction { stroke-dasharray: 4 3; }
-.sp-ring.closed.construction { fill: none; }
-.sp-rubber.arc { stroke-dasharray: 2 2; }
-.sp-rubber { stroke: var(--muted); stroke-width: 0.8; stroke-dasharray: 3 2; }
-.sp-vert { fill: var(--accent); stroke: var(--bg); stroke-width: 0.4; }
-.sp-vert.snap { fill: var(--text-h); stroke: var(--accent); stroke-width: 0.8; }
 .sp-foot { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel-2); flex-wrap: wrap; }
 .sp-hint { font-size: 12px; color: var(--muted); }
 .sp-hint.warn { color: var(--warn); }
