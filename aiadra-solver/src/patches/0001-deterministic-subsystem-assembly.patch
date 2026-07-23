@@ -1,0 +1,73 @@
+--- freecad-sparse/src/Mod/Sketcher/App/planegcs/SubSystem.cpp	2026-07-16 10:28:29.280993800 -0400
++++ extraction/src/App/planegcs/SubSystem.cpp	2026-07-16 11:28:49.909699800 -0400
+@@ -58,9 +58,14 @@
+ 
+     // tmpplist will contain the subset of parameters from params that are
+     // relevant for the constraints listed in clist
++    // AIADRA determinism patch (SK-B, 2026-07-16): traversal order is the
++    // caller's canonical registration order in `params`, never pointer values;
++    // the pointer set is a membership/dedup filter only (erase-on-hit).
++    // Rationale: std::set<double*> iteration order depends on allocation
++    // addresses, which made subsystem assembly (and thus the final solver
++    // iterate) vary per process/heap layout at the ~1e-15 level.
+     VEC_pD tmpplist;
+     {
+-        SET_pD s1(params.begin(), params.end());
+         SET_pD s2;
+         for (std::vector<Constraint*>::iterator constr = clist.begin(); constr != clist.end();
+              ++constr) {
+@@ -68,7 +73,11 @@
+             VEC_pD constr_params = (*constr)->params();
+             s2.insert(constr_params.begin(), constr_params.end());
+         }
+-        std::set_intersection(s1.begin(), s1.end(), s2.begin(), s2.end(), std::back_inserter(tmpplist));
++        for (VEC_pD::const_iterator it = params.begin(); it != params.end(); ++it) {
++            if (s2.erase(*it) > 0) {
++                tmpplist.push_back(*it);
++            }
++        }
+     }
+ 
+     plist.clear();
+@@ -117,15 +126,19 @@
+     for (std::vector<Constraint*>::iterator constr = clist.begin(); constr != clist.end(); ++constr) {
+         (*constr)->revertParams();  // ensure that the constraint points to the original parameters
+         VEC_pD constr_params_orig = (*constr)->params();
+-        SET_pD constr_params;
++        // AIADRA determinism patch (SK-B, 2026-07-16): keep the constraint's
++        // canonical parameter declaration order; the pointer set is a dedup
++        // filter only (see the tmpplist note above for rationale).
++        VEC_pD constr_params;
++        SET_pD constr_seen;
+         for (VEC_pD::const_iterator p = constr_params_orig.begin(); p != constr_params_orig.end();
+              ++p) {
+             MAP_pD_pD::const_iterator pmapfind = pmap.find(*p);
+-            if (pmapfind != pmap.end()) {
+-                constr_params.insert(pmapfind->second);
++            if (pmapfind != pmap.end() && constr_seen.insert(pmapfind->second).second) {
++                constr_params.push_back(pmapfind->second);
+             }
+         }
+-        for (SET_pD::const_iterator p = constr_params.begin(); p != constr_params.end(); ++p) {
++        for (VEC_pD::const_iterator p = constr_params.begin(); p != constr_params.end(); ++p) {
+             //            jacobi.set(*constr, *p, 0.);
+             c2p[*constr].push_back(*p);
+             p2c[*p].push_back(*constr);
+@@ -137,8 +150,15 @@
+ void SubSystem::redirectParams()
+ {
+     // copying values to pvals
+-    for (MAP_pD_pD::const_iterator p = pmap.begin(); p != pmap.end(); ++p) {
+-        *(p->second) = *(p->first);
++    // AIADRA determinism patch (SK-B, 2026-07-16): under parameter reduction
++    // SEVERAL original params alias ONE pvals slot; the original loop iterated
++    // the pointer-ordered pmap, so the surviving value was last-writer-wins BY
++    // ALLOCATION ADDRESS (measured: the b-slot corpus fixture flipped between
++    // the authored and derived seeds per run). Each slot now takes the value
++    // of its REPRESENTATIVE param (plist, index order) -- deterministic, and
++    // identical to the old behavior whenever aliased originals agree.
++    for (int j = 0; j < psize; j++) {
++        pvals[j] = *plist[j];
+     }
+ 
+     // redirect constraints to point to pvals

@@ -29,14 +29,19 @@ def _committed_extruded_part(ws: Path) -> None:
         "depth_mm": 5.0, "direction": "normal+"}).commit()
 
 
-def test_second_extrude_rejected_at_the_handler(workspace_with_part: Path):
+def test_second_extrude_requires_the_sequential_domain(workspace_with_part: Path):
+    """M-add (arc 20260717-2): the one-extrude rule is LIFTED — a second
+    extrude is legal when it enters the sequential domain (a FACE-BOUND
+    profile chaining from the body head). A datum-bound second profile still
+    refuses, now under the sequential-domain rule rather than one-base."""
     ws = workspace_with_part
     _committed_extruded_part(ws)
     # A second sketch is fine (S2's stepwise world)…
     propose(ws, kind="mechanical.add_sketch_feature", params={
         "part_number": "P-000001", "primitives": two_primitives()}).commit()
-    # …but a SECOND extrude is not (one base creation per Part).
-    with pytest.raises(TransactionError, match="already has an extrude"):
+    # …and a second extrude on a DATUM-bound profile refuses on the v1
+    # sequential-domain pin (face-bound only; A4.8 anchors on the support).
+    with pytest.raises(TransactionError, match="FACE-BOUND"):
         propose(ws, kind="mechanical.add_extrude_feature", params={
             "part_number": "P-000001", "sketch_feature_id": "feat_0003",
             "depth_mm": 3.0, "direction": "normal+"}).commit()
@@ -73,9 +78,11 @@ def test_corrupt_two_extrude_recipe_fails_loud_at_evaluation():
                     sketch_feature_id=sketch_id, direction="normal+",
                     depth_parameter_id=param_id)}
 
+    # M-add: two UNCHAINED extrudes are still corrupt — no longer via a raw
+    # count, but via the graph (two terminal body heads reject Class-1).
     feats = [sketch("feat_0001"), extrude("feat_0002", "feat_0001", "featp_0001"),
              sketch("feat_0003"), extrude("feat_0004", "feat_0003", "featp_0002")]
-    with pytest.raises(TransactionError, match="exactly one base creation"):
+    with pytest.raises(TransactionError, match="terminal body heads"):
         display.generate_display_representation(
             feats, object_uuid="u-1", object_number="PRT-0001",
             geometry_ref="sha256:deadbeef", cache_key="ck")

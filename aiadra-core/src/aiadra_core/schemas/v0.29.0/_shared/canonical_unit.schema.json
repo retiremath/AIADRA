@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA shared - canonical unit enum (ADR/0029 D10 Part authoring SCN arc 20260531-13)",
+  "description": "Canonical SI-anchored unit enum per the Coherence Checklist 'Canonical units at fact level' item. Used by feature parameter records (and any future numeric facts that adopt unit-at-field-level discipline). Closed set; engines + adapters MUST NOT introduce engine-defined units. Future MINOR SCN can extend this set when a load-bearing case surfaces; retrofit of existing parameter schemas is OUT OF SCOPE for ADR/0029 (introduce-only this arc).",
+  "enum": [
+    "mm",
+    "m",
+    "deg",
+    "rad",
+    "kg",
+    "N",
+    "MPa",
+    "s",
+    "Hz",
+    "K",
+    "dimensionless"
+  ]
+}

@@ -73,6 +73,7 @@ def _box_with_hole_recipe(diameter: float = 4.0, cx: float = 11.5, cy: float = 5
          "adapter_payload": build_sketch_payload(
              [{"type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": 23.0, "height_mm": 11.0}])},
         {"id": "feat_0002", "feature_type": "extrude",
+         "depends_on_feature_ids": ["feat_0001"],
          "parameters": [{"id": "featp_0001", "name": "depth_mm", "value": 6.0,
                          "datatype": "number", "unit": "mm"}],
          "adapter_payload": build_extrude_payload(

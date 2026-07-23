@@ -1,0 +1,268 @@
+{
+  "anchors": [
+    {
+      "args": [
+        "p1"
+      ],
+      "id": "n01",
+      "kind": "fix"
+    }
+  ],
+  "case_id": "d-under",
+  "constraints": [
+    {
+      "args": [
+        "a1.start",
+        "p3"
+      ],
+      "id": "c01",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a2.end",
+        "p4"
+      ],
+      "id": "c02",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a2.start",
+        "p5"
+      ],
+      "id": "c03",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a1.end",
+        "p6"
+      ],
+      "id": "c04",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "l1",
+        "a1.start"
+      ],
+      "id": "c05",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l1",
+        "a2.end"
+      ],
+      "id": "c06",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l2",
+        "a2.start"
+      ],
+      "id": "c07",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l2",
+        "a1.end"
+      ],
+      "id": "c08",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "a1",
+        "a2"
+      ],
+      "id": "c09",
+      "kind": "equal"
+    },
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "c10",
+      "kind": "horizontal"
+    }
+  ],
+  "corpus_version": "skb-1",
+  "dimensions": [
+    {
+      "args": [
+        "p1",
+        "p2"
+      ],
+      "id": "d01",
+      "kind": "distance",
+      "strength": "strong",
+      "value_mm": 60.0
+    }
+  ],
+  "entities": [
+    {
+      "center": "p1",
+      "id": "a1",
+      "nominal": {
+        "end_angle": 270,
+        "radius": 10,
+        "start_angle": 90
+      },
+      "type": "arc"
+    },
+    {
+      "center": "p2",
+      "id": "a2",
+      "nominal": {
+        "end_angle": 90,
+        "radius": 10,
+        "start_angle": 270
+      },
+      "type": "arc"
+    },
+    {
+      "end": "p4",
+      "id": "l1",
+      "start": "p3",
+      "type": "line"
+    },
+    {
+      "end": "p6",
+      "id": "l2",
+      "start": "p5",
+      "type": "line"
+    },
+    {
+      "id": "p1",
+      "nominal": {
+        "x": 0,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p2",
+      "nominal": {
+        "x": 60,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p3",
+      "nominal": {
+        "x": 0,
+        "y": 10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p4",
+      "nominal": {
+        "x": 60,
+        "y": 10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p5",
+      "nominal": {
+        "x": 60,
+        "y": -10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p6",
+      "nominal": {
+        "x": 0,
+        "y": -10
+      },
+      "type": "point"
+    }
+  ],
+  "expected": {
+    "branch_oracle": null,
+    "classification": "under",
+    "diagnostics": [],
+    "dof_strong": 1,
+    "ledger": {
+      "anchor_eq": 2,
+      "constraint_eq": 14,
+      "dimension_eq": 1,
+      "entity_dof": 18,
+      "net_count": 1
+    },
+    "residual_max": {
+      "angle_deg": 0.0,
+      "direction": 0.0,
+      "length_mm": 0.0
+    },
+    "solved": {
+      "a1.end_angle": 270.0,
+      "a1.radius": 10.0,
+      "a1.start_angle": 90.0,
+      "a2.end_angle": 90.0,
+      "a2.radius": 10.0,
+      "a2.start_angle": 270.0,
+      "p1.x": 0.0,
+      "p1.y": 0.0,
+      "p2.x": 60.0,
+      "p2.y": 0.0,
+      "p3.x": 0.0,
+      "p3.y": 10.0,
+      "p4.x": 60.0,
+      "p4.y": 10.0,
+      "p5.x": 60.0,
+      "p5.y": -10.0,
+      "p6.x": 0.0,
+      "p6.y": -10.0
+    },
+    "tolerance": {
+      "angle_deg": 1e-09,
+      "direction": 1e-09,
+      "length_mm": 1e-09
+    },
+    "weak_completion": [
+      {
+        "id": "w01",
+        "kind": "fix_param",
+        "origin": {
+          "category": "computed_result",
+          "policy": "skb-0",
+          "solver_contract": "skb-c0"
+        },
+        "role": "driving",
+        "strength": "weak",
+        "target": {
+          "entity": "a1",
+          "parameter": "radius"
+        },
+        "value": {
+          "magnitude": 10.0,
+          "unit": "mm"
+        },
+        "visibility": "internal"
+      }
+    ]
+  },
+  "solver_contract": "skb-c0",
+  "supersession_test": {
+    "add_strong": {
+      "args": [
+        "a1"
+      ],
+      "id": "d90",
+      "kind": "radius",
+      "strength": "strong",
+      "value_mm": 10.0
+    },
+    "expected_final_weak": []
+  },
+  "title": "b-slot without the radius dimension: weak completion closes 1 DoF",
+  "weak_policy": "skb-0"
+}

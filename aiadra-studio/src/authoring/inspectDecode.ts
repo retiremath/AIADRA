@@ -25,6 +25,14 @@ const MECHANICAL_ENGINE = 'mechanical'
  *  an explicit decision, not a guess) — mirrors the settings registry's
  *  version discipline. */
 const KNOWN_ADAPTER_SERIES = '0.1.'
+// ADR/0044 A2.4 (arc 20260717-2): per-record-family series — ONLY the sketch
+// family has defined 0.2 semantics; every other mechanical family refuses
+// 0.2.x by name. The concrete first-writer version is pinned.
+const SKETCH_V2_SERIES = '0.2.'
+const SKETCH_V2_VERSION = '0.2.0'
+// skb-b0 constants (Docs/SolverContracts/skb-b0.md §1; the engine module is
+// the parity-tested implementation — these mirror it at the decode surface).
+const SKB_B0_L_MIN_MM = 1e-9
 
 export interface RectangleDims {
   x_mm: number
@@ -77,6 +85,26 @@ export type SketchPlaneBinding =
   | { kind: 'principal'; orientation: PlaneOrientation }
   | { kind: 'face'; faceRole: string; resolvedAgainst: string }
 
+/** ADR/0044 A2 (arc 20260717-2, Gate F2a): a v2 CONSTRAINED sketch — adapter
+ *  series 0.2.x. Decoded as its own typed member so nothing v1 (rings,
+ *  profile, extrude eligibility, consumption) ever reads it: every existing
+ *  `kind === 'sketch'` filter excludes it by construction. Studio VALIDATES
+ *  the record (the same skb-b0 graph admission the engine enforces — the
+ *  decoder is one of the five enforcement surfaces) but derives no geometry:
+ *  v2 regeneration is solver-backed and arrives with Gate F2b. */
+export interface InspectedSketchV2 {
+  kind: 'sketchV2'
+  id: string
+  plane: SketchPlaneBinding
+  /** The admitted skb-b0 shape (G0 | G1 | G2). */
+  shape: string
+  solverContract: string
+  weakPolicy: string
+  branchPolicy: string
+  entityCount: number
+  constraintCount: number
+}
+
 export interface InspectedSketch {
   kind: 'sketch'
   id: string
@@ -124,7 +152,11 @@ export interface InspectedOther {
   parameters: EditableParameter[]
 }
 
-export type InspectedFeature = InspectedSketch | InspectedBase | InspectedOther
+export type InspectedFeature =
+  | InspectedSketch
+  | InspectedSketchV2
+  | InspectedBase
+  | InspectedOther
 
 /** The version-guarded editable-parameter CATALOGUE: per feature type, the
  *  KNOWN editable names — the renderer can only submit catalogued names; the
@@ -193,7 +225,229 @@ function decodePlane(payload: Record<string, unknown>): SketchPlaneBinding {
   if (p.kind !== 'principal') fail(`sketch plane kind ${JSON.stringify(p.kind)} not understood`)
   const ori = p.orientation
   if (ori !== 'xy' && ori !== 'yz' && ori !== 'zx') fail(`sketch plane orientation ${JSON.stringify(ori)}`)
+  // Codex24 B2: the principal record is CLOSED to exactly {kind, orientation}
+  // — the engine's shared validator refuses extras (v1 and v2 alike), and an
+  // ignored field must never participate in recipe identity while Studio
+  // assigns it no semantics. One language, five surfaces.
+  for (const k of Object.keys(p)) {
+    if (k !== 'kind' && k !== 'orientation') {
+      fail(`principal plane record carries unsupported key ${JSON.stringify(k)} (exactly {kind, orientation})`)
+    }
+  }
   return { kind: 'principal', orientation: ori }
+}
+
+// ---------------------------------------------------------------------------
+// ADR/0044 A2 (Gate F2a): the v2 constrained-sketch decode — the Studio
+// decoder is one of the FIVE skb-b0 enforcement surfaces. It mirrors the
+// engine's graph-level admission (Docs/SolverContracts/skb-b0.md §2/§3:
+// local table + the exact G0/G1/G2 predicate incl. full weak-record
+// validation, magnitude/nominal equality, and the SIGNED L_min guards) and
+// fails loud on everything else. No geometry is derived: v2 regeneration is
+// solver-backed and arrives with Gate F2b.
+// ---------------------------------------------------------------------------
+
+const SKETCH_V2_PAYLOAD_KEYS = new Set([
+  'sketch_model', 'solver_contract', 'weak_policy', 'branch_policy', 'plane',
+  'entities', 'constraints', 'dimensions', 'references', 'weak_completion',
+  'witnesses',
+])
+
+interface V2Point { id: string; x: number; y: number }
+
+function v2fail(id: string, msg: string): never {
+  fail(`v2 sketch ${id}: ${msg}`)
+}
+
+function decodeSketchV2(payload: Record<string, unknown>, id: string): InspectedSketchV2 {
+  const keys = Object.keys(payload)
+  for (const k of keys) if (!SKETCH_V2_PAYLOAD_KEYS.has(k)) v2fail(id, `unknown payload key ${JSON.stringify(k)}`)
+  for (const k of SKETCH_V2_PAYLOAD_KEYS) if (!(k in payload)) v2fail(id, `missing payload key ${JSON.stringify(k)}`)
+  if (payload.sketch_model !== 2) v2fail(id, `sketch_model ${JSON.stringify(payload.sketch_model)} !== 2`)
+  const solverContract = payload.solver_contract
+  const weakPolicy = payload.weak_policy
+  const branchPolicy = payload.branch_policy
+  if (solverContract !== 'skb-c0' || weakPolicy !== 'skb-0' || branchPolicy !== 'skb-b0') {
+    v2fail(id, `contract ids (${JSON.stringify(solverContract)}, ${JSON.stringify(weakPolicy)}, ` +
+      `${JSON.stringify(branchPolicy)}) are not the supported (skb-c0, skb-0, skb-b0)`)
+  }
+  if (payload.plane === undefined) v2fail(id, 'plane is required (the v2 contract is closed)')
+  const plane = decodePlane(payload)
+
+  const arr = (name: string): Record<string, unknown>[] => {
+    const v = payload[name]
+    if (!Array.isArray(v)) v2fail(id, `${name} must be an array`)
+    return v.map((x) => {
+      if (typeof x !== 'object' || x === null) v2fail(id, `${name} entry is not an object`)
+      return x as Record<string, unknown>
+    })
+  }
+  const entities = arr('entities')
+  const constraints = arr('constraints')
+  const dimensions = arr('dimensions')
+  const references = arr('references')
+  const weak = arr('weak_completion')
+  const witnesses = arr('witnesses')
+  if (dimensions.length > 0) v2fail(id, 'skb-b0 admits no dimensions')
+  if (references.length > 0) v2fail(id, 'references must be empty under skb-b0 (SK-E territory)')
+  if (witnesses.length > 0) {
+    v2fail(id, `witness set mismatch: ${witnesses.length} present; the skb-b0 catalog derives ` +
+      'exactly 0 for every admitted shape — extra witnesses are rejected (exact-set rule)')
+  }
+
+  const shape = admitSkbB0Graph(entities, constraints, weak, (m) => v2fail(id, m),
+    { solverContract, weakPolicy })
+  return {
+    kind: 'sketchV2', id, plane, shape,
+    solverContract, weakPolicy, branchPolicy,
+    entityCount: entities.length, constraintCount: constraints.length,
+  }
+}
+
+/** The skb-b0 whole-fact-graph admission predicate (TS mirror of
+ *  `aiadra_mechanical.solver.branch_policy.admit_graph`). Returns the shape
+ *  name; every violation refuses through `bad`. */
+function admitSkbB0Graph(
+  entities: Record<string, unknown>[],
+  constraints: Record<string, unknown>[],
+  weak: Record<string, unknown>[],
+  bad: (msg: string) => never,
+  top: { solverContract: unknown; weakPolicy: unknown },
+): string {
+  const points = new Map<string, V2Point>()
+  const lines = new Map<string, { start: string; end: string }>()
+  for (const e of entities) {
+    const eid = e.id
+    if (typeof eid !== 'string' || eid.length === 0) bad('entity without a non-empty string id')
+    if (points.has(eid) || lines.has(eid)) bad(`duplicate entity id ${JSON.stringify(eid)}`)
+    if (e.construction !== true) bad(`entity ${eid} is not construction geometry (skb-b0 admits construction references only)`)
+    // type membership FIRST (the local-table refusal names the real cause),
+    // THEN Codex23 B2's closed-shape check — an unknown nested key must
+    // never become identity-bearing without semantics.
+    if (e.type !== 'point' && e.type !== 'line') {
+      bad(`entity ${eid} type ${JSON.stringify(e.type)} is outside the skb-b0 local table`)
+    }
+    const wantKeys = e.type === 'point'
+      ? ['id', 'type', 'construction', 'nominal']
+      : ['id', 'type', 'construction', 'start', 'end']
+    for (const k of Object.keys(e)) {
+      if (!wantKeys.includes(k)) bad(`entity ${eid} carries unknown field ${JSON.stringify(k)} (the skb-b0 entity shapes are closed)`)
+    }
+    if (e.type === 'point') {
+      const nom = e.nominal
+      if (typeof nom !== 'object' || nom === null) bad(`point ${eid} has no nominal`)
+      const n = nom as Record<string, unknown>
+      const nk = Object.keys(n)
+      if (nk.length !== 2 || typeof n.x !== 'number' || typeof n.y !== 'number' ||
+          !Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+        bad(`point ${eid} nominal is not a finite {x, y}`)
+      }
+      points.set(eid, { id: eid, x: n.x, y: n.y })
+    } else if (e.type === 'line') {
+      if (typeof e.start !== 'string' || typeof e.end !== 'string') bad(`line ${eid} lacks start/end refs`)
+      lines.set(eid, { start: e.start, end: e.end })
+    } else {
+      bad(`entity ${eid} type ${JSON.stringify(e.type)} is outside the skb-b0 local table`)
+    }
+  }
+  const fixes: string[] = []
+  const horizontals: string[] = []
+  const verticals: string[] = []
+  const cids = new Set<string>()
+  for (const c of constraints) {
+    const cid = c.id
+    if (typeof cid !== 'string' || cid.length === 0 || cids.has(cid)) bad('constraint without a unique non-empty string id')
+    cids.add(cid)
+    for (const k of Object.keys(c)) {
+      if (k !== 'id' && k !== 'kind' && k !== 'args') bad(`constraint ${cid} carries unknown field ${JSON.stringify(k)} (the skb-b0 constraint shape is closed)`)
+    }
+    const args = c.args
+    if (!Array.isArray(args) || args.length !== 1 || typeof args[0] !== 'string') {
+      bad(`constraint ${cid} must carry exactly one string arg under skb-b0`)
+    }
+    if (c.kind === 'fix') fixes.push(args[0])
+    else if (c.kind === 'horizontal') horizontals.push(args[0])
+    else if (c.kind === 'vertical') verticals.push(args[0])
+    else bad(`constraint ${cid} kind ${JSON.stringify(c.kind)} is outside the skb-b0 local table`)
+  }
+  if (fixes.length !== 1) bad('exactly one fix(point) anchor is required')
+  const origin = points.get(fixes[0])
+  if (!origin) bad(`fix names ${JSON.stringify(fixes[0])}, which is not a point entity`)
+
+  const validWeak = (w: Record<string, unknown>, index: number, entity: string, parameter: string): number => {
+    const wantId = `w${String(index + 1).padStart(2, '0')}`
+    if (w.id !== wantId) bad(`weak record ${index} id ${JSON.stringify(w.id)} !== canonical ${wantId}`)
+    if (w.kind !== 'fix_param') bad(`weak record ${wantId} kind !== 'fix_param'`)
+    const t = w.target as Record<string, unknown> | undefined
+    if (typeof t !== 'object' || t === null || t.entity !== entity || t.parameter !== parameter ||
+        Object.keys(t).length !== 2) {
+      bad(`weak record ${wantId} target !== {entity: ${entity}, parameter: ${parameter}}`)
+    }
+    const v = w.value as Record<string, unknown> | undefined
+    if (typeof v !== 'object' || v === null || v.unit !== 'mm' ||
+        typeof v.magnitude !== 'number' || !Number.isFinite(v.magnitude) ||
+        Object.keys(v).length !== 2) {
+      bad(`weak record ${wantId} value must be {magnitude: finite, unit: 'mm'}`)
+    }
+    if (w.strength !== 'weak' || w.role !== 'driving' || w.visibility !== 'internal') {
+      bad(`weak record ${wantId} strength/role/visibility are not the verbatim skb-0 shape`)
+    }
+    const o = w.origin as Record<string, unknown> | undefined
+    if (typeof o !== 'object' || o === null || o.category !== 'computed_result' ||
+        o.policy !== top.weakPolicy || o.solver_contract !== top.solverContract ||
+        Object.keys(o).length !== 3) {
+      bad(`weak record ${wantId} origin is not the verbatim skb-0 origin block cross-checked against the top-level ids`)
+    }
+    const known = new Set(['id', 'kind', 'target', 'value', 'strength', 'role', 'visibility', 'origin'])
+    for (const k of Object.keys(w)) if (!known.has(k)) bad(`weak record ${wantId} carries unknown field ${JSON.stringify(k)}`)
+    return v.magnitude
+  }
+
+  const axis = (list: string[], kindName: string): { lineId: string; end: V2Point } => {
+    if (list.length !== 1) bad(`exactly one ${kindName}(line) is required for this shape`)
+    const line = lines.get(list[0])
+    if (!line) bad(`${kindName} names ${JSON.stringify(list[0])}, which is not a line entity`)
+    if (line.start !== origin!.id) {
+      bad(`axis line ${list[0]} must be DIRECTED from the fixed origin (the reference axes are directed)`)
+    }
+    const end = points.get(line.end)
+    if (!end || end.id === origin!.id) bad(`axis line ${list[0]} end must be a distinct point entity`)
+    return { lineId: list[0], end }
+  }
+
+  if (points.size === 1 && lines.size === 0) {
+    if (horizontals.length || verticals.length || weak.length) bad('G0 admits no axis facts and an empty weak completion')
+    return 'G0'
+  }
+  if (points.size === 2 && lines.size === 1) {
+    if (verticals.length) bad('G1 has no vertical axis; a lone vertical axis is not an admitted shape under skb-b0')
+    const { end: px } = axis(horizontals, 'horizontal')
+    if (weak.length !== 1) bad('G1 requires exactly one weak record (fix_param on the axis endpoint x)')
+    const mag = validWeak(weak[0], 0, px.id, 'x')
+    if (mag !== px.x) bad(`weak magnitude ${mag} contradicts the authored nominal ${px.x} for ${px.id}.x`)
+    if (!(mag - origin!.x > SKB_B0_L_MIN_MM)) {
+      bad(`signed guard failed: ${px.id}.x − ${origin!.id}.x must exceed L_min`)
+    }
+    return 'G1'
+  }
+  if (points.size === 3 && lines.size === 2) {
+    const { lineId: ax, end: px } = axis(horizontals, 'horizontal')
+    const { lineId: ay, end: py } = axis(verticals, 'vertical')
+    if (ax === ay || px.id === py.id) bad('the two axes (and their endpoints) must be distinct')
+    if (weak.length !== 2) bad('G2 requires exactly two weak records (fix_param on PX.x and PY.y)')
+    const expected = [[px.id, 'x'] as const, [py.id, 'y'] as const]
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    const mags = expected.map(([ent, par], i) => [ent, par, validWeak(weak[i], i, ent, par)] as const)
+    for (const [ent, par, mag] of mags) {
+      const p = points.get(ent)!
+      const nominal = par === 'x' ? p.x : p.y
+      if (mag !== nominal) bad(`weak magnitude contradicts the authored nominal for ${ent}.${par}`)
+      const oCoord = par === 'x' ? origin!.x : origin!.y
+      if (!(mag - oCoord > SKB_B0_L_MIN_MM)) bad(`signed guard failed: ${ent}.${par} displacement must exceed L_min`)
+    }
+    return 'G2'
+  }
+  bad(`entity census (points=${points.size}, lines=${lines.size}) matches no admitted shape`)
 }
 
 function constructionFlag(prim: Record<string, unknown>, featId: string): boolean {
@@ -365,6 +619,31 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
     const isMechanical = raw.engine === MECHANICAL_ENGINE
     const isKnownMechanicalType = ftype === 'sketch' || ftype === 'extrude' || ftype === 'revolve'
 
+    // ADR/0044 A2.4 + Codex23 B3: the mechanical 0.2 gate runs BEFORE the
+    // known/generic split — a mechanical fillet/hole/chamfer/unknown type
+    // stamped 0.2.x must refuse BY NAME, never slip into the opaque branch.
+    // Foreign engines remain opaque (engine discrimination precedes any 0.2
+    // interpretation, mirroring the engine-side guard).
+    if (isMechanical) {
+      const v2v = typeof raw.adapter_schema_version === 'string' ? raw.adapter_schema_version : ''
+      if (v2v.startsWith(SKETCH_V2_SERIES)) {
+        if (ftype !== 'sketch') {
+          fail(
+            `mechanical ${ftype} ${id} carries adapter ${v2v}, but only the SKETCH ` +
+              `family has defined 0.2 semantics (ADR/0044 A2.4) — refuse`,
+          )
+        }
+        if (v2v !== SKETCH_V2_VERSION) {
+          fail(
+            `v2 sketch ${id} carries ${v2v}; the only defined v2 writer version is ` +
+              `${SKETCH_V2_VERSION} (an unknown 0.2.x minor refuses rather than guessing)`,
+          )
+        }
+        features.push(decodeSketchV2((raw.adapter_payload ?? {}) as Record<string, unknown>, id))
+        continue
+      }
+    }
+
     if (!isMechanical || !isKnownMechanicalType) {
       // Codex3 B1: a foreign-engine feature — even one CALLED "sketch" — and
       // any unknown mechanical type stay GENERIC: visible in the tree, payload
@@ -388,7 +667,8 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
       continue
     }
 
-    // Inside the mechanical guard only: the version gate for KNOWN records.
+    // Inside the mechanical guard only: the v1 series gate for KNOWN
+    // records (the 0.2 family gate already ran above the generic split).
     const version = str(raw.adapter_schema_version, `feature ${id} adapter_schema_version`)
     if (!version.startsWith(KNOWN_ADAPTER_SERIES)) {
       fail(
@@ -414,12 +694,32 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
         })(),
       })
     } else {
-      // The CANONICAL dependency edge is depends_on_feature_ids (the payload's
-      // sketch_feature_id must agree — the engine's resolver enforces that on
-      // write; here the canonical edge is what the tree nests by).
+      // Codex14 B1 (arc 20260717-2): the consumed sketch is the NAMED
+      // operand — adapter_payload.sketch_feature_id — never a dependency-
+      // list position. A SEQUENTIAL extrude (the signed A4.6 shape) carries
+      // [consumed_sketch, prior_body_head]; the decoder permits the extra
+      // chain edge on extrudes and requires the named operand to be present
+      // in a well-formed, duplicate-free string dependency list. Revolve
+      // keeps the stricter exactly-one shape (its adapter has no sequential
+      // form).
+      const payloadSketch = (raw.adapter_payload as Record<string, unknown> | undefined)?.sketch_feature_id
+      if (typeof payloadSketch !== 'string' || payloadSketch.length === 0) {
+        fail(`${ftype} ${id} names no consumed sketch (adapter_payload.sketch_feature_id)`)
+      }
       const deps = raw.depends_on_feature_ids
-      if (!Array.isArray(deps) || deps.length !== 1 || typeof deps[0] !== 'string') {
-        fail(`${ftype} ${id} must depend on exactly one sketch`)
+      if (
+        !Array.isArray(deps)
+        || deps.length === 0
+        || !deps.every((d) => typeof d === 'string' && d.length > 0)
+        || new Set(deps).size !== deps.length
+      ) {
+        fail(`${ftype} ${id} has a malformed depends_on_feature_ids list`)
+      }
+      if (!(deps as string[]).includes(payloadSketch as string)) {
+        fail(`${ftype} ${id} does not declare its consumed sketch ${String(payloadSketch)} as a dependency`)
+      }
+      if (ftype === 'revolve' && (deps as string[]).length !== 1) {
+        fail(`revolve ${id} must depend on exactly one sketch`)
       }
       let depthMm: number | null = null
       const params = raw.parameters
@@ -427,7 +727,7 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
         const depth = (params as Array<Record<string, unknown>>).find((p) => p.name === 'depth_mm')
         depthMm = depth ? num(depth.value) : null
       }
-      features.push({ kind: ftype, id, consumesSketchId: deps[0], depthMm, parameters: decodeParameters(raw, ftype) })
+      features.push({ kind: ftype, id, consumesSketchId: payloadSketch as string, depthMm, parameters: decodeParameters(raw, ftype) })
     }
   }
 
@@ -535,7 +835,11 @@ export interface TreeRow {
 export function buildTreeRows(part: InspectedPart): TreeRow[] {
   const sketchOrdinal = new Map<string, number>()
   let nSketch = 0
-  for (const f of part.features) if (f.kind === 'sketch') sketchOrdinal.set(f.id, ++nSketch)
+  // v1 and v2 sketches share ONE user-facing ordinal sequence — a sketch is
+  // a sketch in the tree; the v2 row is labeled as constrained.
+  for (const f of part.features) {
+    if (f.kind === 'sketch' || f.kind === 'sketchV2') sketchOrdinal.set(f.id, ++nSketch)
+  }
 
   const consumedBy = new Map<string, InspectedBase>()
   for (const f of part.features) {
@@ -548,6 +852,15 @@ export function buildTreeRows(part: InspectedPart): TreeRow[] {
     if (f.kind === 'sketch') {
       if (consumedBy.has(f.id)) continue // appears nested under its consumer
       rows.push({ featureId: f.id, label: `Sketch ${sketchOrdinal.get(f.id)}`, depth: 0, kind: 'sketch' })
+    } else if (f.kind === 'sketchV2') {
+      // A v2 constrained sketch is never consumable in F2a (nothing v1 reads
+      // it); it always renders top-level, labeled for what it is.
+      rows.push({
+        featureId: f.id,
+        label: `Sketch ${sketchOrdinal.get(f.id)} (constrained)`,
+        depth: 0,
+        kind: 'sketchV2',
+      })
     } else if (f.kind === 'extrude' || f.kind === 'revolve') {
       const n = (kindCount[f.kind] = (kindCount[f.kind] ?? 0) + 1)
       const name = f.kind === 'extrude' ? 'Extrude' : 'Revolve'
@@ -561,6 +874,31 @@ export function buildTreeRows(part: InspectedPart): TreeRow[] {
     }
   }
   return rows
+}
+
+/** P (arc 20260717-2): the SEQUENTIAL eligibility refusal for one unconsumed
+ *  sketch — the engine's v1 domain mirrored (never predicted): with a body,
+ *  a sequential extrude consumes a FACE-BOUND sketch. Null = eligible. */
+export function sequentialSketchRefusal(
+  part: InspectedPart, sk: InspectedSketch,
+): string | null {
+  if (!part.hasExtrudeBase) return null // the BASE lane — any plane
+  if (sk.plane.kind !== 'face') {
+    return 'datum-bound — a sequential extrude consumes a FACE-BOUND sketch (sketch on a face of the body)'
+  }
+  return null
+}
+
+/** Codex14 B2: THE one eligible-sequential-sketch derivation — shared by
+ *  the ribbon, canExtrude, the panel/solicit rendering, AND the terminal
+ *  solicit revalidation (never a render-captured copy). */
+export function eligibleExtrudeSketchIds(part: InspectedPart): Set<string> {
+  return new Set(
+    unconsumedSketches(part)
+      .filter((sk) => sk.profile.kind !== 'sketch_only')
+      .filter((sk) => sequentialSketchRefusal(part, sk) === null)
+      .map((sk) => sk.id),
+  )
 }
 
 /** The unconsumed sketches (recipe order) — the wire-overlay set AND the

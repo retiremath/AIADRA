@@ -96,6 +96,7 @@ export type ViewportApi = {
 export type SketchInteractionMode =
   | { kind: 'planePick' }
   | { kind: 'sketch'; frame: PlaneFrameTS; tool: SketchTool; construction: boolean }
+  | { kind: 'sketchSolicit'; eligibleIds: ReadonlySet<string> }
 
 /** S3: the resolved pick — a datum enum, or an ENGINE-PLANAR face enriched
  *  with the TRANSIENT mirror frame (drawing-only; the engine re-derives). */
@@ -126,6 +127,7 @@ export default function Viewport({
   interactionMode = null,
   planarFaceIds,
   onPlanePick,
+  onSketchSolicit,
   onSketchPlace,
   onSketchCursor,
   onContextHover,
@@ -142,6 +144,9 @@ export default function Viewport({
    *  ONLY face-pick eligibility authority (Studio never classifies). */
   planarFaceIds?: ReadonlySet<string>
   onPlanePick?: (hit: ResolvedPlanePick) => void
+  /** P (arc 20260717-2): the sketchSolicit click — an ELIGIBLE unconsumed
+   *  sketch wire picked on screen (the App revalidates before consuming). */
+  onSketchSolicit?: (sketchFeatureId: string) => void
   onSketchPlace?: (uv: { u: number; v: number }) => void
   onSketchCursor?: (uv: { u: number; v: number } | null) => void
   /** SK-C1.0 Codex4 B1.3: sketch-mode canonical-topology hover — the actual
@@ -154,8 +159,8 @@ export default function Viewport({
 
   const [menu, setMenu] = useState<Menu>(null)
   // Callback + mode refs: the mount effect runs ONCE; handlers read these live.
-  const sketchCbRef = useRef({ onPlanePick, onSketchPlace, onSketchCursor, onContextHover })
-  sketchCbRef.current = { onPlanePick, onSketchPlace, onSketchCursor, onContextHover }
+  const sketchCbRef = useRef({ onPlanePick, onSketchPlace, onSketchCursor, onContextHover, onSketchSolicit })
+  sketchCbRef.current = { onPlanePick, onSketchPlace, onSketchCursor, onContextHover, onSketchSolicit }
   const planarFaceIdsRef = useRef<ReadonlySet<string>>(new Set())
   planarFaceIdsRef.current = planarFaceIds ?? new Set()
   const interactionModeRef = useRef(interactionMode)
@@ -502,6 +507,69 @@ export default function Viewport({
       hovId = null
       selectionStore.clearSelected() // → reconcileSelection (selId=null), no-op repaint (part gone)
       viewStore.setSceneFacts({ hasCanonicalPart: false })
+      removeV2Construction()
+    }
+
+    // ---- Gate F2b: the v2 construction overlay (Display v1.3) ----
+    // SOLVED-derived construction geometry from the display payload — the
+    // engine's A2.9 read-lifecycle output. Overlay-lane rules: derived ids
+    // only, outside the canonical group, unpickable, dashed like every
+    // construction wire.
+    let v2Group: THREE.Group | null = null
+    const removeV2Construction = () => {
+      if (!v2Group) return
+      scene.remove(v2Group)
+      v2Group.traverse((o) => {
+        const obj = o as THREE.Line | THREE.Points
+        if ((obj as THREE.Line).isLine || (obj as THREE.Points).isPoints) {
+          obj.geometry.dispose()
+          ;(obj.material as THREE.Material).dispose()
+        }
+      })
+      v2Group = null
+    }
+    const buildV2Construction = () => {
+      removeV2Construction()
+      const items = (display as unknown as {
+        v2_construction?: Array<{
+          sketch_feature_id: string
+          lines: Array<{ id: string; a: number[]; b: number[] }>
+          points: Array<{ id: string; at: number[] }>
+        }>
+      } | null)?.v2_construction
+      if (!items || items.length === 0) return
+      v2Group = new THREE.Group()
+      v2Group.name = 'v2Construction'
+      for (const item of items) {
+        for (const ln of item.lines) {
+          const g = new THREE.BufferGeometry()
+          g.setAttribute('position', new THREE.Float32BufferAttribute([...ln.a, ...ln.b], 3))
+          const line = new THREE.Line(
+            g,
+            new THREE.LineDashedMaterial({
+              // the sketch-wire overlay's default gold (S2 D-S2) — one
+              // family of derived sketch geometry, one color
+              color: 0xd9a441, dashSize: 2.4, gapSize: 1.6, depthTest: false,
+            }),
+          )
+          line.computeLineDistances()
+          line.renderOrder = 3
+          line.name = `v2-construction:${item.sketch_feature_id}:${ln.id}`
+          v2Group.add(line)
+        }
+        for (const pt of item.points) {
+          const g = new THREE.BufferGeometry()
+          g.setAttribute('position', new THREE.Float32BufferAttribute([...pt.at], 3))
+          const dot = new THREE.Points(
+            g,
+            new THREE.PointsMaterial({ color: 0xd9a441, size: 5, sizeAttenuation: false, depthTest: false }),
+          )
+          dot.renderOrder = 3
+          dot.name = `v2-construction:${item.sketch_feature_id}:${pt.id}`
+          v2Group.add(dot)
+        }
+      }
+      scene.add(v2Group)
     }
 
     const buildPart = () => {
@@ -533,6 +601,7 @@ export default function Viewport({
       scene.add(partGroup)
       applyMode()
       viewStore.setSceneFacts({ hasCanonicalPart: true })
+      buildV2Construction()
     }
 
     const reloadDisplay = async () => {
@@ -755,7 +824,7 @@ export default function Viewport({
     const sketchEdit = createSketchEditOverlay()
     sketchEdit.group.visible = false
     scene.add(sketchEdit.group)
-    let modeKind: 'none' | 'planePick' | 'sketch' = 'none'
+    let modeKind: 'none' | 'planePick' | 'sketch' | 'sketchSolicit' = 'none'
     let sketchFrame: PlaneFrameTS | null = null
     let hoveredQuad: THREE.Mesh | null = null
     let datumsPriorVisible: boolean | null = null
@@ -801,6 +870,27 @@ export default function Viewport({
       )
       if (!frame) return null
       return { faceId, frame }
+    }
+
+    // P (arc 20260717-2): the ELIGIBLE sketch wire under the cursor —
+    // raycast the overlay lines ONLY (never canonical topology), filtered by
+    // the mode's eligible-id set, with a ZOOM-AWARE pick threshold so a thin
+    // wire stays clickable at any orthographic zoom (Codex1 B3).
+    const solicitWireAt = (
+      clientX: number, clientY: number, eligible: ReadonlySet<string>,
+    ): string | null => {
+      const r = canvas.getBoundingClientRect()
+      ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const worldPerPixel =
+        (camera.top - camera.bottom) / (camera.zoom * Math.max(1, r.height))
+      raycaster.params.Line = { threshold: 6 * worldPerPixel }
+      const hits = raycaster.intersectObjects(sketchWires.group.children, false)
+      for (const h of hits) {
+        const id = (h.object.userData as { sketchFeatureId?: string }).sketchFeatureId
+        if (id && eligible.has(id)) return id
+      }
+      return null
     }
 
     const sketchUvAt = (clientX: number, clientY: number): { u: number; v: number } | null => {
@@ -904,6 +994,10 @@ export default function Viewport({
         // frame and every sketch fact stay camera-independent.
         applySketchFraming(m.frame)
       }
+      if (kind !== 'sketchSolicit' && modeKind === 'sketchSolicit') {
+        sketchWires.setHover(null)
+        canvas.style.cursor = ''
+      }
       if (kind !== 'sketch' && modeKind === 'sketch') {
         ghostPart(false)
         sketchEdit.group.visible = false
@@ -929,6 +1023,15 @@ export default function Viewport({
       // the slop guard doubles as the orbit-vs-place distinction (Codex3
       // bar 6): a drag gesture never places a point or picks a plane
       if (Math.hypot(e.clientX - downX, e.clientY - downY) > 4) return
+      if (modeKind === 'sketchSolicit') {
+        const m = interactionModeRef.current
+        const eligible = m?.kind === 'sketchSolicit' ? m.eligibleIds : null
+        if (eligible) {
+          const id = solicitWireAt(e.clientX, e.clientY, eligible)
+          if (id) sketchCbRef.current.onSketchSolicit?.(id)
+        }
+        return // never canonical selection from the solicit mode
+      }
       if (modeKind === 'planePick') {
         // ONE arbitration rule (hover = click winner): an ELIGIBLE planar
         // canonical face wins over a datum quad (S3 — planarFaceIds is the
@@ -981,6 +1084,14 @@ export default function Viewport({
         return
       }
       navCube.setHover(null)
+      if (modeKind === 'sketchSolicit') {
+        const m = interactionModeRef.current
+        const eligible = m?.kind === 'sketchSolicit' ? m.eligibleIds : null
+        const id = eligible ? solicitWireAt(e.clientX, e.clientY, eligible) : null
+        sketchWires.setHover(id)
+        canvas.style.cursor = id ? 'pointer' : ''
+        return
+      }
       if (modeKind === 'planePick') {
         // the SAME winner as click (Codex1 B4.3): an eligible planar face
         // highlights through the canonical hover; else the datum quad

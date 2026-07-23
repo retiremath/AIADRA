@@ -205,6 +205,27 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.28.0",
+        to_version="0.29.0",
+        notes=[
+            "v0.28.0 → v0.29.0 is a MINOR additive bump (ADR/0044 Amendment A2, "
+            "arc 20260717-2 Gate F2a: the D3 per-parameter provenance extension). "
+            "`_shared/feature_record.schema.json` parameters[] items gain an "
+            "OPTIONAL `fact_provenance` object (category ∈ {human_input, "
+            "ai_proposal, computed_result} + ai_agent_ref + derived_from). "
+            "'computed_result' is admitted per-parameter (canonical weak-"
+            "completion values are system-minted under a weak_policy id) while "
+            "'measured' is excluded (reference dimensions are parameter-free "
+            "derived measurements per ADR/0044 D3). ABSENCE of the field keeps "
+            "the pre-A2 reading: the parent feature record's fact_provenance "
+            "applies. All existing v0.28.0 sidecars / Revisions / events "
+            "validate unchanged; no artifact data changes; no fold behavior "
+            "change in this bump (authoring-lane cross-check rules arrive with "
+            "the first v2 writer, Gate F2b)."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

@@ -79,6 +79,7 @@ def _box_with_fillet_recipe(radius: float = 2.0) -> list[dict]:
          "adapter_payload": build_sketch_payload(
              [{"type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": 23.0, "height_mm": 11.0}])},
         {"id": "feat_0002", "feature_type": "extrude",
+         "depends_on_feature_ids": ["feat_0001"],
          "parameters": [{"id": "featp_0001", "name": "depth_mm", "value": 6.0,
                          "datatype": "number", "unit": "mm"}],
          "adapter_payload": build_extrude_payload(
@@ -309,6 +310,15 @@ def test_missed_blend_hint_fails_loud_not_placeholder(workspace_with_part: Path,
     mint a fabricated `…/None:face:hole_wall` placeholder (ADR/0035 no-placeholder;
     ADR/0038 by-construction). Forced by neutering the produced-role claim."""
     feats = _box_with_fillet_recipe()  # a box (no circle primitive) + a fillet blend
+    # A4.5: extraction normally consumes the LEDGER — this test exercises the
+    # LEGACY correlate lane's claim safety net, so strip the ledger too.
+    import dataclasses as _dc
+
+    _orig_eval = geometry.evaluate_part_with_provenance
+    monkeypatch.setattr(
+        geometry, "evaluate_part_with_provenance",
+        lambda feats: _dc.replace(_orig_eval(feats), ledger=None),
+    )
     monkeypatch.setattr(topology, "_claimed_produced_roles", lambda face_map, produced_hints: {})
     with pytest.raises(TransactionError, match="unclaimed cylinder"):
         topology.extract_part_topology(feats)

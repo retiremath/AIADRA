@@ -1,0 +1,16 @@
+{
+  "branch_oracle_value": null,
+  "case_id": "a-rect",
+  "schema": "skb-replay-1",
+  "solved": {
+    "p1.x": 0.0,
+    "p1.y": 0.0,
+    "p2.x": 40.0,
+    "p2.y": 0.0,
+    "p3.x": 40.0,
+    "p3.y": 30.0,
+    "p4.x": 0.0,
+    "p4.y": 30.0
+  },
+  "weak_completion": []
+}

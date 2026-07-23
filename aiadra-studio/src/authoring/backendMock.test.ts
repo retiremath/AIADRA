@@ -222,7 +222,7 @@ describe('REVOLVE through the mirror and the decoder (R3/D-R9 — mock lathe par
     ])
   })
 
-  it('the mock one-base mirror refuses a base after a REVOLVE too', async () => {
+  it('a sequential extrude after a REVOLVE refuses (the engine mirror)', async () => {
     const { buildCreatePartOps, buildRectangleRevolveOps, buildSketchOnlyOps, buildExtrudeOnSketchOps } = await import('./backend')
     const mock = createMockAuthoringBackend()
     const s1 = await mock.begin(buildCreatePartOps('P-7', 'B'))
@@ -235,7 +235,9 @@ describe('REVOLVE through the mirror and the decoder (R3/D-R9 — mock lathe par
     const s4 = await mock.begin(buildExtrudeOnSketchOps('P-7', skId, 5))
     const sim = await mock.simulate(s4.sessionId)
     expect(sim.valid).toBe(false)
-    expect(sim.message).toMatch(/one-base/)
+    // P (arc 20260717-2): the one-base wording is retired — the refusal is
+    // now the SEQUENTIAL domain mirror (a datum-bound profile cannot chain).
+    expect(sim.message).toMatch(/FACE-BOUND|revolve/)
   })
 })
 
@@ -419,5 +421,113 @@ describe('S3 — face-bound sketches + the depth-edit RIDE through the mock mirr
     const sim = await mock.simulate(s.sessionId)
     expect(sim.valid).toBe(false)
     expect(sim.message).toMatch(/unknown feature\/parameter/)
+  })
+})
+
+describe('Codex14 — the real sequential graph shape + mock honesty', () => {
+  const boxOps = (n: string) => [
+    { kind: 'create_part', params: { number: n, name: 'Seq' } },
+    { kind: 'mechanical.add_sketch_feature', params: {
+      part_number: n, plane: { kind: 'principal', orientation: 'xy' },
+      primitives: [{ type: 'rectangle', x_mm: 0, y_mm: 0, width_mm: 40, height_mm: 25 }] } },
+  ]
+  const build = async (mock: ReturnType<typeof createMockAuthoringBackend>, n = 'P-40') => {
+    const s0 = await mock.begin(boxOps(n))
+    await mock.commit(s0.sessionId, n)
+    const s1 = await mock.begin([{ kind: 'mechanical.add_extrude_feature', params: {
+      part_number: n, sketch_feature_id: 'feat_0001', depth_mm: 10, direction: 'normal+' } }])
+    await mock.commit(s1.sessionId, n)
+    const s2 = await mock.begin([{ kind: 'mechanical.add_sketch_feature', params: {
+      part_number: n, plane: { kind: 'face', target_face_id: 'mock:cap_top' },
+      primitives: [{ type: 'rectangle', x_mm: 10, y_mm: 8, width_mm: 10, height_mm: 8 }] } }])
+    await mock.commit(s2.sessionId, n)
+  }
+
+  it('B1.4: a sequential extrude authors [sketch, prior_body_head] at 0.1.11', async () => {
+    const mock = createMockAuthoringBackend()
+    await build(mock)
+    const s3 = await mock.begin([{ kind: 'mechanical.add_extrude_feature', params: {
+      part_number: 'P-40', sketch_feature_id: 'feat_0003', depth_mm: 6,
+      direction: 'normal+', operation: 'add' } }])
+    expect((await mock.simulate(s3.sessionId)).valid).toBe(true)
+    await mock.commit(s3.sessionId, 'P-40')
+    const raw = mock.inspectRaw('P-40') as { sidecar: { feature: Array<Record<string, unknown>> } }
+    const boss = raw.sidecar.feature.find((f) => f.id === 'feat_0004')!
+    expect(boss.depends_on_feature_ids).toEqual(['feat_0003', 'feat_0002'])
+    expect(boss.adapter_schema_version).toBe('0.1.11')
+    // ...and the REAL decoder accepts the sequential graph shape
+    const { decodeInspectedPart } = await import('./inspectDecode')
+    const part = decodeInspectedPart(raw)
+    const seq = part.features.find((f) => f.id === 'feat_0004')
+    expect(seq?.kind === 'extrude' && seq.consumesSketchId).toBe('feat_0003')
+  })
+
+  it('B1.5: the decoder reads the NAMED operand — dependency order never decides', async () => {
+    const { decodeInspectedPart } = await import('./inspectDecode')
+    const raw = {
+      object_number: 'P-X', object_type: 'Part',
+      sidecar: { object: { type: 'Part', number: 'P-X', name: 'X', uuid: 'u' }, feature: [
+        { id: 'feat_0001', feature_type: 'sketch', engine: 'mechanical',
+          adapter_schema_version: '0.1.11',
+          adapter_payload: { primitives: [{ id: 'skp_0001', type: 'rectangle',
+            x_mm: 0, y_mm: 0, width_mm: 40, height_mm: 25 }] } },
+        { id: 'feat_0002', feature_type: 'extrude', engine: 'mechanical',
+          adapter_schema_version: '0.1.11',
+          depends_on_feature_ids: ['feat_0001'],
+          parameters: [{ id: 'featp_0001', name: 'depth_mm', value: 10, datatype: 'number', unit: 'mm' }],
+          adapter_payload: { sketch_feature_id: 'feat_0001', direction: 'normal+', operation: 'add' } },
+        { id: 'feat_0003', feature_type: 'sketch', engine: 'mechanical',
+          adapter_schema_version: '0.1.11',
+          depends_on_feature_ids: ['feat_0002'],
+          adapter_payload: { plane: { kind: 'face', face_role: 'feat_0002:face:cap_top',
+            resolved_against_topology_signature: 'topo_x' },
+            primitives: [{ id: 'skp_0001', type: 'rectangle', x_mm: 10, y_mm: 8, width_mm: 10, height_mm: 8 }] } },
+        // the HEAD edge FIRST — position must not matter
+        { id: 'feat_0004', feature_type: 'extrude', engine: 'mechanical',
+          adapter_schema_version: '0.1.11',
+          depends_on_feature_ids: ['feat_0002', 'feat_0003'],
+          parameters: [{ id: 'featp_0002', name: 'depth_mm', value: 6, datatype: 'number', unit: 'mm' }],
+          adapter_payload: { sketch_feature_id: 'feat_0003', direction: 'normal-', operation: 'cut' } },
+      ] },
+    }
+    const part = decodeInspectedPart(raw as never)
+    const cut = part.features.find((f) => f.id === 'feat_0004')
+    expect(cut?.kind === 'extrude' && cut.consumesSketchId).toBe('feat_0003')
+  })
+
+  it('B2: terminal eligibility derives from the LIVE part — a consumed sketch refuses', async () => {
+    const { decodeInspectedPart, eligibleExtrudeSketchIds } = await import('./inspectDecode')
+    const mock = createMockAuthoringBackend()
+    await build(mock, 'P-41')
+    const before = decodeInspectedPart(mock.inspectRaw('P-41') as never)
+    expect(eligibleExtrudeSketchIds(before).has('feat_0003')).toBe(true)
+    // the race: the sketch is consumed between render and click
+    const s3 = await mock.begin([{ kind: 'mechanical.add_extrude_feature', params: {
+      part_number: 'P-41', sketch_feature_id: 'feat_0003', depth_mm: 6,
+      direction: 'normal+', operation: 'add' } }])
+    await mock.commit(s3.sessionId, 'P-41')
+    const after = decodeInspectedPart(mock.inspectRaw('P-41') as never)
+    // the ONE derivation, applied to the LIVE state, refuses the stale id
+    expect(eligibleExtrudeSketchIds(after).has('feat_0003')).toBe(false)
+  })
+
+  it('B3: boss-on-boss REACHES the honest real-lane refusal (never a misplaced prism)', async () => {
+    const mock = createMockAuthoringBackend()
+    await build(mock, 'P-42')
+    const s3 = await mock.begin([{ kind: 'mechanical.add_extrude_feature', params: {
+      part_number: 'P-42', sketch_feature_id: 'feat_0003', depth_mm: 6,
+      direction: 'normal+', operation: 'add' } }])
+    await mock.commit(s3.sessionId, 'P-42')  // the boss (feat_0004)
+    // a sketch on the BOSS's own cap (the composite display id mockb_...)
+    const s4 = await mock.begin([{ kind: 'mechanical.add_sketch_feature', params: {
+      part_number: 'P-42', plane: { kind: 'face', target_face_id: 'mockb_feat_0004:cap_top' },
+      primitives: [{ type: 'rectangle', x_mm: 12, y_mm: 10, width_mm: 4, height_mm: 3 }] } }])
+    await mock.commit(s4.sessionId, 'P-42')  // the sketch itself commits fine
+    const s5 = await mock.begin([{ kind: 'mechanical.add_extrude_feature', params: {
+      part_number: 'P-42', sketch_feature_id: 'feat_0005', depth_mm: 3,
+      direction: 'normal+', operation: 'add' } }])
+    const sim = await mock.simulate(s5.sessionId)
+    expect(sim.valid).toBe(false)
+    expect(sim.message).toMatch(/BASE top cap only.*desktop app|real engine lane/)
   })
 })

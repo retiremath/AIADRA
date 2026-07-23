@@ -42,7 +42,9 @@ from .topology import (  # re-exported for compatibility (tests import from here
 # SK-C1.0 S2: v1.2 — additive `surface_kind` per face + top-level
 # `sketch_frames` (the resolved frames of face-bound sketches). The HLR
 # producer echoes THIS constant too (Codex2 B3.1: one version authority).
-DISPLAY_REPRESENTATION_VERSION = "1.2"
+# v1.3 (Gate F2b, arc 20260717-2): additive `v2_construction` — the solved
+# construction geometry of v2 sketches (A2.9 read-lifecycle output).
+DISPLAY_REPRESENTATION_VERSION = "1.3"
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +86,34 @@ def load_display_material(context, params: dict[str, Any]) -> dict[str, Any]:
     sidecar = context.load_sidecar(part_uuid)
     features = sidecar.get("feature", []) or []
 
-    authoring = next(
-        (g for g in sidecar.get("geometry_ref", []) or []
-         if g.get("role") == "authoring_geometry"),
-        None,
-    )
+    # ADR/0038 A4.7 (arc 20260717-2): with a body present, the identity echo
+    # is the UNIQUE body record — resolved by its HEAD (the terminal element
+    # of the ordered derived_from list, body-mutating), NEVER by list
+    # position. The no-body branch keeps the existing live sketch-recipe
+    # identity behavior (the first authoring record).
+    from . import body_history
+
+    records = [
+        g for g in sidecar.get("geometry_ref", []) or []
+        if g.get("role") == "authoring_geometry"
+    ]
+    head_id = body_history.body_head(features)
+    if head_id is not None:
+        by_id = {f.get("id"): f for f in features}
+        body_records = [
+            g for g in records
+            if (derived := g.get("derived_from_feature_ids") or [])
+            and derived[-1] in by_id
+            and body_history.is_body_mutating(by_id[derived[-1]])
+        ]
+        if len(body_records) != 1:
+            raise TransactionError(
+                f"mechanical.{context.operation_kind}: expected exactly one body "
+                f"authoring_geometry record, found {len(body_records)}"
+            )
+        authoring = body_records[0]
+    else:
+        authoring = records[0] if records else None
     if authoring is None:
         raise TransactionError(
             f"mechanical.{context.operation_kind}: Part has no authoring_geometry"
@@ -168,7 +193,11 @@ def generate_display_representation(
         angular_deflection_rad=angular_deflection_rad,
         cache_material=cache_material,
     )
-    return build_display_payload(topo, sketch_frames=build_sketch_frames(features))
+    return build_display_payload(
+        topo,
+        sketch_frames=build_sketch_frames(features),
+        v2_construction=build_v2_construction(features),
+    )
 
 
 def _no_solid_display(
@@ -210,6 +239,7 @@ def _no_solid_display(
             "names": {},
         },
         "sketch_frames": [],
+        "v2_construction": build_v2_construction(features),
         "view_dependent": None,
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],
@@ -222,6 +252,56 @@ def _no_solid_display(
             "vertex_count": 0,
         },
     }
+
+
+def build_v2_construction(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Display v1.3 (Gate F2b): the SOLVED construction geometry of every
+    valid v2 sketch — the A2.9 READ lifecycle's derived output, mapped from
+    sketch-plane (u, v) mm to world via the sketch's principal frame.
+    Derived display data, never Truth; a malformed record or a refused
+    regeneration fails the display loud, exactly like evaluation."""
+    from .recipe import principal_frame
+    from .sketch_v2 import is_v2_series, regenerate_v2_sketch
+
+    out: list[dict[str, Any]] = []
+    for f in features:
+        if not (f.get("feature_type") == "sketch"
+                and is_v2_series(f.get("adapter_schema_version"))
+                and f.get("engine") == "mechanical"):
+            continue
+        solved = regenerate_v2_sketch(f)
+        payload = f.get("adapter_payload", {})
+        plane = payload.get("plane", {})
+        frame = principal_frame(plane.get("orientation", "xy"))
+
+        def to_world(u: float, v: float) -> list[float]:
+            return list(frame.to_3d(u, v))
+
+        points: list[dict[str, Any]] = []
+        lines: list[dict[str, Any]] = []
+        pt_world: dict[str, list[float]] = {}
+        for e in payload.get("entities", []):
+            if e.get("type") == "point":
+                w = to_world(solved[f"{e['id']}.x"], solved[f"{e['id']}.y"])
+                pt_world[e["id"]] = w
+                points.append({"id": e["id"], "at": w})
+        for e in payload.get("entities", []):
+            if e.get("type") == "line":
+                lines.append({
+                    "id": e["id"],
+                    "a": pt_world[e["start"]],
+                    "b": pt_world[e["end"]],
+                })
+        from .sketch_v2 import decode_v2_sketch
+
+        out.append({
+            "sketch_feature_id": f.get("id"),
+            "shape": decode_v2_sketch(f)["shape"],
+            "construction": True,
+            "points": points,
+            "lines": lines,
+        })
+    return out
 
 
 def build_sketch_frames(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -252,6 +332,7 @@ def build_sketch_frames(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_display_payload(
     topo: "topology.PartTopology",
     sketch_frames: list[dict[str, Any]] | None = None,
+    v2_construction: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the contract dict from extracted topology records (B1: ids come
     from the records, never derived here)."""
@@ -310,6 +391,9 @@ def build_display_payload(
             "names": names,
         },
         "sketch_frames": list(sketch_frames or []),
+        # v1.3 (Gate F2b): SOLVED-derived v2 construction geometry (A2.9 read
+        # lifecycle output) — derived display data, never Truth.
+        "v2_construction": list(v2_construction or []),
         "view_dependent": None,  # populated only by the HLR read lane (hlr.py)
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],

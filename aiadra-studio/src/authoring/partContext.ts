@@ -13,7 +13,7 @@
  *    eligibility — a tree/target is only trustworthy in `ready`;
  *  - the store is the one writer; callers get an immutable snapshot.
  */
-import { decodeInspectedPart, stackingRefusal, type InspectedPart } from './inspectDecode'
+import { decodeInspectedPart, eligibleExtrudeSketchIds, stackingRefusal, type InspectedPart } from './inspectDecode'
 
 /** Generation-bound facts about the CURRENT canonical display (arc
  *  20260715-1 D-R8 / Codex1 B1): what the topology-selection features may
@@ -300,11 +300,19 @@ export function authoringFacts(s: PartContextState): {
   canExtrude: boolean
 } {
   const readyPart = s.inspection.status === 'ready' ? s.inspection.part : null
+  // P (arc 20260717-2): the one-base mirror is RETIRED for extrudes — the
+  // engine's M thread supports sequential add/cut on a FACE-BOUND sketch.
+  // With a body, Extrude stays eligible iff a sequential-eligible sketch
+  // exists (the SAME rule the ribbon and the panel derive); revolve bodies
+  // stay outside the sequential domain.
+  const canExtrude = (() => {
+    if (readyPart === null || readyPart.hasRevolveBase) return false
+    if (!readyPart.hasExtrudeBase) return true
+    return eligibleExtrudeSketchIds(readyPart).size > 0
+  })()
   return {
     readyPart,
-    // B3's UI mirror of the engine's one-base rule: a Part that already has a
-    // base creation feature cannot take another (the engine enforces it too).
-    canExtrude: readyPart !== null && !readyPart.hasExtrudeBase && !readyPart.hasRevolveBase,
+    canExtrude,
   }
 }
 

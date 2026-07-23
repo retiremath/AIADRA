@@ -47,7 +47,13 @@ export function buildContourDisplay(
   points: Pt[],
   depthMm: number,
   plane: PlaneOrientation = 'xy',
+  opts: { wOffset?: number; idPrefix?: string } = {},
 ): DisplayRepresentation {
+  // P (arc 20260717-2): `wOffset` places the prism ALONG the plane normal
+  // (a boss stacked on the base cap); `idPrefix` keeps composite face ids
+  // distinct per feature. Defaults preserve every existing call site.
+  const wOffset = opts.wOffset ?? 0
+  const idPrefix = opts.idPrefix ?? "mock"
   // CCW ring (positive area) so every wall's outward normal is consistent.
   const ring = signedArea(points) >= 0 ? points : [...points].reverse()
   const n = ring.length
@@ -61,14 +67,14 @@ export function buildContourDisplay(
   const tris = THREE.ShapeUtils.triangulateShape(ring.map((p) => new THREE.Vector2(p.x, p.y)), [])
 
   const [, , N] = FRAME_AXES[plane]
-  const capBase: FaceBuffer = { face_id: 'mock:cap_base',
+  const capBase: FaceBuffer = { face_id: `${idPrefix}:cap_base`,
       surface_kind: 'plane', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
-  const capTop: FaceBuffer = { face_id: 'mock:cap_top',
+  const capTop: FaceBuffer = { face_id: `${idPrefix}:cap_top`,
       surface_kind: 'plane', appearance_slot: 'default', positions: [], normals: [], triangles: [] }
   for (const p of ring) {
-    capBase.positions.push(...to3d(plane, p.x, p.y, 0))
+    capBase.positions.push(...to3d(plane, p.x, p.y, wOffset))
     capBase.normals.push(-N[0], -N[1], -N[2])
-    capTop.positions.push(...to3d(plane, p.x, p.y, d))
+    capTop.positions.push(...to3d(plane, p.x, p.y, wOffset + d))
     capTop.normals.push(N[0], N[1], N[2])
   }
   for (const [a, b, c] of tris) {
@@ -87,12 +93,12 @@ export function buildContourDisplay(
     // Outward in-plane normal of a CCW ring, mapped through the frame.
     const [nx3, ny3, nz3] = to3d(plane, ey / len, -ex / len)
     faces.push({
-      face_id: `mock:wall_${i}`,
+      face_id: `${idPrefix}:wall_${i}`,
       surface_kind: 'plane',
       appearance_slot: 'default',
       positions: [
-        ...to3d(plane, p.x, p.y, 0), ...to3d(plane, q.x, q.y, 0),
-        ...to3d(plane, q.x, q.y, d), ...to3d(plane, p.x, p.y, d),
+        ...to3d(plane, p.x, p.y, wOffset), ...to3d(plane, q.x, q.y, wOffset),
+        ...to3d(plane, q.x, q.y, wOffset + d), ...to3d(plane, p.x, p.y, wOffset + d),
       ],
       normals: [nx3, ny3, nz3, nx3, ny3, nz3, nx3, ny3, nz3, nx3, ny3, nz3],
       triangles: [0, 1, 2, 0, 2, 3],
@@ -103,23 +109,23 @@ export function buildContourDisplay(
   for (let i = 0; i < n; i++) {
     const p = ring[i]
     const q = ring[(i + 1) % n]
-    const prevWall = `mock:wall_${(i - 1 + n) % n}`
-    const wall = `mock:wall_${i}`
-    const p0 = to3d(plane, p.x, p.y, 0)
-    const pd = to3d(plane, p.x, p.y, d)
-    const q0 = to3d(plane, q.x, q.y, 0)
-    const qd = to3d(plane, q.x, q.y, d)
-    edges.push({ edge_id: `mock:e_bot_${i}`, kind: 'sharp', polyline: [...p0, ...q0], faces: ['mock:cap_base', wall] })
-    edges.push({ edge_id: `mock:e_top_${i}`, kind: 'sharp', polyline: [...pd, ...qd], faces: ['mock:cap_top', wall] })
-    edges.push({ edge_id: `mock:e_ver_${i}`, kind: 'sharp', polyline: [...p0, ...pd], faces: [prevWall, wall] })
-    vertices.push({ vertex_id: `mock:v_bot_${i}`, position: p0 })
-    vertices.push({ vertex_id: `mock:v_top_${i}`, position: pd })
+    const prevWall = `${idPrefix}:wall_${(i - 1 + n) % n}`
+    const wall = `${idPrefix}:wall_${i}`
+    const p0 = to3d(plane, p.x, p.y, wOffset)
+    const pd = to3d(plane, p.x, p.y, wOffset + d)
+    const q0 = to3d(plane, q.x, q.y, wOffset)
+    const qd = to3d(plane, q.x, q.y, wOffset + d)
+    edges.push({ edge_id: `${idPrefix}:e_bot_${i}`, kind: 'sharp', polyline: [...p0, ...q0], faces: [`${idPrefix}:cap_base`, wall] })
+    edges.push({ edge_id: `${idPrefix}:e_top_${i}`, kind: 'sharp', polyline: [...pd, ...qd], faces: [`${idPrefix}:cap_top`, wall] })
+    edges.push({ edge_id: `${idPrefix}:e_ver_${i}`, kind: 'sharp', polyline: [...p0, ...pd], faces: [prevWall, wall] })
+    vertices.push({ vertex_id: `${idPrefix}:v_bot_${i}`, position: p0 })
+    vertices.push({ vertex_id: `${idPrefix}:v_top_${i}`, position: pd })
   }
 
   // The bbox from every ring corner at both sweep ends, mapped through the frame.
   const corners: [number, number, number][] = ring.flatMap((p) => [
-    to3d(plane, p.x, p.y, 0),
-    to3d(plane, p.x, p.y, d),
+    to3d(plane, p.x, p.y, wOffset),
+    to3d(plane, p.x, p.y, wOffset + d),
   ])
   const bboxMin: [number, number, number] = [0, 1, 2].map((i) =>
     Math.min(...corners.map((c) => c[i])),
@@ -153,6 +159,40 @@ export function buildContourDisplay(
       face_count: faces.length,
       edge_count_by_kind: { sharp: edges.length },
       triangle_count: faces.reduce((s, f) => s + f.triangles.length / 3, 0),
+      vertex_count: vertices.length,
+    },
+  }
+}
+
+/** P (arc 20260717-2): merge several procedural representations into ONE
+ *  display (the base + stacked bosses) — ids stay distinct per idPrefix;
+ *  bbox/counters recomputed. Honest composition of honest prisms. */
+export function mergeDisplays(reps: DisplayRepresentation[]): DisplayRepresentation {
+  if (reps.length === 0) throw new Error('mergeDisplays: nothing to merge')
+  const [head, ...rest] = reps
+  const faces = [...head.render.faces]
+  const edges = [...head.render.edges]
+  const vertices = [...head.render.vertices]
+  let bboxMin = [...head.render.bbox_min] as [number, number, number]
+  let bboxMax = [...head.render.bbox_max] as [number, number, number]
+  for (const r of rest) {
+    faces.push(...r.render.faces)
+    edges.push(...r.render.edges)
+    vertices.push(...r.render.vertices)
+    bboxMin = bboxMin.map((v, i) => Math.min(v, r.render.bbox_min[i])) as [number, number, number]
+    bboxMax = bboxMax.map((v, i) => Math.max(v, r.render.bbox_max[i])) as [number, number, number]
+  }
+  return {
+    ...head,
+    render: {
+      ...head.render,
+      faces, edges, vertices,
+      bbox_min: bboxMin, bbox_max: bboxMax,
+    },
+    counters: {
+      face_count: faces.length,
+      edge_count_by_kind: { sharp: edges.length },
+      triangle_count: faces.reduce((s2, f) => s2 + f.triangles.length / 3, 0),
       vertex_count: vertices.length,
     },
   }
@@ -346,7 +386,7 @@ export function emptyMockSource(objectNumber: string, badge: string): DisplaySou
   return displayToSource(buildEmptyMockDisplay(objectNumber), badge)
 }
 
-function displayToSource(display: DisplayRepresentation, badge: string): DisplaySource {
+export function displayToSource(display: DisplayRepresentation, badge: string): DisplaySource {
   return {
     kind: 'fixture',
     badge,

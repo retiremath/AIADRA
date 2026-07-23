@@ -1,0 +1,301 @@
+{
+  "cases": {
+    "a-rect": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.47
+    },
+    "b-slot": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.64
+    },
+    "c-bracket": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.31
+    },
+    "d-under": {
+      "classification": "under",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 2.72
+    },
+    "e-over-redundant": {
+      "classification": "over",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 1.01
+    },
+    "f-conflicting": {
+      "classification": "over",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.23
+    },
+    "g-nonconv": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.18
+    },
+    "h-outdomain": {
+      "classification": "rejected",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.04
+    },
+    "i-permute": {
+      "classification": "under",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 2.31
+    },
+    "j-branch-flip": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.19
+    },
+    "k-gear": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.24
+    },
+    "l-tee": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.24
+    },
+    "m-fan": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.33
+    },
+    "n-arcs": {
+      "classification": "well",
+      "errors": [],
+      "pass": true,
+      "wall_ms": 0.81
+    }
+  },
+  "environment": {
+    "arch": "AMD64",
+    "artifacts": "planegcs.dll + aiadra_solver.cp312-win_amd64.pyd (separate DLL form)",
+    "candidate": "planegcs (extracted + 2 determinism patches, DogLeg)",
+    "compile_flags": "/O2 /Ob2 /MD /EHsc /bigobj /permissive- /fp:precise, C++20, CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS, Sketcher_EXPORTS",
+    "compiler_toolchain": "MSVC 19.40.33811, Visual Studio 17 2022 v143 toolset 14.40.33807, x64 Release",
+    "corpus_version": "skb-1",
+    "dependencies": "Eigen 3.4.0 (MPL-2.0, header-only), Boost 1.86.0 (BSL-1.0, header-only), pybind11 3.0.4 (BSD-3-Clause)",
+    "native_convergence": 1e-10,
+    "os": "Windows-11-10.0.26200-SP0",
+    "patches": "spike-planegcs/patches/0001+0002 (deterministic assembly; A/B causality in provenance.json patch_evidence)",
+    "python": "3.12.4",
+    "python_abi": "cp312-win_amd64",
+    "serializer_id": "skb-canon-1: json keys sorted, compact separators, shortest round-trip float repr, no quantization, -0.0 canonicalized, NaN/Infinity rejected",
+    "solver_contract": "skb-c0",
+    "upstream_commit": "8d0078866c6fcefed3395d5d9fa36c683ea858ad",
+    "weak_policy": "skb-0 (shared AIADRA layer)"
+  },
+  "procedures": {
+    "p2:c-bracket": {
+      "pass": true,
+      "persisted": 1,
+      "record_file": "D:\\VSCode-Work\\AIADRA\\aiadra-solver\\testkit\\harness\\replay\\planegcs-p2-c-bracket.json",
+      "record_sha256": "eca9b70a248c4e2e9451d0b3e0b0ac40b551752a9f9d680c61e754d7ab4f756c",
+      "resolved": 1
+    },
+    "p2:j-branch-flip": {
+      "pass": true,
+      "persisted": -1,
+      "record_file": "D:\\VSCode-Work\\AIADRA\\aiadra-solver\\testkit\\harness\\replay\\planegcs-p2-j-branch-flip.json",
+      "record_sha256": "69aaccea792aaddeffbdd585b3bf99ee3f7e03459dd0992e11f5ee739915426a",
+      "resolved": -1
+    },
+    "p4": {
+      "cases": {
+        "a-rect": {
+          "pass": true,
+          "record_sha256": "a0fd024fc768b361530bf3b1bd0e76683403f16549913500cef73a80e6ee92b8"
+        },
+        "b-slot": {
+          "pass": true,
+          "record_sha256": "3ac223872152b01b9830ea5caf573ca17e920b44bfc66575129dccf432a642ac"
+        },
+        "c-bracket": {
+          "pass": true,
+          "record_sha256": "eca9b70a248c4e2e9451d0b3e0b0ac40b551752a9f9d680c61e754d7ab4f756c"
+        },
+        "d-under": {
+          "pass": true,
+          "record_sha256": "3fb4d8b5e8c15b73d444bd3ada4decb764ff381b5297d2dcce02be2b4dee6efb"
+        },
+        "e-over-redundant": {
+          "pass": true,
+          "record_sha256": "38894dced633df570cb1f4589dacc6837b21c47bdf2f09f051708f393e8b65be"
+        },
+        "i-permute": {
+          "pass": true,
+          "record_sha256": "adae6c5c1103c315306839dbedef37508f96827af6eea6583fea8d08f95a4f0d"
+        },
+        "j-branch-flip": {
+          "pass": true,
+          "record_sha256": "69aaccea792aaddeffbdd585b3bf99ee3f7e03459dd0992e11f5ee739915426a"
+        },
+        "k-gear": {
+          "pass": true,
+          "record_sha256": "eaa6d323c4ff390438730cd80ea8e04f042d8b031508c02c21ccc87378250333"
+        },
+        "l-tee": {
+          "pass": true,
+          "record_sha256": "b7ff00db7bc6cc6ae1b57ee34a70f39dfafe78387d87d870c4271caca49bdd0e"
+        },
+        "m-fan": {
+          "pass": true,
+          "record_sha256": "af8f2aca62307f8b573a0be159fc22eea2cae5a1b3b4566bef52b3ecc495a3c4"
+        },
+        "n-arcs": {
+          "pass": true,
+          "record_sha256": "469817670bb2c0e983419fd0b1037bf14952d228aff3e90b6b89e3e11d1b8e80"
+        }
+      },
+      "pass": true
+    },
+    "repeatability": {
+      "byte_identical": true,
+      "command": "planegcs_candidate.py --dump (x10 fresh) + 100 in-process",
+      "determinism_provenance": {
+        "cause": "SubSystem::redirectParams last-writer-wins over pointer-ordered pmap with reduction-aliased pvals slots; see spike-planegcs/patches/ and provenance.json patch_evidence for the full A/B",
+        "patched": "byte-identical (this run set)",
+        "status": "CONFIRMED by A/B (was: measured hypothesis in Claude5)",
+        "unpatched": "82 distinct digests/100 same-process; 10/10 distinct fresh"
+      },
+      "envelope_pass": true,
+      "envelope_worst_ratio": 0.0,
+      "fresh_process_digests": [
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736"
+      ],
+      "max_abs_drift": 0.0,
+      "same_process_digests": [
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736",
+        "061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736"
+      ],
+      "serializer_id": "skb-canon-1: json keys sorted, compact separators, shortest round-trip float repr, no quantization, -0.0 canonicalized, NaN/Infinity rejected",
+      "top_drift_scalars": [],
+      "variance_envelope": "per-scalar max(1e-15 abs, 1e-12 rel), aggregated across all 110 runs incl. fresh workers"
+    }
+  }
+}

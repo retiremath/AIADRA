@@ -1,0 +1,26 @@
+{
+  "branch_oracle_value": null,
+  "case_id": "b-slot",
+  "schema": "skb-replay-1",
+  "solved": {
+    "a1.end_angle": 270.0,
+    "a1.radius": 10.0,
+    "a1.start_angle": 90.0,
+    "a2.end_angle": 90.0,
+    "a2.radius": 10.0,
+    "a2.start_angle": 270.0,
+    "p1.x": 0.0,
+    "p1.y": 0.0,
+    "p2.x": 60.0,
+    "p2.y": 0.0,
+    "p3.x": 6.123233995736766e-16,
+    "p3.y": 10.0,
+    "p4.x": 60.0,
+    "p4.y": 10.0,
+    "p5.x": 60.0,
+    "p5.y": -10.0,
+    "p6.x": -1.8369701987210296e-15,
+    "p6.y": -10.0
+  },
+  "weak_completion": []
+}

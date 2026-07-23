@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "bundle_version": "0.29.0",
+  "lookups": {
+    "sidecar": {
+      "Part": "object/part.schema.json",
+      "Requirement": "object/requirement.schema.json",
+      "TestProcedure": "object/test_procedure.schema.json",
+      "TestExecution": "object/test_execution.schema.json",
+      "EvidenceArtifact": "object/evidence_artifact.schema.json"
+    },
+    "revision": {
+      "Part": "object/part.schema.json",
+      "Requirement": "object/requirement.schema.json",
+      "TestProcedure": "object/test_procedure.schema.json",
+      "TestExecution": "object/test_execution.schema.json",
+      "EvidenceArtifact": "object/evidence_artifact.schema.json"
+    },
+    "event": {
+      "part_created": "event/part_created.schema.json",
+      "requirement_created": "event/requirement_created.schema.json",
+      "test_procedure_created": "event/test_procedure_created.schema.json",
+      "test_execution_created": "event/test_execution_created.schema.json",
+      "evidence_artifact_created": "event/evidence_artifact_created.schema.json",
+      "relationship_created": "event/relationship_created.schema.json",
+      "parameter_changed": "event/parameter_changed.schema.json",
+      "part_released": "event/part_released.schema.json",
+      "requirement_released": "event/requirement_released.schema.json",
+      "test_procedure_released": "event/test_procedure_released.schema.json",
+      "test_execution_released": "event/test_execution_released.schema.json",
+      "evidence_artifact_released": "event/evidence_artifact_released.schema.json",
+      "release_staged": "event/release_staged.schema.json",
+      "drawing_changed": "event/drawing_changed.schema.json",
+      "test_procedure_changed": "event/test_procedure_changed.schema.json",
+      "test_execution_changed": "event/test_execution_changed.schema.json",
+      "evidence_artifact_changed": "event/evidence_artifact_changed.schema.json",
+      "requirement_changed": "event/requirement_changed.schema.json",
+      "part_changed": "event/part_changed.schema.json"
+    },
+    "manifest": {
+      "release": "manifest.schema.json"
+    },
+    "reservation": {
+      "P": "reservation/P.schema.json",
+      "REQ": "reservation/REQ.schema.json",
+      "TST": "reservation/TST.schema.json",
+      "TEX": "reservation/TEX.schema.json",
+      "EVD": "reservation/EVD.schema.json"
+    },
+    "relationship": {
+      "satisfies": "relationship/satisfies.schema.json",
+      "tested_against": "relationship/tested_against.schema.json",
+      "verifies": "relationship/verifies.schema.json",
+      "cites": "relationship/cites.schema.json",
+      "executes": "relationship/executes.schema.json",
+      "executed_on": "relationship/executed_on.schema.json",
+      "produces": "relationship/produces.schema.json"
+    },
+    "relationship_types_by_source_object_type": {
+      "Part": [
+        "satisfies",
+        "tested_against"
+      ],
+      "Requirement": [
+        "cites"
+      ],
+      "TestProcedure": [
+        "verifies"
+      ],
+      "TestExecution": [
+        "executes",
+        "executed_on",
+        "produces"
+      ],
+      "EvidenceArtifact": []
+    }
+  }
+}

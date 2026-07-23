@@ -101,6 +101,9 @@ interface SketchSubstate {
 }
 
 interface ExtrudeSubstate {
+  /** P (arc 20260717-2): the sequential operation — add (boss) | cut
+   *  (pocket). Ignored by the BASE commit (always add) and by revolve. */
+  operation: "add" | "cut"
   mode: 'extrude'
   /** The base-feature discriminant (arc 20260715-1 R3; Codex2 Q1): ONE
    *  session shape for extrude AND revolve — shared capture/cancel/lifecycle/
@@ -243,6 +246,7 @@ export interface AuthoringSessionStore {
     feature?: 'extrude' | 'revolve',
   ): void
   chooseCommittedSketch(sketchId: string): void
+  setExtrudeOperation(operation: 'add' | 'cut'): void
   beginChainedSketch(
     plane: PlaneOrientation,
     target: { number: string; name: string } | null,
@@ -531,6 +535,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         mode: 'extrude',
         feature,
         step: preselectedSketchId ? 'depth' : 'select',
+        operation: 'add',
         source: preselectedSketchId ? { kind: 'committed', sketchId: preselectedSketchId } : null,
         target,
         depthMm: defaultDepthMm,
@@ -539,6 +544,12 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         message: null,
         selectedSketchId: state.selectedSketchId,
       })
+    },
+    setExtrudeOperation: (operation) => {
+      const e = extrude()
+      if (!e || e.phase === 'busy') return
+      if (e.feature !== 'extrude') return // revolve has no operation
+      emit({ ...e, operation })
     },
     chooseCommittedSketch: (sketchId) => {
       const e = extrude()
@@ -583,6 +594,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         mode: 'extrude',
         feature: s.chainedFeature,
         step: 'depth',
+        operation: 'add',  // a chained source is datum-bound — base-only
         source,
         // The captured TUPLE survives the sketch hand-off (Codex4 B1.4).
         target: s.targetAuth,

@@ -372,6 +372,26 @@ export function buildCreateWithRectangleOps(
 /** The STEPWISE sketch commit (S2 D-S2): the sketch alone becomes Truth —
  *  `Sketch N` in the tree + its wire in the viewport; Extrude consumes it
  *  later (dual entry A). */
+/** Gate F2b (ADR/0044 A2): the slice-1 REFERENCES sketch — the first v2
+ *  (adapter 0.2.0) writer. The engine runs the A2.9 atomic authoring
+ *  transaction (preview solve → verbatim skb-0 weak completion → the exact
+ *  empty witness set) and stages ONE record; solved coordinates are derived
+ *  display data and never persisted. */
+export function buildReferenceSketchOps(partNumber: string): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.add_reference_sketch',
+      params: {
+        part_number: partNumber,
+        axes: 'xy',
+        plane: { kind: 'principal', orientation: 'xy' },
+        x_axis_mm: 20.0,
+        y_axis_mm: 20.0,
+      },
+    },
+  ]
+}
+
 export function buildSketchOnlyOps(
   partNumber: string,
   points: Pt[],
@@ -542,7 +562,12 @@ export function buildExtrudeOnSketchOps(
   partNumber: string,
   sketchFeatureId: string,
   depthMm: number,
+  operation: 'add' | 'cut' = 'add',
 ): FeatureOp[] {
+  // P (arc 20260717-2): the SEQUENTIAL vocabulary — a boss adds outward
+  // (normal+), a pocket cuts inward (normal-). The engine enforces the same
+  // pairing and never infers operation from direction; the UI sets the
+  // conventional direction for the chosen operation.
   return [
     {
       kind: 'mechanical.add_extrude_feature',
@@ -550,7 +575,8 @@ export function buildExtrudeOnSketchOps(
         part_number: partNumber,
         sketch_feature_id: sketchFeatureId,
         depth_mm: depthMm,
-        direction: 'normal+',
+        direction: operation === 'cut' ? 'normal-' : 'normal+',
+        operation,
       },
     },
   ]

@@ -41,3 +41,16 @@ Docs/Snapshots/
 # RESEARCH MATERIAL ONLY (ADR/0027 posture): local, never committed, never
 # shipped, never embedded in any distributed knowledge base or training set.
 Docs/Creo10BenchmarkDocs/
+
+# aiadra-solver (SK-C1 foundation, arc 20260717-2 Gate F1): the replaceable
+# LGPL solver artifact home. Git conveys SOURCE + evidence (extraction,
+# patches, binding, shims, vendored eigen/pybind11, manifests, digests,
+# licenses); the built DLL/PYD stay OUT of git until the binary-distribution
+# legal gate is explicitly cleared (ADR/0034 + ADR/0044-A1, Codex16 B1).
+# Boost is acquired by the locked src/fetch_boost.py, never committed.
+!aiadra-solver/dist/
+aiadra-solver/dist/*.dll
+aiadra-solver/dist/*.pyd
+aiadra-solver/src/boost/
+aiadra-solver/testkit/output/
+aiadra-solver/testkit-output/

@@ -1,0 +1,122 @@
+{
+  "anchors": [
+    {
+      "args": [
+        "p1"
+      ],
+      "id": "n01",
+      "kind": "fix"
+    }
+  ],
+  "case_id": "g-nonconv",
+  "constraints": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "c01",
+      "kind": "horizontal"
+    }
+  ],
+  "corpus_version": "skb-1",
+  "dimensions": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "d01",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 50.0
+    },
+    {
+      "args": [
+        "l2"
+      ],
+      "id": "d02",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 30.0
+    },
+    {
+      "args": [
+        "p1",
+        "p3"
+      ],
+      "id": "d03",
+      "kind": "distance",
+      "strength": "strong",
+      "value_mm": 65.0
+    }
+  ],
+  "entities": [
+    {
+      "id": "p1",
+      "nominal": {
+        "x": 0,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p2",
+      "nominal": {
+        "x": -750,
+        "y": 620
+      },
+      "type": "point"
+    },
+    {
+      "id": "p3",
+      "nominal": {
+        "x": 900,
+        "y": -1100
+      },
+      "type": "point"
+    },
+    {
+      "end": "p2",
+      "id": "l1",
+      "start": "p1",
+      "type": "line"
+    },
+    {
+      "end": "p3",
+      "id": "l2",
+      "start": "p2",
+      "type": "line"
+    }
+  ],
+  "expected": {
+    "branch_oracle": null,
+    "classification": "well",
+    "diagnostics": [
+      {
+        "kind": "non-convergent",
+        "members": [
+          "g-nonconv"
+        ]
+      }
+    ],
+    "dof_strong": 0,
+    "ledger": {
+      "anchor_eq": 2,
+      "constraint_eq": 1,
+      "dimension_eq": 3,
+      "entity_dof": 6,
+      "net_count": 0
+    },
+    "residual_max": null,
+    "solved": null,
+    "tolerance": {
+      "angle_deg": 1e-09,
+      "direction": 1e-09,
+      "length_mm": 1e-09
+    },
+    "weak_completion": []
+  },
+  "iteration_cap": 0,
+  "solver_contract": "skb-c0",
+  "title": "well-posed bracket, adversarial seed, pinned iteration_cap=0",
+  "weak_policy": "skb-0"
+}

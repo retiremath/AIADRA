@@ -37,6 +37,7 @@ from .adapter_payload import (
     build_sketch_payload,
     require_simple_cap_fit,
 )
+from . import body_history
 from .kernel import compute_recipe_bytes, vault_ref_for_bytes
 from .recipe import effective_plane_frame, extrude_sign
 
@@ -44,6 +45,11 @@ if TYPE_CHECKING:
     from aiadra_core.native_engine.context import NativeEngineContext
 
 ENGINE_ID = "mechanical"
+# 0.1.11 (arc 20260717-2 M-identity, ADR/0038 A4): the body-history chain +
+#   graph-to-bytes normalization — geometry records stage the PROJECTION of
+#   their head's dependency closure (never the whole sidecar list); the
+#   canonical serializer includes sorted depends_on_feature_ids; extrude
+#   gains structural `operation: add|cut` (absent legacy = add).
 # 0.1.8 (arc 20260714-3 S2, Codex1 B3): the SAME-KIND one-base guards — a
 # second extrude (or second revolve) is rejected at the handler AND the
 # evaluator (a stored two-base recipe fails loud, never "last one wins").
@@ -67,7 +73,7 @@ ENGINE_ID = "mechanical"
 # anchored `target_edge` reference (ADR/0038) + the `…:face:blend` role grammar.
 # 0.1.1 (arc 20260609-1 Codex1 B2): sketch primitives carry engine-minted stable
 # `skp_NNNN` ids — the primitive-level role anchor for Display topology identity.
-ADAPTER_SCHEMA_VERSION = "0.1.10"
+ADAPTER_SCHEMA_VERSION = "0.1.11"
 
 
 # =============================================================================
@@ -101,7 +107,16 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
         target_face_id = _require_param(
             plane, "target_face_id", str, "mechanical.add_sketch_feature"
         )
-        prefix = list(sidecar.get("feature", []))
+        # A4.6/A4.7 (Codex5 B1): the support context is the BODY HEAD's
+        # dependency-closed projection — the stored signature and the
+        # resolution both use it (independent sketches never enter it).
+        _all = list(sidecar.get("feature", []))
+        _head = body_history.body_head(_all)
+        prefix = (
+            list(body_history.project_body_recipe(_all, _head).features)
+            if _head is not None
+            else _all
+        )
         fresh = topology.extract_part_topology(prefix)
         stored_plane = {
             "kind": "face",
@@ -119,6 +134,12 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
                 f"Part {part_number}"
             )
         sketch_depends_on = [producer]
+        # A4.6: the sketch records enough context to reconstruct the body
+        # state its support was resolved against — when the producer is not
+        # the CURRENT body head, the head is recorded too.
+        current_head = body_history.body_head(prefix)
+        if current_head is not None and current_head != producer:
+            sketch_depends_on.append(current_head)
         plane = stored_plane
 
     feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
@@ -141,18 +162,16 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
     # Real OCCT validity gate (also exercises the D8 cache key).
     _gate_validity(context, sidecar["feature"])
 
-    # Recipe-hash identity (ADR/0031 D6): stage the canonical RECIPE bytes.
-    vault_ref = _stage_recipe(context, sidecar["feature"])
+    # Recipe-hash identity (ADR/0031 D6 + ADR/0038 A4.7): stage the canonical
+    # PROJECTION of the sketch's own dependency closure — a principal sketch
+    # stages itself alone; a face-bound sketch stages its support chain too.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
 
     geom_record = {
         "id": geom_id,
         "role": "authoring_geometry",
-        "vault_ref": vault_ref,  # NB: `kind` omitted per ADR/0031 D6/B1.
-        "derived_from_feature_ids": [feature_id],
-        "fact_provenance": {
-            "category": "computed_result",
-            "derived_from": [f"feature:{feature_id}"],
-        },
+        # NB: `kind` omitted per ADR/0031 D6/B1.
+        **_geom_fields_from_projection(vault_ref, proj),
     }
     sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(geom_record))
 
@@ -166,12 +185,80 @@ def handle_add_sketch_feature(context: "NativeEngineContext", params: dict[str, 
 
 
 # =============================================================================
+# Handler 1b: add_reference_sketch (Gate F2b — the FIRST v2 writer)
+# =============================================================================
+
+
+def handle_add_reference_sketch(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    """ADR/0044 A2 (arc 20260717-2, Gate F2b): the slice-1 REFERENCES sketch —
+    the first authorized v2 (adapter 0.2.0) write. The A2.9 authoring
+    transaction runs whole inside `sketch_v2.author_reference_sketch`
+    (preview solve → verbatim skb-0 weak completion → empty exact witness
+    set → validation); this handler stages the ONE resulting record
+    atomically. Solved coordinates are derived display data and are never
+    persisted anywhere in this path."""
+    part_number = _require_param(params, "part_number", str, "mechanical.add_reference_sketch")
+    axes = params.get("axes", "xy")
+    plane = params.get("plane", {"kind": "principal", "orientation": "xy"})
+    x_axis_mm = params.get("x_axis_mm", 20.0)
+    y_axis_mm = params.get("y_axis_mm", 20.0)
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
+    geom_id = _next_id(sidecar.get("geometry_ref", []), prefix="geom_")
+
+    from .sketch_v2 import author_reference_sketch
+
+    feature_record = author_reference_sketch(
+        feature_id=feature_id,
+        name=f"references_{feature_id}",
+        plane=plane,
+        axes=axes,
+        x_axis_mm=x_axis_mm,
+        y_axis_mm=y_axis_mm,
+        fact_provenance={"category": _provenance_category_for_actor(context.actor)},
+    )
+
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    # The evaluation gate now runs the v2 READ lifecycle over the staged
+    # list (regeneration validates the committed record end-to-end).
+    _gate_validity(context, sidecar["feature"])
+
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
+    geom_record = {
+        "id": geom_id,
+        "role": "authoring_geometry",
+        **_geom_fields_from_projection(vault_ref, proj),
+    }
+    sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(geom_record))
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": f"add v2 reference sketch {feature_id} (shape axes={axes})",
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"added": [copy.deepcopy(geom_record)]},
+    })
+
+
+# =============================================================================
 # Handler 2: add_extrude_feature
 # =============================================================================
 
 
 def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str, Any]) -> None:
     part_number = _require_param(params, "part_number", str, "mechanical.add_extrude_feature")
+    # ADR/0038 A4 (arc 20260717-2): the structural operation — add fuses, cut
+    # removes. Absent = add (legacy parity). Independent of `direction` (B2).
+    operation = params.get("operation", "add")
+    if operation not in ("add", "cut"):
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: operation must be 'add' or 'cut', "
+            f"got {operation!r}"
+        )
     sketch_feature_id = _require_param(params, "sketch_feature_id", str, "mechanical.add_extrude_feature")
     depth_mm = _require_param(params, "depth_mm", (int, float), "mechanical.add_extrude_feature")
     direction = _require_param(params, "direction", str, "mechanical.add_extrude_feature")
@@ -193,6 +280,23 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
             f"mechanical.add_extrude_feature: sketch feature {sketch_feature_id!r} "
             f"not found on Part {part_number}"
         )
+    # ADR/0044 A2.4 (Gate F2a): a v2 constrained sketch is not a consumable
+    # profile — extruding one is F2b+ territory. Codex23 B3: shared policy
+    # VALIDATION runs first, so a malformed v2 record keeps its specific
+    # refusal at the handler surface; only a VALID v2 sketch gets the named
+    # consume refusal.
+    _asv = sketch_feature.get("adapter_schema_version")
+    if isinstance(_asv, str) and _asv.startswith("0.2.") \
+            and sketch_feature.get("engine") == "mechanical":
+        from .sketch_v2 import validate_v2_sketch_record
+
+        validate_v2_sketch_record(sketch_feature)
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: sketch {sketch_feature_id!r} is a "
+            f"v2 constrained sketch (adapter {_asv}) — construction-only in "
+            "this slice (skb-b0 admits reference frames, no profile "
+            "geometry); it is not a consumable extrusion profile"
+        )
     # Codex1 B3 (arc 20260622-4): extrude XOR revolve, enforced symmetrically —
     # a Part with a revolve base cannot also take an extrude (one base creation
     # per Part in v1). The mirror guard lives on add_revolve_feature.
@@ -201,18 +305,61 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
             f"mechanical.add_extrude_feature: Part {part_number} already has a revolve "
             f"base feature; v1 supports exactly one base creation per Part (extrude XOR revolve)"
         )
-    # S2 (arc 20260714-3 Codex1 B3): the SAME-KIND half of the one-base rule —
-    # a second extrude is rejected too, never a silent "last extrude wins".
-    if any(f.get("feature_type") == "extrude" for f in sidecar.get("feature", [])):
-        raise TransactionError(
-            f"mechanical.add_extrude_feature: Part {part_number} already has an extrude "
-            f"base feature; v1 supports exactly one base creation per Part"
-        )
+    # M-add (arc 20260717-2, ADR/0038 A4): SEQUENTIAL extrudes — the one-
+    # extrude guard is lifted. The base is the first body feature; every later
+    # extrude ADVANCES the body chain and fuses (add) onto the current body.
+    all_features = list(sidecar.get("feature", []))
+    prior_head = body_history.body_head(all_features)
+    sketch_plane = (sketch_feature.get("adapter_payload") or {}).get("plane")
+    sketch_is_face_bound = isinstance(sketch_plane, dict) and sketch_plane.get("kind") == "face"
+
+    if prior_head is None:
+        # THE BASE. B2 first-add: nothing to cut from.
+        if operation == "cut":
+            raise TransactionError(
+                "mechanical.add_extrude_feature: operation 'cut' requires an existing "
+                "body — the first body feature must be 'add' (nothing to cut from)"
+            )
+    else:
+        # A LATER extrude (the sequential slice) — add (boss) or cut (pocket).
+        # v1 domain pin (A4.8): a sequential extrude consumes a FACE-BOUND
+        # sketch — its support face IS the A4.8 within-face domain anchor.
+        # Datum-plane sequential extrudes are a later slice.
+        if not sketch_is_face_bound:
+            raise TransactionError(
+                f"mechanical.add_extrude_feature: a sequential extrude consumes a "
+                f"FACE-BOUND sketch (its support face anchors the within-face "
+                f"domain); sketch {sketch_feature_id!r} is datum-bound — "
+                f"datum-plane sequential extrudes are a later slice"
+            )
+        # exactly-once consumption (B2): no two body features share a profile.
+        for f in all_features:
+            if not body_history.is_body_mutating(f):
+                continue
+            consumed = (f.get("adapter_payload") or {}).get("sketch_feature_id")
+            if consumed == sketch_feature_id:
+                raise TransactionError(
+                    f"mechanical.add_extrude_feature: sketch {sketch_feature_id!r} is "
+                    f"already consumed by {f.get('id')!r} — a committed profile is "
+                    f"consumed by at most one solid feature"
+                )
 
     # EP2 direction rule (Codex1 B3): the handler holds the resolved sketch, so
     # the write-time gate lives here — legacy `z±` is valid ONLY on a
     # principal-xy sketch, and NEW writes always store canonical `normal±`.
-    frame = effective_plane_frame(sketch_feature)
+    # M-add: a FACE-BOUND sketch's frame comes from the ledger-aware resolver
+    # against its dependency-closed support prefix (`effective_plane_frame`
+    # deliberately refuses face records — the verified S2 boundary).
+    if sketch_is_face_bound:
+        _sk_prefix = [
+            f for f in body_history.project_body_recipe(
+                all_features, sketch_feature_id
+            ).features
+            if f.get("id") != sketch_feature_id
+        ]
+        frame = face_frame.resolve_face_plane(_sk_prefix, sketch_plane)
+    else:
+        frame = effective_plane_frame(sketch_feature)
     extrude_sign(direction, frame, op_kind="mechanical.add_extrude_feature")
     if direction in ("z+", "z-"):
         direction = "normal+" if direction == "z+" else "normal-"
@@ -232,12 +379,18 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
         "feature_type": "extrude",
         "engine": ENGINE_ID,
         "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
-        "depends_on_feature_ids": [sketch_feature_id],
+        # A4.6: the consumed sketch (operand) + the immediately-preceding
+        # body head (the chain edge) when a body already exists.
+        "depends_on_feature_ids": (
+            [sketch_feature_id] if prior_head is None
+            else [sketch_feature_id, prior_head]
+        ),
         "parameters": [depth_param_record],
         "adapter_payload": build_extrude_payload(
             sketch_feature_id=sketch_feature_id,
             direction=direction,
             depth_parameter_id=depth_param_id,
+            operation=operation,
         ),
         "fact_provenance": {"category": _provenance_category_for_actor(context.actor)},
     }
@@ -245,25 +398,32 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
     sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
 
     _gate_validity(context, sidecar["feature"])
-    vault_ref = _stage_recipe(context, sidecar["feature"])
+    # A4.7: the new extrude is the new body head — stage ITS closure
+    # projection, never the whole list.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
 
-    # Subtree-output (ADR/0030 D4 step 3): the extrude REPLACES the sketch's
-    # authoring_geometry with one derived from BOTH features.
-    existing_geom = next(
-        (g for g in sidecar.get("geometry_ref", [])
-         if g.get("role") == "authoring_geometry"
-         and sketch_feature_id in g.get("derived_from_feature_ids", [])),
-        None,
-    )
+    # Subtree-output (ADR/0030 D4 step 3 + A4.7):
+    #  - the BASE transitions the consumed sketch's record INTO the body record;
+    #  - a SEQUENTIAL extrude advances the EXISTING body record and REMOVES the
+    #    consumed sketch's record (`geometry_ref_delta.removed` — never two
+    #    competing body roots).
+    removed_geom_ids: list[str] = []
+    if prior_head is None:
+        existing_geom = _find_geom_by_head(sidecar, sketch_feature_id)
+    else:
+        existing_geom = _body_geom_record(sidecar, "mechanical.add_extrude_feature")
+        consumed_rec = _find_geom_by_head(sidecar, sketch_feature_id)
+        if consumed_rec is not None:
+            removed_geom_ids.append(consumed_rec["id"])
+            sidecar["geometry_ref"] = [
+                g for g in sidecar.get("geometry_ref", [])
+                if g.get("id") != consumed_rec["id"]
+            ]
     new_geom_record = {
         "id": existing_geom["id"] if existing_geom else _next_id(sidecar.get("geometry_ref", []), prefix="geom_"),
         "role": "authoring_geometry",
-        "vault_ref": vault_ref,  # `kind` omitted per ADR/0031 D6/B1.
-        "derived_from_feature_ids": [sketch_feature_id, feature_id],
-        "fact_provenance": {
-            "category": "computed_result",
-            "derived_from": [f"feature:{sketch_feature_id}", f"feature:{feature_id}"],
-        },
+        # `kind` omitted per ADR/0031 D6/B1.
+        **_geom_fields_from_projection(vault_ref, proj),
     }
     if existing_geom is not None:
         for i, g in enumerate(sidecar["geometry_ref"]):
@@ -274,6 +434,8 @@ def handle_add_extrude_feature(context: "NativeEngineContext", params: dict[str,
     else:
         sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(new_geom_record))
         geometry_delta = {"added": [copy.deepcopy(new_geom_record)]}
+    if removed_geom_ids:
+        geometry_delta["removed"] = removed_geom_ids
 
     context.stage_sidecar(part_uuid, sidecar)
     context.emit_event("part_changed", {
@@ -357,25 +519,17 @@ def handle_add_revolve_feature(context: "NativeEngineContext", params: dict[str,
     sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
 
     _gate_validity(context, sidecar["feature"])  # builds the revolve through real OCCT
-    vault_ref = _stage_recipe(context, sidecar["feature"])
+    # A4.7: the revolve is the new body head — stage its closure projection.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
 
-    # Like the extrude, the revolve REPLACES the sketch's authoring_geometry with
-    # one derived from BOTH features (the sketch profile + the revolve).
-    existing_geom = next(
-        (g for g in sidecar.get("geometry_ref", [])
-         if g.get("role") == "authoring_geometry"
-         and sketch_feature_id in g.get("derived_from_feature_ids", [])),
-        None,
-    )
+    # Like the extrude, the revolve REPLACES the consumed sketch's
+    # authoring_geometry (found BY HEAD) with the body record.
+    existing_geom = _find_geom_by_head(sidecar, sketch_feature_id)
     new_geom_record = {
         "id": existing_geom["id"] if existing_geom else _next_id(sidecar.get("geometry_ref", []), prefix="geom_"),
         "role": "authoring_geometry",
-        "vault_ref": vault_ref,  # `kind` omitted per ADR/0031 D6/B1.
-        "derived_from_feature_ids": [sketch_feature_id, feature_id],
-        "fact_provenance": {
-            "category": "computed_result",
-            "derived_from": [f"feature:{sketch_feature_id}", f"feature:{feature_id}"],
-        },
+        # `kind` omitted per ADR/0031 D6/B1.
+        **_geom_fields_from_projection(vault_ref, proj),
     }
     if existing_geom is not None:
         for i, g in enumerate(sidecar["geometry_ref"]):
@@ -415,10 +569,15 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
     features = sidecar.get("feature", [])
+    # A4.6 (Codex5 B2): the mutation advances from the CURRENT graph-derived
+    # body head — never "the last extrude by array scan". The v1 fold still
+    # requires an extrude-based body (revolve modifiers refuse in the fold).
+    body_head_id = body_history.body_head(features)
     extrude = next(
-        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+        (f for f in features
+         if f.get("feature_type") == "extrude"), None
     )
-    if extrude is None:
+    if body_head_id is None or extrude is None:
         raise TransactionError(
             f"mechanical.add_fillet_feature: Part {part_number} has no extruded solid to round"
         )
@@ -430,7 +589,13 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
     # is appended after.)
     from . import topology
 
-    topo = topology.extract_part_topology(list(features))
+    # A4.7 (Codex5 B2): the reference resolves against — and its stored
+    # signature is computed over — the body head's dependency-closed
+    # projection, never the raw sidecar array.
+    _proj_features = list(
+        body_history.project_body_recipe(features, body_head_id).features
+    )
+    topo = topology.extract_part_topology(_proj_features)
     match = next((e for e in topo.edges if e.edge_id == target_edge_id), None)
     if match is None:
         raise TransactionError(
@@ -464,7 +629,12 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
         "feature_type": "fillet",
         "engine": ENGINE_ID,
         "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
-        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        # ADR/0038 D5 + A4.6 (Codex6 B3): the CURRENT body head + the DIRECT
+        # referenced role owners (each validated as the head or its ancestor).
+        "depends_on_feature_ids": _mutation_dependencies(
+            features, body_head_id, list(match.adjacent_face_ids),
+            "mechanical.add_fillet_feature",
+        ),
         "parameters": [radius_param_record],
         "adapter_payload": build_fillet_payload(
             adjacent_face_roles=list(match.adjacent_face_ids),
@@ -480,29 +650,12 @@ def handle_add_fillet_feature(context: "NativeEngineContext", params: dict[str, 
     # running solid, applies the round) — a too-large radius surfaces here as a
     # Class-2 kernel rejection (Codex1 Q3).
     _gate_validity(context, sidecar["feature"])
-    vault_ref = _stage_recipe(context, sidecar["feature"])
-
-    # The fillet extends the existing authoring_geometry (sketch+extrude) to also
-    # derive from the fillet feature.
-    existing_geom = next(
-        (g for g in sidecar.get("geometry_ref", [])
-         if g.get("role") == "authoring_geometry"
-         and extrude["id"] in g.get("derived_from_feature_ids", [])),
-        None,
-    )
-    if existing_geom is None:
-        raise TransactionError(
-            f"mechanical.add_fillet_feature: no authoring_geometry derived from the extrude "
-            f"on Part {part_number}"
-        )
-    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    # A4.7: the fillet advances the body head — the ONE body record (found by
+    # head, never list position) re-stages from the fillet's closure projection.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
+    existing_geom = _body_geom_record(sidecar, "mechanical.add_fillet_feature")
     updated_geom = copy.deepcopy(existing_geom)
-    updated_geom["vault_ref"] = vault_ref
-    updated_geom["derived_from_feature_ids"] = derived
-    updated_geom["fact_provenance"] = {
-        "category": "computed_result",
-        "derived_from": [f"feature:{fid}" for fid in derived],
-    }
+    updated_geom.update(_geom_fields_from_projection(vault_ref, proj))
     for i, g in enumerate(sidecar["geometry_ref"]):
         if g.get("id") == updated_geom["id"]:
             sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
@@ -535,10 +688,15 @@ def handle_add_chamfer_feature(context: "NativeEngineContext", params: dict[str,
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
     features = sidecar.get("feature", [])
+    # A4.6 (Codex5 B2): the mutation advances from the CURRENT graph-derived
+    # body head — never "the last extrude by array scan". The v1 fold still
+    # requires an extrude-based body (revolve modifiers refuse in the fold).
+    body_head_id = body_history.body_head(features)
     extrude = next(
-        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+        (f for f in features
+         if f.get("feature_type") == "extrude"), None
     )
-    if extrude is None:
+    if body_head_id is None or extrude is None:
         raise TransactionError(
             f"mechanical.add_chamfer_feature: Part {part_number} has no extruded solid to bevel"
         )
@@ -547,7 +705,13 @@ def handle_add_chamfer_feature(context: "NativeEngineContext", params: dict[str,
     # against a FRESH extraction; persist the structured recipe anchor from THAT.
     from . import topology
 
-    topo = topology.extract_part_topology(list(features))
+    # A4.7 (Codex5 B2): the reference resolves against — and its stored
+    # signature is computed over — the body head's dependency-closed
+    # projection, never the raw sidecar array.
+    _proj_features = list(
+        body_history.project_body_recipe(features, body_head_id).features
+    )
+    topo = topology.extract_part_topology(_proj_features)
     match = next((e for e in topo.edges if e.edge_id == target_edge_id), None)
     if match is None:
         raise TransactionError(
@@ -577,7 +741,12 @@ def handle_add_chamfer_feature(context: "NativeEngineContext", params: dict[str,
         "feature_type": "chamfer",
         "engine": ENGINE_ID,
         "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
-        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        # ADR/0038 D5 + A4.6 (Codex6 B3): the CURRENT body head + the DIRECT
+        # referenced role owners (each validated as the head or its ancestor).
+        "depends_on_feature_ids": _mutation_dependencies(
+            features, body_head_id, list(match.adjacent_face_ids),
+            "mechanical.add_chamfer_feature",
+        ),
         "parameters": [distance_param_record],
         "adapter_payload": build_chamfer_payload(
             adjacent_face_roles=list(match.adjacent_face_ids),
@@ -592,27 +761,12 @@ def handle_add_chamfer_feature(context: "NativeEngineContext", params: dict[str,
     # Folds the chamfer through real OCCT — a too-large distance surfaces here as
     # a Class-2 kernel rejection (mirrors the fillet's oversize radius).
     _gate_validity(context, sidecar["feature"])
-    vault_ref = _stage_recipe(context, sidecar["feature"])
+    # A4.7: the chamfer advances the body head — one body record, projection-staged.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
 
-    existing_geom = next(
-        (g for g in sidecar.get("geometry_ref", [])
-         if g.get("role") == "authoring_geometry"
-         and extrude["id"] in g.get("derived_from_feature_ids", [])),
-        None,
-    )
-    if existing_geom is None:
-        raise TransactionError(
-            f"mechanical.add_chamfer_feature: no authoring_geometry derived from the extrude "
-            f"on Part {part_number}"
-        )
-    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    existing_geom = _body_geom_record(sidecar, "mechanical.add_chamfer_feature")
     updated_geom = copy.deepcopy(existing_geom)
-    updated_geom["vault_ref"] = vault_ref
-    updated_geom["derived_from_feature_ids"] = derived
-    updated_geom["fact_provenance"] = {
-        "category": "computed_result",
-        "derived_from": [f"feature:{fid}" for fid in derived],
-    }
+    updated_geom.update(_geom_fields_from_projection(vault_ref, proj))
     for i, g in enumerate(sidecar["geometry_ref"]):
         if g.get("id") == updated_geom["id"]:
             sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
@@ -647,10 +801,13 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
     features = sidecar.get("feature", [])
+    # A4.6 (Codex5 B2): the mutation advances from the CURRENT graph-derived
+    # body head — never "the last extrude by array scan".
+    body_head_id = body_history.body_head(features)
     extrude = next(
-        (f for f in reversed(features) if f.get("feature_type") == "extrude"), None
+        (f for f in features if f.get("feature_type") == "extrude"), None
     )
-    if extrude is None:
+    if body_head_id is None or extrude is None:
         raise TransactionError(
             f"mechanical.add_hole_feature: Part {part_number} has no extruded solid"
         )
@@ -659,7 +816,13 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
     # extraction; persist the structured recipe anchor read from THAT extraction.
     from . import topology
 
-    topo = topology.extract_part_topology(list(features))
+    # A4.7 (Codex5 B2): the reference resolves against — and its stored
+    # signature is computed over — the body head's dependency-closed
+    # projection, never the raw sidecar array.
+    _proj_features = list(
+        body_history.project_body_recipe(features, body_head_id).features
+    )
+    topo = topology.extract_part_topology(_proj_features)
     match = next((f for f in topo.faces if f.face_id == target_face_id), None)
     if match is None:
         raise TransactionError(
@@ -679,7 +842,9 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
     # (Codex2 B1), so every later parameter-edit / regeneration path enforces it
     # too — this handler call is the early-error path. `features` here is the
     # parent prefix (the new hole is not appended yet).
-    require_simple_cap_fit(features, float(center_x_mm), float(center_y_mm), diameter_mm / 2.0)
+    # Codex6 B1: the domain check reads the BODY closure — an independent
+    # sketch earlier in the array must never drive the cap-fit contract.
+    require_simple_cap_fit(_proj_features, float(center_x_mm), float(center_y_mm), diameter_mm / 2.0)
 
     feature_id = _next_id(features, prefix="feat_")
     base = int(_next_id_within_parameters(features, prefix="featp_")[len("featp_"):])
@@ -697,7 +862,12 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
         "feature_type": "hole",
         "engine": ENGINE_ID,
         "adapter_schema_version": ADAPTER_SCHEMA_VERSION,
-        "depends_on_feature_ids": [extrude["id"]],  # ADR/0038 D5 dependency
+        # ADR/0038 D5 + A4.6 (Codex6 B3): the CURRENT body head + the DIRECT
+        # target face-role owner (validated as the head or its ancestor).
+        "depends_on_feature_ids": _mutation_dependencies(
+            features, body_head_id, [match.face_id],
+            "mechanical.add_hole_feature",
+        ),
         "parameters": params_records,
         "adapter_payload": build_hole_payload(
             face_role=match.face_id,
@@ -709,27 +879,12 @@ def handle_add_hole_feature(context: "NativeEngineContext", params: dict[str, An
     sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
 
     _gate_validity(context, sidecar["feature"])  # folds the hole through real OCCT
-    vault_ref = _stage_recipe(context, sidecar["feature"])
+    # A4.7: the hole advances the body head — one body record, projection-staged.
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
 
-    existing_geom = next(
-        (g for g in sidecar.get("geometry_ref", [])
-         if g.get("role") == "authoring_geometry"
-         and extrude["id"] in g.get("derived_from_feature_ids", [])),
-        None,
-    )
-    if existing_geom is None:
-        raise TransactionError(
-            f"mechanical.add_hole_feature: no authoring_geometry derived from the extrude "
-            f"on Part {part_number}"
-        )
-    derived = list(existing_geom.get("derived_from_feature_ids", [])) + [feature_id]
+    existing_geom = _body_geom_record(sidecar, "mechanical.add_hole_feature")
     updated_geom = copy.deepcopy(existing_geom)
-    updated_geom["vault_ref"] = vault_ref
-    updated_geom["derived_from_feature_ids"] = derived
-    updated_geom["fact_provenance"] = {
-        "category": "computed_result",
-        "derived_from": [f"feature:{fid}" for fid in derived],
-    }
+    updated_geom.update(_geom_fields_from_projection(vault_ref, proj))
     for i, g in enumerate(sidecar["geometry_ref"]):
         if g.get("id") == updated_geom["id"]:
             sidecar["geometry_ref"][i] = copy.deepcopy(updated_geom)
@@ -773,6 +928,21 @@ def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict
             f"mechanical.adjust_feature_parameter: feature {feature_id!r} not found on Part {part_number}"
         )
     target_feature = sidecar["feature"][target_idx]
+    # ADR/0044 A2.4 (Gate F2a): a v2 record has no adjustable-parameter
+    # semantics yet. Codex23 B3: shared validation first (malformed keeps
+    # its specific refusal), then the named refusal for valid records.
+    _asv = target_feature.get("adapter_schema_version")
+    if isinstance(_asv, str) and _asv.startswith("0.2.") \
+            and target_feature.get("engine") == "mechanical":
+        from .sketch_v2 import validate_v2_sketch_record
+
+        validate_v2_sketch_record(target_feature)
+        raise TransactionError(
+            f"mechanical.adjust_feature_parameter: feature {feature_id!r} is a "
+            f"v2 record (adapter {_asv}); v2 facts are edited only through "
+            "the A2.9 atomic authoring transaction (no per-parameter edit "
+            "lane exists for the references slice) — refuse"
+        )
     param_idx = next(
         (i for i, p in enumerate(target_feature.get("parameters", []))
          if p.get("name") == parameter_name),
@@ -792,29 +962,40 @@ def handle_adjust_feature_parameter(context: "NativeEngineContext", params: dict
     sidecar["feature"][target_idx] = copy.deepcopy(updated_feature)
 
     _gate_validity(context, sidecar["feature"])
-    vault_ref = _stage_recipe(context, sidecar["feature"])
 
-    geom_idx = next(
-        (i for i, g in enumerate(sidecar.get("geometry_ref", []))
-         if g.get("role") == "authoring_geometry"
-         and feature_id in g.get("derived_from_feature_ids", [])),
-        None,
-    )
-    if geom_idx is None:
+    # A4.7 (Codex2): the affected outputs are found by DEPENDENCY CLOSURE —
+    # every authoring_geometry record whose head closure contains the
+    # adjusted feature re-stages from ITS OWN projection (the body record,
+    # and any face-bound sketch record riding the adjusted support chain).
+    updated_geoms: list[dict[str, Any]] = []
+    for i, g in enumerate(sidecar.get("geometry_ref", [])):
+        if g.get("role") != "authoring_geometry":
+            continue
+        head = _geom_head(g)
+        if head is None:
+            continue
+        closure = body_history.dependency_closure(sidecar["feature"], head)
+        if feature_id not in closure:
+            continue
+        new_ref, proj = _project_and_stage(context, sidecar["feature"], head)
+        updated = copy.deepcopy(g)
+        updated.update(_geom_fields_from_projection(new_ref, proj))
+        sidecar["geometry_ref"][i] = copy.deepcopy(updated)
+        updated_geoms.append(updated)
+    if not updated_geoms:
         raise TransactionError(
             f"mechanical.adjust_feature_parameter: no authoring_geometry geom_ref found "
             f"depending on feature {feature_id!r} on Part {part_number}"
         )
-    updated_geom = copy.deepcopy(sidecar["geometry_ref"][geom_idx])
-    updated_geom["vault_ref"] = vault_ref
-    sidecar["geometry_ref"][geom_idx] = copy.deepcopy(updated_geom)
 
     context.stage_sidecar(part_uuid, sidecar)
     context.emit_event("part_changed", {
         "object_uuid": part_uuid,
         "rationale": f"adjust {feature_id}.{parameter_name} = {new_value}",
         "feature_delta": {"updated": [{"id": feature_id, "new_record": copy.deepcopy(updated_feature)}]},
-        "geometry_ref_delta": {"updated": [{"id": updated_geom["id"], "new_record": copy.deepcopy(updated_geom)}]},
+        "geometry_ref_delta": {"updated": [
+            {"id": g["id"], "new_record": copy.deepcopy(g)} for g in updated_geoms
+        ]},
     })
 
 
@@ -834,6 +1015,14 @@ def handle_remove_feature(context: "NativeEngineContext", params: dict[str, Any]
         )
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    # Codex23 B3 → F2b: the shared v2 preflight is now VALIDATE-only — a
+    # valid v2 sketch is a legal resident (the staging re-evaluation runs
+    # its read lifecycle); a malformed v2 record keeps its specific refusal
+    # here, before any mutation is staged.
+    from .sketch_v2 import validate_v2_records
+
+    validate_v2_records(sidecar.get("feature", []))
 
     existing_feature_ids = {f["id"] for f in sidecar.get("feature", [])}
     missing = set(feature_ids) - existing_feature_ids
@@ -857,9 +1046,72 @@ def handle_remove_feature(context: "NativeEngineContext", params: dict[str, Any]
     # cascade-reject test).
 
     sidecar = copy.deepcopy(sidecar)
-    sidecar["feature"] = [f for f in sidecar.get("feature", []) if f["id"] not in set(feature_ids)]
+    pre_removal_features = list(sidecar.get("feature", []))
+    # Codex7 B1: SNAPSHOT the original geometry records BEFORE any explicit
+    # `geometry_ref_ids` filtering — classification must see the live body
+    # record even when the request names it for deletion.
+    pre_removal_geometry = list(sidecar.get("geometry_ref", []) or [])
+    remaining = [f for f in pre_removal_features if f["id"] not in set(feature_ids)]
+    sidecar["feature"] = remaining
+
+    # A4.7 (Codex5 B3, classification Codex6 B2, ordering Codex7 B1): the
+    # affected geometry output follows the SURVIVING dependency graph — and
+    # ONLY the OLD BODY RECORD may ever retarget. Classify from the ORIGINAL
+    # graph AND the ORIGINAL geometry snapshot, BEFORE honoring any explicit
+    # deletion; removed sketch/subtree records are REMOVED, never promoted to
+    # body authority. Core's dangling-dependency protection (ADR/0029 D12)
+    # still guards remaining FEATURES; this closes the same law for geometry
+    # records.
+    old_head = body_history.body_head(pre_removal_features)
+    old_body_record_id: str | None = None
+    if old_head is not None:
+        old_body = [
+            g for g in pre_removal_geometry
+            if g.get("role") == "authoring_geometry" and _geom_head(g) == old_head
+        ]
+        if len(old_body) == 1:
+            old_body_record_id = old_body[0]["id"]
+    surviving_head = body_history.body_head(remaining)
+    if (
+        old_body_record_id is not None
+        and old_body_record_id in set(geometry_ref_ids)
+        and surviving_head is not None
+    ):
+        # BEFORE staging any sidecar or recipe bytes: deleting the body's one
+        # geometry authority while its body survives would leave Display /
+        # cache / HLR with nothing to resolve (A4.7 recoverability).
+        raise TransactionError(
+            f"mechanical.remove_feature: the request removes the body "
+            f"authoring_geometry record {old_body_record_id!r} while a body "
+            f"survives (head {surviving_head!r}) — contradictory; remove the "
+            f"body features too, or keep the record"
+        )
     if geometry_ref_ids:
         sidecar["geometry_ref"] = [g for g in sidecar.get("geometry_ref", []) if g["id"] not in set(geometry_ref_ids)]
+    remaining_ids = {f["id"] for f in remaining}
+    updated_records: list[dict[str, Any]] = []
+    removed_records: list[str] = []
+    kept: list[dict[str, Any]] = []
+    for g in sidecar.get("geometry_ref", []) or []:
+        if g.get("role") != "authoring_geometry":
+            kept.append(g)
+            continue
+        head = _geom_head(g)
+        if head in remaining_ids:
+            kept.append(g)  # its head survives — untouched
+            continue
+        # headless record: ONLY the old body record may retarget (to the
+        # surviving head's projection); every other headless record dangles
+        # and is removed — a deleted sketch record is never promoted.
+        if g["id"] == old_body_record_id and surviving_head is not None:
+            new_ref, proj = _project_and_stage(context, remaining, surviving_head)
+            updated = copy.deepcopy(g)
+            updated.update(_geom_fields_from_projection(new_ref, proj))
+            kept.append(updated)
+            updated_records.append(updated)
+        else:
+            removed_records.append(g["id"])
+    sidecar["geometry_ref"] = kept
 
     context.stage_sidecar(part_uuid, sidecar)
     payload: dict[str, Any] = {
@@ -868,8 +1120,16 @@ def handle_remove_feature(context: "NativeEngineContext", params: dict[str, Any]
         + (f" + geometry_ref(s) {geometry_ref_ids}" if geometry_ref_ids else ""),
         "feature_delta": {"removed": list(feature_ids)},
     }
-    if geometry_ref_ids:
-        payload["geometry_ref_delta"] = {"removed": list(geometry_ref_ids)}
+    all_removed = list(geometry_ref_ids) + removed_records
+    geometry_delta: dict[str, Any] = {}
+    if all_removed:
+        geometry_delta["removed"] = all_removed
+    if updated_records:
+        geometry_delta["updated"] = [
+            {"id": g["id"], "new_record": copy.deepcopy(g)} for g in updated_records
+        ]
+    if geometry_delta:
+        payload["geometry_ref_delta"] = geometry_delta
     context.emit_event("part_changed", payload)
 
 
@@ -897,6 +1157,104 @@ def _stage_recipe(context: "NativeEngineContext", features: list[dict[str, Any]]
     # Defensive: the staged ref must equal the canonical recipe hash.
     assert vault_ref == vault_ref_for_bytes(recipe_bytes)
     return vault_ref
+
+
+# --- The body-authority helpers (ADR/0038 A4.6/A4.7, arc 20260717-2) --------
+# ONE projection object supplies the staged bytes, the ordered
+# derived_from_feature_ids, and fact_provenance.derived_from (A4.7.3).
+# Convention: a geometry record's HEAD is the TERMINAL element of its ordered
+# `derived_from_feature_ids` (the projection puts dependencies first) — true
+# for every record this adapter has ever written ([sketch], [sketch, extrude],
+# [sketch, extrude, fillet], ...), so legacy 0.1.10 records resolve too.
+
+
+def _geom_head(geom: dict[str, Any]) -> str | None:
+    derived = geom.get("derived_from_feature_ids") or []
+    return derived[-1] if derived else None
+
+
+def _find_geom_by_head(sidecar: dict[str, Any], head_id: str) -> dict[str, Any] | None:
+    for g in sidecar.get("geometry_ref", []) or []:
+        if g.get("role") == "authoring_geometry" and _geom_head(g) == head_id:
+            return g
+    return None
+
+
+def _body_geom_record(
+    sidecar: dict[str, Any], op_kind: str
+) -> dict[str, Any]:
+    """The ONE active body authoring_geometry record: head is body-mutating
+    (A4.7 — resolved by head, NEVER by list position). Fail loud when a body
+    is expected and no unique record exists."""
+    matches = [
+        g for g in sidecar.get("geometry_ref", []) or []
+        if g.get("role") == "authoring_geometry"
+        and (head := _geom_head(g)) is not None
+        and any(
+            f.get("id") == head and body_history.is_body_mutating(f)
+            for f in sidecar.get("feature", []) or []
+        )
+    ]
+    if len(matches) != 1:
+        raise TransactionError(
+            f"{op_kind}: expected exactly one body authoring_geometry record, "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _project_and_stage(
+    context: "NativeEngineContext",
+    features: list[dict[str, Any]],
+    head_id: str,
+) -> tuple[str, "body_history.BodyProjection"]:
+    """A4.7: stage the canonical ordered PROJECTION of the head's dependency
+    closure — never the whole sidecar list."""
+    proj = body_history.project_body_recipe(features, head_id)
+    vault_ref = _stage_recipe(context, list(proj.features))
+    return vault_ref, proj
+
+
+def _geom_fields_from_projection(
+    vault_ref: str, proj: "body_history.BodyProjection"
+) -> dict[str, Any]:
+    """Derived ids + provenance from the SAME projection object (A4.7.3)."""
+    ids = list(proj.feature_ids)
+    return {
+        "vault_ref": vault_ref,
+        "derived_from_feature_ids": ids,
+        "fact_provenance": {
+            "category": "computed_result",
+            "derived_from": [f"feature:{fid}" for fid in ids],
+        },
+    }
+
+
+def _mutation_dependencies(
+    features: list[dict[str, Any]],
+    body_head_id: str,
+    referenced_roles,
+    op_kind: str,
+) -> list[str]:
+    """A4.6 + ADR/0038 D5 (Codex6 B3): a reference-bearing mutation declares
+    the CURRENT body head AND its direct referenced role owners — the head
+    stays the unique maximal element because every owner must be its ancestor
+    (validated here, fail loud). Deterministic order: head first, then the
+    remaining owners sorted."""
+    from . import topology
+
+    owners: set[str] = set()
+    for role in referenced_roles:
+        owners.add(topology.producing_feature_id(role))
+    head_closure = body_history.dependency_closure(features, body_head_id)
+    for owner in owners:
+        if owner != body_head_id and owner not in head_closure:
+            raise TransactionError(
+                f"{op_kind}: referenced role owner {owner!r} is neither the "
+                f"current body head {body_head_id!r} nor its ancestor — the "
+                f"reference crosses the body history (ADR/0038 A4.6)"
+            )
+    return [body_head_id] + sorted(owners - {body_head_id})
 
 
 def _require_param(params: dict[str, Any], name: str, type_: type | tuple[type, ...], op_kind: str) -> Any:

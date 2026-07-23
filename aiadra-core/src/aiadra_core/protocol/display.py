@@ -45,9 +45,14 @@ from typing import Any
 # compatibility matrix survives (Codex6 S2 boundary): display accepts
 # 1.0/1.1/1.2; standalone HLR attaches for the HLR-CAPABLE set {1.1, 1.2}
 # only (1.0 keeps its populated-slot rejection verbatim).
-DISPLAY_REPRESENTATION_VERSION = "1.2"
-ACCEPTED_VERSIONS = ("1.0", "1.1", "1.2")
-HLR_CAPABLE_VERSIONS = ("1.1", "1.2")
+# v1.3 (Gate F2b, arc 20260717-2): additive `v2_construction` — the SOLVED
+# construction geometry of v2 constrained sketches (the A2.9 read-lifecycle
+# output; derived display data, never Truth). Same declared-shape amendment
+# discipline as v1.1→v1.2: a pre-1.3 package carrying the field is a
+# producer error, never an additive mutation.
+DISPLAY_REPRESENTATION_VERSION = "1.3"
+ACCEPTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3")
+HLR_CAPABLE_VERSIONS = ("1.1", "1.2", "1.3")
 
 # sketch-frame numeric discipline (Codex2 B3.1.5)
 _FRAME_TOL = 1e-9
@@ -254,15 +259,110 @@ class SketchFrame:
     normal: tuple[float, float, float]
 
 
+@dataclass(frozen=True)
+class V2ConstructionPoint:
+    """One solved construction point (world mm)."""
+
+    id: str
+    at: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class V2ConstructionLine:
+    """One solved construction line (world mm endpoints)."""
+
+    id: str
+    a: tuple[float, float, float]
+    b: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class V2ConstructionSketch:
+    """v1.3 (Gate F2b): the SOLVED construction geometry of one v2
+    constrained sketch — the engine's A2.9 read-lifecycle output. Derived
+    display data (never Truth), identity-bound to THIS package by
+    containment, exactly like `SketchFrame`."""
+
+    sketch_feature_id: str
+    shape: str
+    points: tuple[V2ConstructionPoint, ...]
+    lines: tuple[V2ConstructionLine, ...]
+
+
+def _finite3(v: Any, label: str) -> tuple[float, float, float]:
+    if not (isinstance(v, (list, tuple)) and len(v) == 3
+            and all(isinstance(c, (int, float)) and not isinstance(c, bool)
+                    and math.isfinite(c) for c in v)):
+        raise DisplayContractError(f"{label} must be a finite 3-vector, got {v!r}")
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def _validate_v2_construction(raw: Any, version: str) -> tuple[V2ConstructionSketch, ...]:
+    """v1.3 validator: unique sketch ids; every point/line id-addressed with
+    finite world coordinates. Empty/absent is valid; a populated list on a
+    pre-1.3 version is a producer error (the declared-shape amendment
+    discipline, verbatim from sketch_frames)."""
+    if raw in (None, []):
+        return ()
+    if version not in ("1.3",):
+        raise DisplayContractError(
+            f"v2_construction requires contract v1.3; producer declared {version!r}"
+        )
+    if not isinstance(raw, list):
+        raise DisplayContractError("v2_construction must be a list")
+    out: list[V2ConstructionSketch] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise DisplayContractError("v2_construction entries must be objects")
+        sid = item.get("sketch_feature_id")
+        if not isinstance(sid, str) or not sid or sid in seen:
+            raise DisplayContractError(
+                "v2_construction entries need unique non-empty sketch_feature_id"
+            )
+        seen.add(sid)
+        shape = item.get("shape")
+        if not isinstance(shape, str) or not shape:
+            raise DisplayContractError(f"v2_construction {sid!r} lacks its shape")
+        points = []
+        pt_ids: set[str] = set()
+        for p in item.get("points", []):
+            if not (isinstance(p, dict) and isinstance(p.get("id"), str)
+                    and p["id"] and p["id"] not in pt_ids):
+                raise DisplayContractError(
+                    f"v2_construction {sid!r} points need unique string ids"
+                )
+            pt_ids.add(p["id"])
+            points.append(V2ConstructionPoint(
+                id=p["id"], at=_finite3(p.get("at"), f"point {p['id']!r} at")))
+        lines = []
+        ln_ids: set[str] = set()
+        for ln in item.get("lines", []):
+            if not (isinstance(ln, dict) and isinstance(ln.get("id"), str)
+                    and ln["id"] and ln["id"] not in ln_ids):
+                raise DisplayContractError(
+                    f"v2_construction {sid!r} lines need unique string ids"
+                )
+            ln_ids.add(ln["id"])
+            lines.append(V2ConstructionLine(
+                id=ln["id"],
+                a=_finite3(ln.get("a"), f"line {ln['id']!r} a"),
+                b=_finite3(ln.get("b"), f"line {ln['id']!r} b")))
+        out.append(V2ConstructionSketch(
+            sketch_feature_id=sid, shape=shape,
+            points=tuple(points), lines=tuple(lines)))
+    return tuple(out)
+
+
 def _validate_sketch_frames(raw: Any, version: str) -> tuple[SketchFrame, ...]:
     """The B3.1.5 validator: unique ids, finite 3-vectors, unit + orthogonal
     axes, right-handed v = normal × u. Empty/absent is valid; a populated list
     on a pre-1.2 version is a producer error."""
     if raw in (None, []):
         return ()
-    if version not in ("1.2",):
+    if version not in ("1.2", "1.3"):
         raise DisplayContractError(
-            f"sketch_frames requires contract v1.2; producer declared {version!r}"
+            f"sketch_frames requires contract v1.2+; producer declared {version!r}"
         )
     if not isinstance(raw, list):
         raise DisplayContractError("sketch_frames must be a list")
@@ -328,6 +428,8 @@ class DisplayRepresentation:
     counters: DisplayCounters
     view_dependent: ViewDependentPayload | None = None
     sketch_frames: tuple[SketchFrame, ...] = ()
+    # v1.3 (Gate F2b): solved v2 construction geometry (derived, never Truth).
+    v2_construction: tuple[V2ConstructionSketch, ...] = ()
     display_representation_version: str = DISPLAY_REPRESENTATION_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -432,6 +534,7 @@ class DisplayRepresentation:
             _check_echo_matches_identity(
                 view_dependent.identity_echo, identity, version)
         sketch_frames = _validate_sketch_frames(d.get("sketch_frames"), version)
+        v2_construction = _validate_v2_construction(d.get("v2_construction"), version)
 
         return cls(
             identity=identity,
@@ -441,6 +544,7 @@ class DisplayRepresentation:
             counters=counters,
             view_dependent=view_dependent,
             sketch_frames=sketch_frames,
+            v2_construction=v2_construction,
             display_representation_version=version,
         )
 
@@ -697,10 +801,10 @@ def _surface_kind(f: dict, version: str) -> str | None:
     # Codex7 B3: v1.1 -> v1.2 is a DECLARED-shape amendment — a legacy
     # package carrying the new field is a producer error, exactly like
     # populated sketch_frames (never an additive mutation of v1.1).
-    if version not in ("1.2",):
+    if version not in ("1.2", "1.3"):
         raise DisplayContractError(
             f"face {f.get('face_id')!r} carries surface_kind under contract "
-            f"{version!r}; the field requires v1.2"
+            f"{version!r}; the field requires v1.2+"
         )
     if sk not in ("plane", "other"):
         raise DisplayContractError(

@@ -34,7 +34,7 @@ const inputs = (over: Partial<RibbonInputs> = {}): RibbonInputs => ({
 })
 
 describe('B4 — the addressability invariant', () => {
-  it('every one of the 38 command keys renders EXACTLY once: direct cell XOR menu child', () => {
+  it('every one of the 39 command keys renders EXACTLY once: direct cell XOR menu child', () => {
     const direct = RIBBON_COMMANDS.filter((c) => c.presentation.slot)
     const menued = RIBBON_COMMANDS.filter((c) => c.presentation.menu)
     // the XOR: slot and menu never coexist, and neither is absent
@@ -43,7 +43,8 @@ describe('B4 — the addressability invariant', () => {
     }
     const rendered = [...direct.map((c) => c.key), ...menued.map((c) => c.key)].sort()
     expect(rendered).toEqual(RIBBON_COMMANDS.map((c) => c.key).sort())
-    expect(new Set(rendered).size).toBe(38)
+    // 39 = the R-arc's 38-command Creo benchmark + the F2b references-sketch
+    expect(new Set(rendered).size).toBe(39)
   })
 
   it('no menu carries an undeclared member; families are non-empty and group-consistent', () => {

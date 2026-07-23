@@ -180,6 +180,7 @@ def extract_part_topology(
     face_map, faces, edges = correlate_shape(
         shape, features,
         produced_hints=result.produced_hints,
+        ledger=result.ledger,
         linear_deflection_mm=linear_deflection_mm,
         angular_deflection_rad=angular_deflection_rad,
     )
@@ -204,6 +205,7 @@ def correlate_shape(
     features: list[dict[str, Any]],
     *,
     produced_hints: tuple = (),
+    ledger=None,
     linear_deflection_mm: float = DEFAULT_LINEAR_DEFLECTION_MM,
     angular_deflection_rad: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
 ):
@@ -219,11 +221,37 @@ def correlate_shape(
     BRepMesh_IncrementalMesh(
         shape, linear_deflection_mm, False, angular_deflection_rad, True
     )
-    recipe = _extract_recipe_geometry(features)
     face_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_FACE, face_map)
-    claimed = _claimed_produced_roles(face_map, produced_hints)
-    role_by_face_index = _correlate_faces(face_map, recipe, claimed)
+    if ledger is not None:
+        # ADR/0038 A4.1/A4.5 (Codex5 B4 — THE EXTRACTOR SWITCH): when the
+        # fold produced a complete ledger, IT is the role authority — no
+        # hint claims, no geometric re-correlation. Fail loud on any
+        # disagreement between ledger and final shape (never silently fall
+        # back to the geometric lane).
+        role_by_face_index = {}
+        for lface, role in ledger.faces:
+            idx = face_map.FindIndex(lface)
+            if idx == 0:
+                raise TransactionError(
+                    f"mechanical.display: ledger face of role {role!r} is not in "
+                    f"the final shape (ADR/0038 A4.1 fail-loud)"
+                )
+            if idx in role_by_face_index:
+                raise TransactionError(
+                    f"mechanical.display: final face carries two ledger roles "
+                    f"({role_by_face_index[idx]!r} and {role!r}) — A4.3 rejects"
+                )
+            role_by_face_index[idx] = role
+        if len(role_by_face_index) != face_map.Extent():
+            raise TransactionError(
+                f"mechanical.display: the ledger covers {len(role_by_face_index)} "
+                f"of {face_map.Extent()} final faces (ADR/0038 A4.1 fail-loud)"
+            )
+    else:
+        recipe = _extract_recipe_geometry(features)
+        claimed = _claimed_produced_roles(face_map, produced_hints)
+        role_by_face_index = _correlate_faces(face_map, recipe, claimed)
 
     faces: list[FaceRecord] = []
     for i in range(1, face_map.Extent() + 1):
@@ -292,11 +320,32 @@ def resolve_face_on_shape(
     shape,
     features: list[dict[str, Any]],
     face_role: str,
+    *,
+    ledger_entries=None,
 ):
     """Resolve a persisted face reference (ADR/0038 A1) to EXACTLY ONE live face
     on `shape`, recipe-first. Zero matches (missing role / topology change) or
     many matches (ambiguous) → fail loud (Class-1 `TransactionError`); never a
-    nearest-geometry guess (ADR/0038 D4)."""
+    nearest-geometry guess (ADR/0038 D4).
+
+    A4.5 (Codex5 B4): with `ledger_entries` (the live fold ledger describing
+    `shape` at this body-history position), the LEDGER is the authority — no
+    geometric re-correlation runs. The correlate path remains for ledgerless
+    callers (handler-side input validation on legacy/rectangle+hole shapes)."""
+    if ledger_entries is not None:
+        lmatches = [f for f, role in ledger_entries if role == face_role]
+        if not lmatches:
+            raise TransactionError(
+                f"mechanical: face reference {face_role!r} resolves to NO face on the "
+                f"parent topology — a missing role or a topology change. Re-pick the "
+                f"face (ADR/0038 D4)."
+            )
+        if len(lmatches) > 1:
+            raise TransactionError(
+                f"mechanical: face reference {face_role!r} is AMBIGUOUS — resolves to "
+                f"{len(lmatches)} faces. Refusing to guess (ADR/0038 D4)."
+            )
+        return lmatches[0]
     _face_map, faces, _edges = correlate_shape(shape, features)
     matches = [f for f in faces if f.face_id == face_role]
     if not matches:
@@ -318,11 +367,34 @@ def resolve_edge_on_shape(
     features: list[dict[str, Any]],
     adjacent_face_roles,
     edge_kind: str,
+    *,
+    ledger_entries=None,
 ):
     """Resolve a persisted edge reference (ADR/0038 D2/D3) to EXACTLY ONE live
     edge on `shape`, recipe-first. Zero matches (missing role / topology change)
     or many matches (ambiguous) → fail loud (Class-1 `TransactionError`); never
-    a nearest-geometry guess (ADR/0038 D4)."""
+    a nearest-geometry guess (ADR/0038 D4).
+
+    A4.5 (Codex5 B4): with `ledger_entries`, edges derive from the LEDGER —
+    adjacency via `MapShapesAndAncestors` over `shape`, roles from the ledger
+    map, kind from the same classifier as extraction. No re-correlation."""
+    if ledger_entries is not None:
+        matches_l = _ledger_edges_matching(
+            shape, ledger_entries, tuple(sorted(adjacent_face_roles)), edge_kind
+        )
+        if not matches_l:
+            raise TransactionError(
+                f"mechanical: edge reference {tuple(sorted(adjacent_face_roles))} "
+                f"(kind={edge_kind!r}) resolves to NO edge on the parent topology — "
+                f"a missing role or a topology change. Re-pick the edge (ADR/0038 D4)."
+            )
+        if len(matches_l) > 1:
+            raise TransactionError(
+                f"mechanical: edge reference {tuple(sorted(adjacent_face_roles))} "
+                f"(kind={edge_kind!r}) is AMBIGUOUS — resolves to {len(matches_l)} "
+                f"edges. Refusing to guess (ADR/0038 D4)."
+            )
+        return matches_l[0]
     _face_map, _faces, edges = correlate_shape(shape, features)
     want = tuple(sorted(adjacent_face_roles))
     matches = [e for e in edges if e.adjacent_face_ids == want and e.kind == edge_kind]
@@ -340,6 +412,38 @@ def resolve_edge_on_shape(
     return matches[0].edge
 
 
+def _ledger_edges_matching(shape, ledger_entries, want_roles, want_kind):
+    """A4.5: enumerate `shape`'s edges with their LEDGER-derived adjacent role
+    pairs + classifier kind; return those matching the persisted reference."""
+    face_roles = TopTools_IndexedMapOfShape()
+    roles_by_idx: dict[int, str] = {}
+    for f, role in ledger_entries:
+        idx = face_roles.Add(f)
+        roles_by_idx[idx] = role
+    edge_face_map = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map)
+    out = []
+    for i in range(1, edge_face_map.Extent() + 1):
+        edge = TopoDS.Edge_s(edge_face_map.FindKey(i))
+        adj = [TopoDS.Face_s(f) for f in edge_face_map.FindFromIndex(i)]
+        adj_roles = []
+        ok = True
+        for f in adj:
+            fidx = face_roles.FindIndex(f)
+            if fidx == 0:
+                ok = False  # a face outside the ledger (never for a complete ledger)
+                break
+            adj_roles.append(roles_by_idx[fidx])
+        if not ok or len(adj) != 2:
+            continue
+        if tuple(sorted(adj_roles)) != want_roles:
+            continue
+        if _edge_kind(edge, adj) != want_kind:
+            continue
+        out.append(edge)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Topology signature (ADR/0035 D3) — recipe-derived, value-independent
 # ---------------------------------------------------------------------------
@@ -350,10 +454,42 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
     sketch primitive (id, type) lists — EXCLUDING parameter values (depth,
     dimensions, positions, direction). Stable across parameter edits; changes
     when a feature or primitive is added/removed. NOT a stored counter."""
+    # ADR/0038 A4.6 (Codex6 B1): the signature NORMALIZES its input at the
+    # public boundary — a Kahn order over the dependency graph with stable-id
+    # tie-break, so sidecar array position is non-semantic HERE too and no
+    # caller needs a pre-normalization ritual. Append-authored recipes are
+    # already in this order (byte-identical signatures; golden-tested).
+    from . import body_history as _body_history
+    # ADR/0044 A2.4 (Gate F2b): STRUCTURAL v2 validation only — the
+    # signature is pure/value-independent and must never run the native
+    # solver. Non-sketch/malformed 0.2.x refuse; a valid v2 sketch gets a
+    # skeleton entry below.
+    from .sketch_v2 import validate_v2_records as _validate_v2
+
+    _validate_v2(features)
+
+    features = _body_history.normalize_feature_order(list(features))
     skeleton: list[dict[str, Any]] = []
     for f in features:
         ftype = f.get("feature_type")
         entry: dict[str, Any] = {"feature": ftype}
+        _asv = f.get("adapter_schema_version")
+        if ftype == "sketch" and isinstance(_asv, str) and _asv.startswith("0.2."):
+            # Gate F2b: a v2 CONSTRAINED sketch is construction-only in this
+            # slice — it contributes NO 3D topology. Its skeleton entry is
+            # the admitted shape + plane orientation (value-independent;
+            # nominals/weak magnitudes are values and stay out); presence/
+            # removal changes the signature like any feature.
+            from .sketch_v2 import decode_v2_sketch as _decode_v2
+
+            decoded = _decode_v2(f)
+            entry["sketch_model"] = 2
+            entry["v2_shape"] = decoded["shape"]
+            plane_sk = plane_skeleton(f)
+            if plane_sk is not None:
+                entry["plane"] = plane_sk
+            skeleton.append(entry)
+            continue
         if ftype == "sketch":
             all_prims = f.get("adapter_payload", {}).get("primitives", [])
             # SK-C0 B4: only TOPOLOGY-CONTRIBUTING primitives enter the 3D
@@ -404,6 +540,13 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             # reject. Adds NOTHING to the skeleton bytes (the dependency is
             # validated, not encoded — valid-recipe signatures are unchanged).
             resolve_consumed_sketch(features, f)
+            # ADR/0038 A4 (arc 20260717-2): the OPERATION is structural — an
+            # add and a cut over the same profile are different topologies.
+            # Encoded ONLY when it differs from the legacy default ("add"),
+            # so every legacy/add signature stays byte-identical (B2 parity).
+            operation = (f.get("adapter_payload") or {}).get("operation", "add")
+            if operation != "add":
+                entry["operation"] = operation
         elif ftype in ("fillet", "chamfer"):
             # An edge-referencing feature IS a topology change; retargeting it
             # changes topology too (ADR/0038 D4) — so the target ANCHOR is part of

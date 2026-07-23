@@ -1,0 +1,62 @@
+--- freecad-sparse/src/Mod/Sketcher/App/planegcs/GCS.cpp	2026-07-16 10:28:29.279990000 -0400
++++ extraction/src/App/planegcs/GCS.cpp	2026-07-16 11:15:37.705348900 -0400
+@@ -5542,24 +5542,43 @@
+          * popular, and they remove the same amount of DoFs, prefer removal of the latest
+          * introduced.
+          */
+-        auto iterMostPopular = std::max_element(
+-            conflictingMap.begin(),
+-            conflictingMap.end(),
+-            [&tagmultiplicity](const auto& pair1, const auto& pair2) {
+-                size_t sizeOfSet1 = pair1.second.size();
+-                size_t sizeOfSet2 = pair2.second.size();
+-                auto tag1 = pair1.first->getTag();
+-                auto tag2 = pair2.first->getTag();
++        // AIADRA determinism patch (SK-B, 2026-07-16): the original code ran
++        // std::max_element over a std::map keyed by Constraint*; on heuristic
++        // ties ((1)-(3) all equal) the winner was whichever constraint sorts
++        // first by ALLOCATION ADDRESS, which made the internal redundant set,
++        // clistR, and thus the parameter-reduction direction vary per process.
++        // Traverse candidates in clist REGISTRATION order instead; the
++        // comparator (1)-(3) is byte-identical, so only tie resolution changes
++        // (earliest-registered wins, deterministically).
++        auto lessPopular = [&tagmultiplicity](const auto& pair1, const auto& pair2) {
++            size_t sizeOfSet1 = pair1.second.size();
++            size_t sizeOfSet2 = pair2.second.size();
++            auto tag1 = pair1.first->getTag();
++            auto tag2 = pair2.first->getTag();
+ 
+-                return (
+-                    sizeOfSet2 > sizeOfSet1  // (1)
+-                    || (sizeOfSet2 == sizeOfSet1
+-                        && tagmultiplicity.at(tag2) < tagmultiplicity.at(tag1))  // (2)
+-                    || (sizeOfSet2 == sizeOfSet1
+-                        && tagmultiplicity.at(tag2) == tagmultiplicity.at(tag1) && tag2 > tag1)
+-                );  // (3)
++            return (
++                sizeOfSet2 > sizeOfSet1  // (1)
++                || (sizeOfSet2 == sizeOfSet1
++                    && tagmultiplicity.at(tag2) < tagmultiplicity.at(tag1))  // (2)
++                || (sizeOfSet2 == sizeOfSet1
++                    && tagmultiplicity.at(tag2) == tagmultiplicity.at(tag1) && tag2 > tag1)
++            );  // (3)
++        };
++
++        auto iterMostPopular = conflictingMap.end();
++        for (const auto& constr : clist) {
++            auto found = conflictingMap.find(constr);
++            if (found == conflictingMap.end()) {
++                continue;
++            }
++            if (iterMostPopular == conflictingMap.end()
++                || lessPopular(*iterMostPopular, *found)) {
++                iterMostPopular = found;
+             }
+-        );
++        }
++        if (iterMostPopular == conflictingMap.end()) {
++            break;  // unreachable: conflictingMap keys always come from clist
++        }
+ 
+         Constraint* mostPopular = iterMostPopular->first;
+         int maxPopularity = iterMostPopular->second.size();

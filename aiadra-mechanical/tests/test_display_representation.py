@@ -37,6 +37,7 @@ def _recipe(depth=10.0, with_hole=True, with_extrude=True, w=40.0, h=30.0):
     if with_extrude:
         feats.append({
             "id": "feat_0002", "feature_type": "extrude",
+         "depends_on_feature_ids": ["feat_0001"],
             "parameters": [{"id": "featp_0001", "name": "depth_mm", "value": depth,
                             "datatype": "number", "unit": "mm"}],
             "adapter_payload": build_extrude_payload(
@@ -91,7 +92,7 @@ def test_box_with_hole_edge_kinds():
 def test_contract_round_trips_through_dto():
     d = _gen(_recipe())
     dr = DisplayRepresentation.from_engine_dict(d)
-    assert dr.display_representation_version == "1.2"
+    assert dr.display_representation_version == "1.3"
     assert dr.view_dependent is None  # base display never inlines HLR
     assert dr.selection.id_space == "canonical"
     assert dr.counters.face_count == 7

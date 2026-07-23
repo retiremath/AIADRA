@@ -6,11 +6,19 @@ authority. The cache key (ADR/0031 D8 + arc 20260602-1 Codex1 N3) is:
 
     (recipe-hash, event_log_last_event_id, adapter_schema_version, OCP/OCCT version)
 
-The recipe-hash component coincides with the `geometry_ref.vault_ref` identity
-(it IS the recipe hash), so identity and cache key share that component; the
-event-log boundary + version material guard the cache WITHOUT touching identity
-(`vault_ref` stays recipe-only per ADR/0031 D6). Including the OCP/OCCT version
-ensures a cached shape is never reused across a kernel/binding upgrade.
+DE-EQUALIZATION (ADR/0038 A4.7, arc 20260717-2): the recipe-hash component is
+the hash of the WHOLE current feature list — a display/evaluation STATE key.
+It is deliberately NOT the body `geometry_ref.vault_ref`: since A4.7, geometry
+records stage only the PROJECTION of their head's dependency closure, so a
+Part carrying an independent unconsumed sketch has a whole-list cache hash
+that differs from every stored record's ref. The former "coincides with
+vault_ref" claim is retired (it was true only while every record staged the
+whole list); the cache key is an explicit COMPOSITION — whole-recipe state
+(covering the body projection AND every non-body display input) + the
+event-log boundary + version material. `vault_ref` stays recipe-only per
+ADR/0031 D6, and identity never derives FROM this key. Including the
+OCP/OCCT version ensures a cached shape is never reused across a
+kernel/binding upgrade.
 
 For v0.0.1 the cache is primarily a PATTERN-EXERCISE — the toy-scale evaluation
 is sub-millisecond — proving the D8 keying discipline is cheap to implement

@@ -130,7 +130,8 @@ def _mint_segment_ids(contour_id: str, segments: list[dict[str, Any]]) -> list[d
 
 
 def build_extrude_payload(
-    *, sketch_feature_id: str, direction: str, depth_parameter_id: str
+    *, sketch_feature_id: str, direction: str, depth_parameter_id: str,
+    operation: str = "add",
 ) -> dict[str, Any]:
     """Build (and domain-validate) the adapter_payload for an extrude feature.
 
@@ -156,10 +157,20 @@ def build_extrude_payload(
             f"mechanical.add_extrude_feature: sketch_feature_id must match feat_NNNN, "
             f"got {sketch_feature_id!r}"
         )
+    # ADR/0038 A4 (arc 20260717-2): the STRUCTURAL operation — add fuses,
+    # cut removes material. Skeleton-bearing (add vs cut cannot share a
+    # topology signature); independent of `direction` (never inferred).
+    # Absent in legacy 0.1.10 payloads ≡ "add"; NEW writes always emit it.
+    if operation not in ("add", "cut"):
+        raise TransactionError(
+            f"mechanical.add_extrude_feature: operation must be 'add' or 'cut', "
+            f"got {operation!r}"
+        )
     return {
         "sketch_feature_id": sketch_feature_id,
         "direction": direction,
         "depth_parameter_id": depth_parameter_id,
+        "operation": operation,
     }
 
 

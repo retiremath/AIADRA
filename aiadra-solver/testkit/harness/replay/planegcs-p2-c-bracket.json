@@ -1,0 +1,14 @@
+{
+  "branch_oracle_value": 1,
+  "case_id": "c-bracket",
+  "schema": "skb-replay-1",
+  "solved": {
+    "p1.x": 0.0,
+    "p1.y": 0.0,
+    "p2.x": 50.0,
+    "p2.y": 0.0,
+    "p3.x": 58.24999999999999,
+    "p3.y": 28.843326784544118
+  },
+  "weak_completion": []
+}

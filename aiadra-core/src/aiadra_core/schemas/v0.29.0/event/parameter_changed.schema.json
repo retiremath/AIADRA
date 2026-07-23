@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - parameter_changed",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "parameter_changed"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "object_uuid",
+        "parameter_id",
+        "old_value",
+        "new_value",
+        "rationale"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string"
+        },
+        "parameter_id": {
+          "type": "string"
+        },
+        "old_value": {
+          "type": "number"
+        },
+        "new_value": {
+          "type": "number"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "new_fact_provenance": {
+          "type": "object",
+          "required": [
+            "category"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "enum": [
+                "human_input",
+                "ai_proposal",
+                "computed_result",
+                "measured"
+              ]
+            },
+            "ai_agent_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "derived_from": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "description": "Per F1 absorption arc 20260531-3: optional replacement fact_provenance dict; if present, fold wholesale-replaces parameter.fact_provenance. If absent, fact_provenance unchanged (backward-compat with v0.20.0 events)."
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

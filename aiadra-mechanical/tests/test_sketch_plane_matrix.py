@@ -272,10 +272,12 @@ def test_resolution_negatives_fail_class1():
     ex = _extrude(fid="feat_0002")
     with pytest.raises(TransactionError, match="not a sketch"):
         resolve_consumed_sketch([sk, ex], _extrude(sketch_id="feat_0002", fid="feat_0003"))
-    # later-than-consumer
+    # A4.6 (arc 20260717-2 Codex5 B1): array position is NOT semantic — the
+    # profile-precedes-consumer fact is a GRAPH edge; the permuted array is
+    # the SAME model and now resolves (the old array-order refusal is gone).
     consumer_first = [_extrude(fid="feat_0002"), _sketch([RECT], fid="feat_0001")]
-    with pytest.raises(TransactionError, match="AFTER its consumer"):
-        resolve_consumed_sketch(consumer_first, consumer_first[0])
+    resolved = resolve_consumed_sketch(consumer_first, consumer_first[0])
+    assert resolved["id"] == "feat_0001"
     # dependency disagreement
     bad = _extrude(sketch_id="feat_0001")
     bad["depends_on_feature_ids"] = ["feat_0007"]

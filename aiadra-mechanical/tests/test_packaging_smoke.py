@@ -43,9 +43,10 @@ def test_engine_evaluates_real_occt_solid_with_hole():
 
     features = [
         {"id": "feat_0001", "feature_type": "sketch", "adapter_payload": {"primitives": [
-            {"type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": 20.0, "height_mm": 10.0},
-            {"type": "circle", "cx_mm": 5.0, "cy_mm": 5.0, "radius_mm": 2.0}]}},
+            {"id": "skp_0001", "type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": 20.0, "height_mm": 10.0},
+            {"id": "skp_0002", "type": "circle", "cx_mm": 5.0, "cy_mm": 5.0, "radius_mm": 2.0}]}},
         {"id": "feat_0002", "feature_type": "extrude",
+         "depends_on_feature_ids": ["feat_0001"],
          "adapter_payload": {"direction": "z+", "sketch_feature_id": "feat_0001"},
          "parameters": [{"id": "featp_0001", "name": "depth_mm", "value": 5.0,
                          "datatype": "number", "unit": "mm"}]},

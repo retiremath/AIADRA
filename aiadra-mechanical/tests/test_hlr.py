@@ -332,7 +332,7 @@ def test_display_hlr_end_to_end_and_echo_matches_package(
     assert echo.geometry_ref == dr.identity.geometry_ref
     assert echo.cache_key == dr.identity.cache_key
     assert echo.topology_signature == dr.identity.topology_signature
-    assert echo.display_representation_version == "1.2"  # the ONE version authority (S2)
+    assert echo.display_representation_version == "1.3"  # the ONE version authority (S2)
 
     # B1, end-to-end: every correlated id is a base-display edge id.
     base_ids = {e.edge_id for e in dr.render.edges}

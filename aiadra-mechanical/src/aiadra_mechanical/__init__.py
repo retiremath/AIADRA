@@ -31,6 +31,7 @@ def register(registrar: "NativeEngineRegistrar") -> None:
         handle_add_extrude_feature,
         handle_add_fillet_feature,
         handle_add_hole_feature,
+        handle_add_reference_sketch,
         handle_add_revolve_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
@@ -38,6 +39,9 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     )
 
     registrar.add_operation("mechanical.add_sketch_feature", handle_add_sketch_feature)
+    # Gate F2b (ADR/0044 A2, arc 20260717-2): the FIRST v2 (adapter 0.2.0)
+    # writer — the slice-1 references sketch (fixed origin + directed axes).
+    registrar.add_operation("mechanical.add_reference_sketch", handle_add_reference_sketch)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
     # First non-referencing CREATION feature since extrude — ADR/0037 D8 (arc 20260622-4).
     registrar.add_operation("mechanical.add_revolve_feature", handle_add_revolve_feature)

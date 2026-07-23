@@ -21,6 +21,7 @@ import {
 } from '../sketch/proceduralExtrude'
 import { segmentsProblem, type Pt, type Segment } from '../sketch/contour'
 import { frameFromNormalAndPoint } from '../sketch/planeFrame'
+import { buildContourDisplay, displayToSource, mergeDisplays } from '../sketch/proceduralExtrude'
 import { classifySketch } from '../sketch/profileClassify'
 import { tessellateCircle, tessellateSegments } from '../sketch/arcGeometry'
 import {
@@ -114,8 +115,64 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'sketch',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.10',
+      adapter_schema_version: '0.1.11',
       adapter_payload: payload,
+    }
+  }
+  if (kind === 'mechanical.add_reference_sketch') {
+    // Gate F2b: the dev-lane mirror of the engine's A2.9 references
+    // transaction. The graph shape, ids, and the skb-0 weak completion are
+    // DETERMINISTIC for G0/G1/G2 (the engine derives them through the real
+    // solver; the mock mirrors the known result — the same honesty posture
+    // as every other mock record).
+    const axes = (params.axes as string) ?? 'xy'
+    const x = (params.x_axis_mm as number) ?? 20.0
+    const y = (params.y_axis_mm as number) ?? 20.0
+    const entities: Record<string, unknown>[] = [
+      { id: 'skp_0001', type: 'point', construction: true, nominal: { x: 0.0, y: 0.0 } },
+    ]
+    const constraints: Record<string, unknown>[] = [
+      { id: 'c01', kind: 'fix', args: ['skp_0001'] },
+    ]
+    const weak: Record<string, unknown>[] = []
+    const mkWeak = (idx: number, entity: string, parameter: string, magnitude: number) => ({
+      id: `w${String(idx).padStart(2, '0')}`,
+      kind: 'fix_param',
+      target: { entity, parameter },
+      value: { magnitude, unit: 'mm' },
+      strength: 'weak', role: 'driving', visibility: 'internal',
+      origin: { category: 'computed_result', policy: 'skb-0', solver_contract: 'skb-c0' },
+    })
+    if (axes === 'x' || axes === 'xy') {
+      entities.push({ id: 'skp_0002', type: 'point', construction: true, nominal: { x, y: 0.0 } })
+      entities.push({ id: 'skp_0004', type: 'line', construction: true, start: 'skp_0001', end: 'skp_0002' })
+      constraints.push({ id: 'c02', kind: 'horizontal', args: ['skp_0004'] })
+      weak.push(mkWeak(1, 'skp_0002', 'x', x))
+    }
+    if (axes === 'xy') {
+      entities.push({ id: 'skp_0003', type: 'point', construction: true, nominal: { x: 0.0, y } })
+      entities.push({ id: 'skp_0005', type: 'line', construction: true, start: 'skp_0001', end: 'skp_0003' })
+      constraints.push({ id: 'c03', kind: 'vertical', args: ['skp_0005'] })
+      weak.push(mkWeak(2, 'skp_0003', 'y', y))
+    }
+    return {
+      id,
+      feature_type: 'sketch',
+      engine: 'mechanical',
+      adapter_schema_version: '0.2.0',
+      adapter_payload: {
+        sketch_model: 2,
+        solver_contract: 'skb-c0',
+        weak_policy: 'skb-0',
+        branch_policy: 'skb-b0',
+        plane: (params.plane as Record<string, unknown>) ?? { kind: 'principal', orientation: 'xy' },
+        entities,
+        constraints,
+        dimensions: [],
+        references: [],
+        weak_completion: weak,
+        witnesses: [],
+      },
     }
   }
   if (kind === 'mechanical.add_extrude_feature') {
@@ -123,10 +180,19 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'extrude',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.10',
-      depends_on_feature_ids: [params.sketch_feature_id],
+      adapter_schema_version: '0.1.11',
+      // Codex14 B1.4: the SEQUENTIAL graph shape mirrors the signed engine —
+      // [consumed_sketch, prior_body_head] when a body exists (`__priorHead`
+      // is threaded by begin(); base extrudes keep the single operand edge).
+      depends_on_feature_ids: params.__priorHead
+        ? [params.sketch_feature_id, params.__priorHead]
+        : [params.sketch_feature_id],
       parameters: [{ id: 'featp_mock', name: 'depth_mm', value: params.depth_mm, datatype: 'number', unit: 'mm' }],
-      adapter_payload: { sketch_feature_id: params.sketch_feature_id, direction: params.direction },
+      adapter_payload: {
+        sketch_feature_id: params.sketch_feature_id,
+        direction: params.direction,
+        operation: (params.operation as string | undefined) ?? 'add',
+      },
     }
   }
   if (kind === 'mechanical.add_revolve_feature') {
@@ -136,7 +202,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'revolve',
       engine: 'mechanical',
-      adapter_schema_version: '0.1.10',
+      adapter_schema_version: '0.1.11',
       depends_on_feature_ids: [params.sketch_feature_id],
       adapter_payload: { sketch_feature_id: params.sketch_feature_id, axis: params.axis },
     }
@@ -246,7 +312,45 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       partNumber,
     )
     if (!solid) return null
-    return proceduralContourSource(solid.points, solid.depthMm, badge, solid.plane)
+    // P (arc 20260717-2): the folded body COMPOSES sequential bosses — each
+    // committed sequential extrude whose face-bound sketch sits on the TOP
+    // cap stacks its prism at the base depth (honest prisms, per-feature ids).
+    const reps = [buildContourDisplay(solid.points, solid.depthMm, solid.plane)]
+    for (const f of part.features) {
+      if (f.feature_type !== 'extrude' || f.id === base.id) continue
+      const payload = (f.adapter_payload ?? {}) as Record<string, unknown>
+      if (((payload.operation as string | undefined) ?? 'add') !== 'add') continue
+      const sk = part.features.find(
+        (x) => x.id === payload.sketch_feature_id && x.feature_type === 'sketch',
+      )
+      const plane = ((sk?.adapter_payload ?? {}) as Record<string, unknown>).plane as
+        | { kind?: string; face_role?: string } | undefined
+      // Codex14 B3: the SAME exact predicate as simulation — only the BASE's
+      // top cap composes; anything else never renders a misplaced prism.
+      if (plane?.kind !== 'face' || (plane.face_role ?? '') !== `${base.id}:face:cap_top`) continue
+      const prim = (((sk?.adapter_payload ?? {}) as Record<string, unknown>).primitives as
+        Array<Record<string, unknown>> | undefined)?.[0]
+      const depth = Number(
+        ((f.parameters as Array<{ name: string; value: unknown }> | undefined) ?? [])
+          .find((pr) => pr.name === 'depth_mm')?.value ?? 6,
+      )
+      const pts = prim?.type === 'rectangle'
+        ? (() => {
+            const x = Number(prim.x_mm); const y = Number(prim.y_mm)
+            const w = Number(prim.width_mm); const h = Number(prim.height_mm)
+            return [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]
+          })()
+        : prim?.type === 'contour'
+          ? tessellateSegments((prim.segments ?? []) as Segment[])
+          : prim?.type === 'circle'
+            ? tessellateCircle(Number(prim.cx_mm), Number(prim.cy_mm), Number(prim.radius_mm))
+            : null
+      if (!pts) continue
+      reps.push(buildContourDisplay(pts, depth, solid.plane, {
+        wOffset: solid.depthMm, idPrefix: `mockb_${f.id}`,
+      }))
+    }
+    return displayToSource(mergeDisplays(reps), badge)
   }
 
   /** S3: synthesize Display v1.2 sketch_frames for every face-bound sketch
@@ -299,6 +403,65 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
     return frames
   }
 
+  /** Gate F2b: synthesize Display v1.3 `v2_construction` for every committed
+   *  v2 references sketch. HONEST for skb-b0's admitted frames: the
+   *  single-root proofs make solved == authored nominals for the canonical
+   *  graphs this mock authors, so the nominal-derived wires equal the real
+   *  engine's solved-derived ones (the desktop lane derives via the solver). */
+  const foldedV2Construction = (
+    partNumber: string,
+    pending: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> => {
+    const committed = parts.get(partNumber)?.features ?? []
+    const out: Array<Record<string, unknown>> = []
+    for (const f of [...committed, ...pending]) {
+      const asv = f.adapter_schema_version
+      if (typeof asv !== 'string' || !asv.startsWith('0.2.')) continue
+      const payload = (f.adapter_payload ?? {}) as Record<string, unknown>
+      const pts = new Map<string, [number, number, number]>()
+      const points: Array<Record<string, unknown>> = []
+      const lines: Array<Record<string, unknown>> = []
+      for (const e of (payload.entities as Array<Record<string, unknown>>) ?? []) {
+        if (e.type === 'point') {
+          const nom = e.nominal as { x: number; y: number }
+          const at: [number, number, number] = [nom.x, nom.y, 0]
+          pts.set(e.id as string, at)
+          points.push({ id: e.id, at })
+        }
+      }
+      for (const e of (payload.entities as Array<Record<string, unknown>>) ?? []) {
+        if (e.type === 'line') {
+          lines.push({ id: e.id, a: pts.get(e.start as string), b: pts.get(e.end as string) })
+        }
+      }
+      const nLines = lines.length
+      out.push({
+        sketch_feature_id: f.id,
+        shape: nLines === 0 ? 'G0' : nLines === 1 ? 'G1' : 'G2',
+        construction: true,
+        points,
+        lines,
+      })
+    }
+    return out
+  }
+
+  const withV2Construction = (
+    source: DisplaySource,
+    items: Array<Record<string, unknown>>,
+  ): DisplaySource => {
+    if (items.length === 0) return source
+    return {
+      ...source,
+      getDisplay: async () => {
+        const d = (await source.getDisplay()) as unknown as Record<string, unknown>
+        return { ...d, v2_construction: items } as unknown as Awaited<
+          ReturnType<DisplaySource['getDisplay']>
+        >
+      },
+    }
+  }
+
   /** Attach mock sketch_frames to a display source (payload-level append). */
   const withSketchFrames = (
     source: DisplaySource,
@@ -347,18 +510,25 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           throw new Error('mock: face-bound sketches need a committed extruded base')
         }
         const m = /^mock:(cap_top|cap_base)$/.exec(tid)
-        if (!m) {
+        const mb = /^mockb_(feat_\d+):(cap_top|cap_base)$/.exec(tid)
+        if (!m && !mb) {
           throw new Error(
             'mock: dev-lane face-bound sketches support the caps only (mock:cap_top / mock:cap_base)',
           )
         }
+        // Codex14 B3: a BOSS cap display id translates to that boss's stored
+        // role — simulation then refuses it with the named real-lane
+        // boundary (reachable honesty, never a silent guess).
+        const role = m
+          ? `${base.id as string}:face:${m[1]}`
+          : `${mb![1]}:face:${mb![2]}`
         return {
           ...op,
           params: {
             ...op.params,
             plane: {
               kind: 'face',
-              face_role: `${base.id as string}:face:${m[1]}`,
+              face_role: role,
               resolved_against_topology_signature: 'mock-topo',
             },
           },
@@ -378,6 +548,15 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
         } else if (op.kind.startsWith('mechanical.add_')) {
           const id = `feat_${String(++featSeq).padStart(4, '0')}`
           perOpIds.push([id])
+          // Codex14 B1.4: a sequential extrude records the prior body head
+          // (the mock's linear mirror: the LAST committed body feature).
+          if (op.kind === 'mechanical.add_extrude_feature' && targetNumber) {
+            const committed = parts.get(targetNumber)?.features ?? []
+            const priorHead = [...committed].reverse().find(
+              (f) => f.feature_type === 'extrude' || f.feature_type === 'revolve',
+            )
+            if (priorHead) (params as Record<string, unknown>).__priorHead = priorHead.id
+          }
           const raw = rawFeatureFromOp(op.kind, params, id)
           if (raw === null) {
             // D-R10 (Codex1 B4): the mock REFUSES what its mirror cannot
@@ -471,12 +650,56 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           return { valid: false, message: 'mock: unknown feature/parameter for adjust_feature_parameter' }
         }
       }
-      // S2 B3 mirror: the engine rejects a second base creation — so does the mock.
+      // P (arc 20260717-2): the SEQUENTIAL mirror — the one-base refusal is
+      // lifted for extrudes exactly as far as the mock can honestly go.
       const target = session.partNumber ? parts.get(session.partNumber) : undefined
       const priorBase = target?.features.some((f) => f.feature_type === 'extrude' || f.feature_type === 'revolve')
-      const addsBase = session.features.some((f) => f.feature_type === 'extrude' || f.feature_type === 'revolve')
-      if (priorBase && addsBase) {
-        return { valid: false, message: 'mock one-base rule: the Part already has a base creation feature' }
+      const addsRevolve = session.features.some((f) => f.feature_type === 'revolve')
+      if (priorBase && addsRevolve) {
+        return { valid: false, message: 'mock: sequential features on a revolve are a later slice' }
+      }
+      const seqExtrudes = priorBase
+        ? session.features.filter((f) => f.feature_type === 'extrude')
+        : []
+      for (const seq of seqExtrudes) {
+        const payload = (seq.adapter_payload ?? {}) as Record<string, unknown>
+        const sid = payload.sketch_feature_id as string | undefined
+        const consumedSketch =
+          target?.features.find((f) => f.id === sid && f.feature_type === 'sketch')
+          ?? session.features.find((f) => f.id === sid && f.feature_type === 'sketch')
+        const plane = ((consumedSketch?.adapter_payload ?? {}) as Record<string, unknown>).plane as
+          | { kind?: string; face_role?: string }
+          | undefined
+        if (plane?.kind !== 'face') {
+          return { valid: false, message: 'mock (engine mirror): a sequential extrude consumes a FACE-BOUND sketch — sketch on a face of the body' }
+        }
+        const alreadyConsumed = target?.features.some(
+          (f) => f.feature_type === 'extrude'
+            && ((f.adapter_payload ?? {}) as Record<string, unknown>).sketch_feature_id === sid,
+        )
+        if (alreadyConsumed) {
+          return { valid: false, message: 'mock (engine mirror): the sketch is already consumed by another solid feature' }
+        }
+        const operation = (payload.operation as string | undefined) ?? 'add'
+        const direction = payload.direction as string | undefined
+        if (operation === 'cut') {
+          // HONEST mock boundary: a pocket cavity has no procedural
+          // synthesis here — the real engine (288-test-proven) renders it
+          // in the desktop lane; the mock refuses rather than fakes.
+          return { valid: false, message: 'mock: a CUT pocket has no honest procedural synthesis — run as the desktop app (real engine lane)' }
+        }
+        if (direction !== 'normal+') {
+          return { valid: false, message: 'mock (engine mirror): an ADD extrude sweeps AWAY from the body (normal+)' }
+        }
+        const baseFeat = target?.features.find(
+          (f) => f.feature_type === 'extrude' || f.feature_type === 'revolve',
+        )
+        if ((plane.face_role ?? '') !== `${baseFeat?.id}:face:cap_top`) {
+          // Codex14 B3: EXACT equality with the BASE's top-cap role — a
+          // boss-on-boss support (a prior boss's own cap) refuses with the
+          // named real-lane boundary instead of a silently misplaced prism.
+          return { valid: false, message: 'mock: dev-lane bosses build on the BASE top cap only — boss-on-boss (and cap_base) surfaces run as the desktop app (real engine lane)' }
+        }
       }
       return { valid: true }
     },
@@ -505,6 +728,28 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       const hasBase = ops.some(
         (o) => o.kind === 'mechanical.add_extrude_feature' || o.kind === 'mechanical.add_revolve_feature',
       )
+      // P (arc 20260717-2): a SEQUENTIAL extrude commit (the target already
+      // has a base) renders the WHOLE folded composite — never the boss alone.
+      const targetPart = parts.get(session.partNumber ?? objectRef)
+      const targetHasBase = targetPart?.features.some(
+        (f) => f.feature_type === 'extrude' || f.feature_type === 'revolve',
+      ) ?? false
+      const sessionAddsExtrude = ops.some((o) => o.kind === 'mechanical.add_extrude_feature')
+      if (targetHasBase && sessionAddsExtrude) {
+        // register FIRST so the folded composite sees the new boss
+        const number0 = session.partNumber ?? objectRef
+        const entry0 = parts.get(number0) ?? { name: session.partName ?? number0, features: [] }
+        entry0.features.push(...session.features)
+        parts.set(number0, entry0)
+        const composed = foldedBaseDisplay(number0, badge)
+        if (!composed) throw new Error('mock: sequential composite unavailable')
+        const framed0 = withV2Construction(
+          withSketchFrames(composed, foldedSketchFrames(number0, [])),
+          foldedV2Construction(number0, []),
+        )
+        open.delete(sessionId)
+        return { objectRef, display: framed0 }
+      }
       // Entry A (extrude a COMMITTED sketch): the session has no sketch op —
       // resolve the consumed sketch from the mirror so the mock shows the
       // DRAWN geometry, never a canned box for a real reference.
@@ -528,9 +773,12 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
                   )
                 })()
       if (!display) throw new Error('mock: display unavailable')
-      const framed = withSketchFrames(
-        display,
-        foldedSketchFrames(session.partNumber ?? objectRef, session.features),
+      const framed = withV2Construction(
+        withSketchFrames(
+          display,
+          foldedSketchFrames(session.partNumber ?? objectRef, session.features),
+        ),
+        foldedV2Construction(session.partNumber ?? objectRef, session.features),
       )
       // Register the commit in the mock's Truth mirror (feeds inspectRaw).
       const number = session.partNumber ?? objectRef

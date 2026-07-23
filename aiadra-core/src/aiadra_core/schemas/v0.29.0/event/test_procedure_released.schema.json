@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - test_procedure_released",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "test_procedure_released"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "object_uuid",
+        "revision_id",
+        "revision_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string"
+        },
+        "revision_id": {
+          "type": "string"
+        },
+        "revision_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

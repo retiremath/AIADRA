@@ -8,8 +8,9 @@
  * the SAME shape the bridge ships as JSON (`{ display: DisplayRepresentation }`
  * / `{ view_dependent: ViewDependentPayload }`).
  */
-// The CURRENT contract version (SK-C1.0 S2) — mirrors the engine authority.
-export const DISPLAY_REPRESENTATION_VERSION = '1.2'
+// The CURRENT contract version (Gate F2b: v1.3 additive `v2_construction` —
+// solved-derived v2 construction geometry) — mirrors the engine authority.
+export const DISPLAY_REPRESENTATION_VERSION = '1.3'
 /** Legacy fixture producers still emit 1.1 (accepted by the version matrix). */
 export const LEGACY_FIXTURE_DISPLAY_VERSION = '1.1'  as const
 
@@ -31,6 +32,18 @@ export interface FaceBuffer {
   /** v1.2 (SK-C1.0 S2): engine-classified surface kind. ABSENT = unknown —
    *  consumers FAIL CLOSED (no planar-pick eligibility), never guess. */
   surface_kind?: 'plane' | 'other'
+}
+
+/** v1.3 (Gate F2b): the SOLVED construction geometry of one v2 constrained
+ *  sketch — the engine's A2.9 read-lifecycle output mapped to world mm.
+ *  Derived display data, never Truth. */
+export interface V2ConstructionSketch {
+  sketch_feature_id: string
+  /** The admitted skb-b0 shape (G0 | G1 | G2). */
+  shape: string
+  construction: true
+  points: { id: string; at: [number, number, number] }[]
+  lines: { id: string; a: [number, number, number]; b: [number, number, number] }[]
 }
 
 /** v1.2: the RESOLVED plane frame of one face-bound sketch — derived display
@@ -173,6 +186,9 @@ export interface DisplayRepresentation {
   view_dependent: ViewDependentPayload | null
   /** v1.2: resolved face-bound sketch frames (absent on 1.0/1.1). */
   sketch_frames?: SketchFrame[]
+  /** v1.3 (Gate F2b): SOLVED-derived v2 construction geometry — the A2.9
+   *  read lifecycle's display output (derived, never Truth). Absent ≤1.2. */
+  v2_construction?: V2ConstructionSketch[]
   invalidation: DisplayInvalidation
   counters: DisplayCounters
 }

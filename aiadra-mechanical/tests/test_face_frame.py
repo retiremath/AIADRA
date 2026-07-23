@@ -287,7 +287,7 @@ def test_v12_fields_survive_the_real_core_chain():
     )
     payload = display_mod.build_display_payload(
         topo, sketch_frames=display_mod.build_sketch_frames(features))
-    assert payload["display_representation_version"] == "1.2"
+    assert payload["display_representation_version"] == "1.3"
 
     dr = DisplayRepresentation.from_engine_dict(payload)
     out = dr.to_dict()
@@ -309,7 +309,7 @@ def test_hlr_version_matrix_cross_versions_refuse():
         HLR_CAPABLE_VERSIONS,
         ViewDependentPayload,
     )
-    assert HLR_CAPABLE_VERSIONS == ("1.1", "1.2")
+    assert HLR_CAPABLE_VERSIONS == ("1.1", "1.2", "1.3")
 
     def hlr_dict(version):
         return {
@@ -339,7 +339,7 @@ def test_hlr_version_matrix_cross_versions_refuse():
             }],
         }
 
-    for ok_version in ("1.1", "1.2"):
+    for ok_version in ("1.1", "1.2", "1.3"):
         ViewDependentPayload.from_engine_dict(hlr_dict(ok_version))
     with pytest.raises(DisplayContractError, match="HLR-capable"):
         ViewDependentPayload.from_engine_dict(hlr_dict("1.0"))
@@ -471,18 +471,28 @@ def test_nonplanar_sphere_classifies_other_and_the_resolver_refuses():
     real = [f for f in topo.faces if f.face_id == "feat_0002:face:cap_top"][0]
     lying = dataclasses.replace(real, face=face, surface_kind="plane")
 
-    class _TopoStub:
-        faces = [lying]
-
     import aiadra_mechanical.face_frame as ff
 
-    orig = topology.extract_part_topology
+    # A4.5 (Codex5 B4): the resolver consumes the fold LEDGER — the lying
+    # record therefore arrives AS a ledger entry mapping the target role to
+    # the sphere face. The independent kernel planarity check still refuses
+    # (fail closed), exactly as it did on the extraction path.
+    real_result = geometry.evaluate_part_with_provenance(prefix)
+    assert real_result.ledger is not None
+    lying_faces = tuple(
+        (face if role == "feat_0002:face:cap_top" else f, role)
+        for f, role in real_result.ledger.faces
+    )
+    lying_ledger = dataclasses.replace(real_result.ledger, faces=lying_faces)
+    lying_result = dataclasses.replace(real_result, ledger=lying_ledger)
+
+    orig = geometry.evaluate_part_with_provenance
     try:
-        topology.extract_part_topology = lambda *a, **k: _TopoStub()  # type: ignore
+        geometry.evaluate_part_with_provenance = lambda *a, **k: lying_result  # type: ignore
         with pytest.raises(TransactionError, match="NOT PLANAR"):
             ff.resolve_face_plane(prefix, _face_plane(prefix, "feat_0002:face:cap_top"))
     finally:
-        topology.extract_part_topology = orig
+        geometry.evaluate_part_with_provenance = orig
 
 
 def test_display_transports_other_for_a_cylinder_wall():
@@ -554,7 +564,9 @@ def test_base_consuming_a_face_bound_sketch_is_unreachable_with_a_valid_binding(
              adapter_payload={"sketch_feature_id": "feat_0003", "direction": "normal+"}),
         face_sk,
     ]
-    with pytest.raises(TransactionError, match="not found in the recipe"):
+    # A4.6: the wiring extrude->face_sk->extrude is a dependency CYCLE — the
+    # graph layer refuses it before any array-order semantics could apply.
+    with pytest.raises(TransactionError, match="cycle|not found in the recipe"):
         geometry.evaluate_part(ordering_a)
     # ordering B: the face sketch before its producer — the fold's binding
     # validation refuses first (no faces exist in the prefix yet)
@@ -565,5 +577,7 @@ def test_base_consuming_a_face_bound_sketch_is_unreachable_with_a_valid_binding(
              depends_on_feature_ids=["feat_0003"],
              adapter_payload={"sketch_feature_id": "feat_0003", "direction": "normal+"}),
     ]
-    with pytest.raises(TransactionError, match="STALE|no longer exists"):
+    # A4.6 makes the two orderings ONE graph — the same cycle refusal fires
+    # regardless of array position (the array orderings were never two models).
+    with pytest.raises(TransactionError, match="cycle|STALE|no longer exists"):
         geometry.evaluate_part(ordering_b)

@@ -238,13 +238,12 @@ def resolve_consumed_sketch(
             f"{op}: consumed feature {sid!r} is a "
             f"{sketch.get('feature_type')!r}, not a sketch"
         )
-    base_id = base_feature.get("id")
-    ids = [f.get("id") for f in features]
-    if base_id in ids and ids.index(sid) > ids.index(base_id):
-        raise TransactionError(
-            f"{op}: consumed sketch {sid!r} appears AFTER its consumer "
-            f"{base_id!r} in the recipe — a profile must precede its base feature"
-        )
+    # ADR/0038 A4.6 (arc 20260717-2 Codex5 B1): "the profile precedes its
+    # consumer" is a GRAPH fact, not an array fact — sidecar position is
+    # serialization convenience and never semantic. Precedence is carried by
+    # the dependency edge (validated above when declared) and enforced by the
+    # graph layer (cycle/dangling rejection in body_history + Core); the old
+    # array-index comparison rejected legally permuted recipes and is gone.
     return sketch
 
 

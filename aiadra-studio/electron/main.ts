@@ -415,6 +415,8 @@ function registerIpc(): void {
   const AUTHORING_KINDS = new Set<string>([
     'create_part',
     'mechanical.add_sketch_feature',
+    // Gate F2b (arc 20260717-2): the first v2 writer — the references sketch.
+    'mechanical.add_reference_sketch',
     'mechanical.add_extrude_feature',
     'mechanical.add_revolve_feature',
     'mechanical.add_fillet_feature',
@@ -435,17 +437,50 @@ function registerIpc(): void {
         if (typeof p.part_number !== 'string' || !Array.isArray(p.primitives)) {
           return 'add_sketch_feature requires part_number + primitives[]'
         }
-        // EP1/EP2: the optional discriminated plane record — structural check
-        // at the boundary; the engine's exact validator is the authority.
+        // EP1/EP2 + SK-C1.0 S2 (Petre's desktop walk 2026-07-24: this
+        // boundary had FROZEN at principal-only while the engine gained the
+        // face binding — the allowlist must track the op surface): the
+        // optional DISCRIMINATED plane record — structural check only; the
+        // engine's exact validator is the authority.
         if (p.plane !== undefined) {
-          const pl = p.plane as { kind?: unknown; orientation?: unknown } | null
-          const ok =
+          const pl = p.plane as {
+            kind?: unknown
+            orientation?: unknown
+            target_face_id?: unknown
+          } | null
+          const principalOk =
             pl !== null &&
             typeof pl === 'object' &&
             pl.kind === 'principal' &&
             (pl.orientation === 'xy' || pl.orientation === 'yz' || pl.orientation === 'zx')
-          if (!ok) return "add_sketch_feature plane must be {kind:'principal', orientation:'xy'|'yz'|'zx'}"
+          // ADR/0038 INPUT vocabulary at the op boundary: the renderer names
+          // the DISPLAY face id; the ENGINE re-anchors it into the stored
+          // {face_role, resolved_against_topology_signature} reference at
+          // commit. The boundary validates the op shape, never the record.
+          const faceOk =
+            pl !== null &&
+            typeof pl === 'object' &&
+            pl.kind === 'face' &&
+            typeof pl.target_face_id === 'string' &&
+            pl.target_face_id.length > 0
+          if (!principalOk && !faceOk) {
+            return "add_sketch_feature plane must be {kind:'principal', orientation:'xy'|'yz'|'zx'} or {kind:'face', target_face_id}"
+          }
         }
+        return null
+      }
+      case 'mechanical.add_reference_sketch': {
+        // Gate F2b: the one-shot v2 references write — every field beyond
+        // part_number is optional with engine-side defaults; the engine's
+        // A2.9 transaction is the authority.
+        if (typeof p.part_number !== 'string') {
+          return 'add_reference_sketch requires part_number'
+        }
+        if (p.axes !== undefined && p.axes !== 'none' && p.axes !== 'x' && p.axes !== 'xy') {
+          return "add_reference_sketch axes must be 'none'|'x'|'xy'"
+        }
+        if (p.x_axis_mm !== undefined && !posNum(p.x_axis_mm)) return 'add_reference_sketch x_axis_mm must be > 0'
+        if (p.y_axis_mm !== undefined && !posNum(p.y_axis_mm)) return 'add_reference_sketch y_axis_mm must be > 0'
         return null
       }
       case 'mechanical.add_extrude_feature':

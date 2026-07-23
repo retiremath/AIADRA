@@ -1,0 +1,19 @@
+﻿# aiadra-solver dev-build binary digests (NOT distribution artifacts)
+#
+# These sha256 values evidence the LOCAL developer build of the adopted
+# source tree (SK-B package + the Codex16 B2 handshake export). The
+# binaries themselves are gitignored: the repository conveys SOURCE only
+# until the binary-distribution legal gate is cleared (ADR/0034 +
+# ADR/0044-A1 attorney review; Codex16 B1). The ACCEPTED SK-B package
+# binary digests remain in package-manifest.txt (provenance evidence).
+# Digests are provenance, never a runtime compatibility check: a rebuilt
+# LGPL replacement DLL legitimately differs byte-wise -- runtime
+# compatibility is the DLL's own aiadra_planegcs_handshake export.
+#
+# Frozen-harness corpus digest of this pair (must equal the accepted
+# Gate value 061fbdec5913ee88943ac1241cc237dbd0075e121621b66be055f32befeeb736):
+#   REPRODUCED 2026-07-22 (planegcs_candidate.py --digest) and again
+#   2026-07-23 after the round-18 dll_origin pyd rebuild (DLL unchanged).
+
+55e36e46d3fe6e3d29c34bafe54312deb66d2d564f647f96c4247802de850960  planegcs.dll
+0ae39a16c4bd19acb81444874a6314e9b6e1087e36b6aec2787ab38e6440653b  aiadra_solver.cp312-win_amd64.pyd

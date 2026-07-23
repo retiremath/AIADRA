@@ -1,0 +1,17 @@
+{
+  "branch_oracle_value": null,
+  "case_id": "k-gear",
+  "schema": "skb-replay-1",
+  "solved": {
+    "k1.radius": 20.0,
+    "k2.radius": 30.0,
+    "k3.radius": 30.0,
+    "p1.x": 0.0,
+    "p1.y": 0.0,
+    "p2.x": 50.0,
+    "p2.y": 0.0,
+    "p3.x": 110.0,
+    "p3.y": 0.0
+  },
+  "weak_completion": []
+}

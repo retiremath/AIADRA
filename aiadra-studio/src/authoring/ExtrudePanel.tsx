@@ -31,6 +31,7 @@ import { guardTerminalTarget, type PartContextStore } from './partContext'
 import {
   revolveAxisRefusal,
   revolveSketchRefusal,
+  sequentialSketchRefusal,
   unconsumedSketches,
   type InspectedPart,
   type RevolveAxis,
@@ -88,8 +89,13 @@ export function ExtrudePanel({
         ? 'a construction-only sketch has no profile to extrude'
         : isRevolve
           ? revolveSketchRefusal(sk)
-          : null,
+          // P (arc 20260717-2): with a body, the ENGINE-mirrored sequential
+          // domain — a datum-bound sketch greys with the derived reason.
+          : part
+            ? sequentialSketchRefusal(part, sk)
+            : null,
   }))
+  const hasBody = !isRevolve && (part?.hasExtrudeBase ?? false)
 
   // Revolve axis eligibility for the CHOSEN source (committed or pending rect).
   const sourceRect = (() => {
@@ -135,7 +141,10 @@ export function ExtrudePanel({
           ? buildRectangleRevolveOps(part.number, e.source.rect, e.axis)
           : null
       : e.source.kind === 'committed'
-        ? buildExtrudeOnSketchOps(part.number, e.source.sketchId, e.depthMm)
+        ? buildExtrudeOnSketchOps(
+            part.number, e.source.sketchId, e.depthMm,
+            hasBody ? e.operation : 'add',
+          )
         : e.source.kind === 'pending'
           ? buildContourFeatureOps(part.number, e.source.points, e.depthMm, e.source.plane, 0, e.source.bulges)
           : null
@@ -182,8 +191,14 @@ export function ExtrudePanel({
           <button
             type="button"
             className="btn small"
-            disabled={busy}
-            title={isRevolve ? 'Draw a rectangle on FRONT (xy) — the v1 revolve profile' : 'Draw a contour on a picked plane'}
+            disabled={busy || hasBody}
+            title={
+              hasBody
+                ? 'chained sketches are datum-bound — a sequential extrude needs a FACE-BOUND sketch (Sketch on a face of the body, then Extrude)'
+                : isRevolve
+                  ? 'Draw a rectangle on FRONT (xy) — the v1 revolve profile'
+                  : 'Draw a contour on a picked plane'
+            }
             onClick={() => onNewSketch?.(e.feature)}
           >
             New sketch…
@@ -220,18 +235,40 @@ export function ExtrudePanel({
               ))}
             </span>
           ) : (
-            <label className="sp-depth">
-              Depth{' '}
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={e.depthMm}
-                disabled={busy}
-                onChange={(ev) => store.setDepth(Number(ev.target.value) || 1)}
-              />{' '}
-              mm
-            </label>
+            <>
+              {hasBody && (
+                <span className="sp-axis">
+                  {(['add', 'cut'] as const).map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      className={`btn small${e.operation === op ? ' primary' : ''}`}
+                      disabled={busy}
+                      title={
+                        op === 'add'
+                          ? 'Add material — a boss extruding AWAY from the face (normal+)'
+                          : 'Remove material — a blind pocket cutting INTO the body (normal-)'
+                      }
+                      onClick={() => store.setExtrudeOperation(op)}
+                    >
+                      {op === 'add' ? 'Add' : 'Cut'}
+                    </button>
+                  ))}
+                </span>
+              )}
+              <label className="sp-depth">
+                Depth{' '}
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={e.depthMm}
+                  disabled={busy}
+                  onChange={(ev) => store.setDepth(Number(ev.target.value) || 1)}
+                />{' '}
+                mm
+              </label>
+            </>
           )}
           <button type="button" className="btn primary" onClick={commit} disabled={busy || !e.source}>
             {busy ? '…' : 'OK'}

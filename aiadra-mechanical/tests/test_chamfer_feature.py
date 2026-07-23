@@ -67,6 +67,7 @@ def _box_with_chamfer_recipe(distance: float = 2.0) -> list[dict]:
          "adapter_payload": build_sketch_payload(
              [{"type": "rectangle", "x_mm": 0.0, "y_mm": 0.0, "width_mm": 23.0, "height_mm": 11.0}])},
         {"id": "feat_0002", "feature_type": "extrude",
+         "depends_on_feature_ids": ["feat_0001"],
          "parameters": [{"id": "featp_0001", "name": "depth_mm", "value": 6.0,
                          "datatype": "number", "unit": "mm"}],
          "adapter_payload": build_extrude_payload(
@@ -148,6 +149,15 @@ def test_missed_chamfer_claim_fails_loud_not_base_role(monkeypatch):
     """Codex R1 build bar + ADR/0038 A3: a neutered produced-role claim must FAIL
     LOUD — the planar bevel must not silently take a base wall/cap role."""
     feats = _box_with_chamfer_recipe()
+    # A4.5: extraction normally consumes the LEDGER — this test exercises the
+    # LEGACY correlate lane's claim safety net, so strip the ledger too.
+    import dataclasses as _dc
+
+    _orig_eval = geometry.evaluate_part_with_provenance
+    monkeypatch.setattr(
+        geometry, "evaluate_part_with_provenance",
+        lambda feats: _dc.replace(_orig_eval(feats), ledger=None),
+    )
     monkeypatch.setattr(topology, "_claimed_produced_roles", lambda face_map, produced_hints: {})
     with pytest.raises(TransactionError):  # the unclaimed bevel collides → fail loud
         topology.extract_part_topology(feats)

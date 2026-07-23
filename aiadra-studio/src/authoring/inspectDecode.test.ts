@@ -82,8 +82,15 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
   })
 
   it('FAILS LOUD on a KNOWN mechanical record written by a NEWER adapter series', () => {
-    const alien = { ...SKETCH_RECT, adapter_schema_version: '0.2.0' }
-    expect(() => decodeInspectedPart(view([alien]))).toThrow(/adapter 0\.2\.0/)
+    // ADR/0044 A2.4: 0.2.x is now the KNOWN v2 sketch series, so the
+    // unknown-series fixture moves to 0.3.0 — same guard, same loudness.
+    const alien = { ...SKETCH_RECT, adapter_schema_version: '0.3.0' }
+    expect(() => decodeInspectedPart(view([alien]))).toThrow(/adapter 0\.3\.0/)
+  })
+
+  it('FAILS LOUD on a 0.2.0-stamped sketch carrying a v1 payload (malformed v2)', () => {
+    const impostor = { ...SKETCH_RECT, adapter_schema_version: '0.2.0' }
+    expect(() => decodeInspectedPart(view([impostor]))).toThrow(/v2 sketch feat_0003/)
   })
 
   it('B1: a FOREIGN-engine "sketch" stays GENERIC — payload never interpreted', () => {
@@ -109,7 +116,10 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
   })
 
   it('Codex3-B2: editable catalogues honor the adapter series — a FUTURE fillet/hole stays opaque (no editable params, no throw)', () => {
-    const filletNew = feat({ id: 'feat_0005', feature_type: 'fillet', adapter_schema_version: '0.2.0',
+    // ADR/0044 A2.4 + Codex23 B3: 0.2.x is the v2 SKETCH series — a
+    // mechanical fillet at 0.2.x now REFUSES (covered in the v2 suite); the
+    // future-UNKNOWN-series opaque posture moves to 0.3.0.
+    const filletNew = feat({ id: 'feat_0005', feature_type: 'fillet', adapter_schema_version: '0.3.0',
       parameters: [{ id: 'p1', name: 'radius_mm', value: 2, unit: 'mm' }], adapter_payload: {} })
     const holeNew = feat({ id: 'feat_0006', feature_type: 'hole', adapter_schema_version: '1.0.0',
       parameters: [{ id: 'p2', name: 'diameter_mm', value: 6, unit: 'mm' }], adapter_payload: {} })
@@ -146,7 +156,7 @@ describe('decodeInspectedPart (S2 Codex1 B2 — the version-guarded decoder)', (
     ;((req.sidecar as Record<string, unknown>).object as Record<string, unknown>).type = 'Requirement'
     expect(() => decodeInspectedPart(req)).toThrow(/not a Part/)
     const badExtrude = { ...EXTRUDE, depends_on_feature_ids: [] }
-    expect(() => decodeInspectedPart(view([SKETCH_CONTOUR, badExtrude]))).toThrow(/exactly one sketch/)
+    expect(() => decodeInspectedPart(view([SKETCH_CONTOUR, badExtrude]))).toThrow(/malformed depends_on_feature_ids|names no consumed sketch|exactly one sketch/)
   })
 })
 

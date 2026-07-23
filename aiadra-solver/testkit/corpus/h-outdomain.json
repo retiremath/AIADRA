@@ -1,0 +1,237 @@
+{
+  "anchors": [
+    {
+      "args": [
+        "p1"
+      ],
+      "id": "n01",
+      "kind": "fix"
+    }
+  ],
+  "case_id": "h-outdomain",
+  "constraints": [
+    {
+      "args": [
+        "a1.start",
+        "p3"
+      ],
+      "id": "c01",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a2.end",
+        "p4"
+      ],
+      "id": "c02",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a2.start",
+        "p5"
+      ],
+      "id": "c03",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "a1.end",
+        "p6"
+      ],
+      "id": "c04",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "l1",
+        "a1.start"
+      ],
+      "id": "c05",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l1",
+        "a2.end"
+      ],
+      "id": "c06",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l2",
+        "a2.start"
+      ],
+      "id": "c07",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "l2",
+        "a1.end"
+      ],
+      "id": "c08",
+      "kind": "tangent_at"
+    },
+    {
+      "args": [
+        "a1",
+        "a2"
+      ],
+      "id": "c09",
+      "kind": "equal"
+    },
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "c10",
+      "kind": "horizontal"
+    },
+    {
+      "args": [
+        "a1",
+        "l1"
+      ],
+      "id": "c11",
+      "kind": "equal"
+    }
+  ],
+  "corpus_version": "skb-1",
+  "deliberate_domain_violation": "c11",
+  "dimensions": [
+    {
+      "args": [
+        "p1",
+        "p2"
+      ],
+      "id": "d01",
+      "kind": "distance",
+      "strength": "strong",
+      "value_mm": 60.0
+    },
+    {
+      "args": [
+        "a1"
+      ],
+      "id": "d02",
+      "kind": "radius",
+      "strength": "strong",
+      "value_mm": 10.0
+    }
+  ],
+  "entities": [
+    {
+      "center": "p1",
+      "id": "a1",
+      "nominal": {
+        "end_angle": 270,
+        "radius": 10,
+        "start_angle": 90
+      },
+      "type": "arc"
+    },
+    {
+      "center": "p2",
+      "id": "a2",
+      "nominal": {
+        "end_angle": 90,
+        "radius": 10,
+        "start_angle": 270
+      },
+      "type": "arc"
+    },
+    {
+      "end": "p4",
+      "id": "l1",
+      "start": "p3",
+      "type": "line"
+    },
+    {
+      "end": "p6",
+      "id": "l2",
+      "start": "p5",
+      "type": "line"
+    },
+    {
+      "id": "p1",
+      "nominal": {
+        "x": 0,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p2",
+      "nominal": {
+        "x": 60,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p3",
+      "nominal": {
+        "x": 0,
+        "y": 10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p4",
+      "nominal": {
+        "x": 60,
+        "y": 10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p5",
+      "nominal": {
+        "x": 60,
+        "y": -10
+      },
+      "type": "point"
+    },
+    {
+      "id": "p6",
+      "nominal": {
+        "x": 0,
+        "y": -10
+      },
+      "type": "point"
+    }
+  ],
+  "expected": {
+    "branch_oracle": null,
+    "classification": "rejected",
+    "diagnostics": [
+      {
+        "kind": "out-of-domain",
+        "members": [
+          "c11"
+        ]
+      }
+    ],
+    "dof_strong": null,
+    "ledger": {
+      "anchor_eq": 2,
+      "constraint_eq": 14,
+      "dimension_eq": 2,
+      "entity_dof": 18,
+      "net_count": 0
+    },
+    "residual_max": null,
+    "solved": null,
+    "tolerance": {
+      "angle_deg": 1e-09,
+      "direction": 1e-09,
+      "length_mm": 1e-09
+    },
+    "weak_completion": []
+  },
+  "solver_contract": "skb-c0",
+  "title": "b-slot plus equal(a1,l1): line-arc equal is outside the domain table",
+  "weak_policy": "skb-0"
+}

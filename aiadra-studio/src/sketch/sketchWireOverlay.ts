@@ -47,13 +47,17 @@ export interface SketchWireOverlay {
    *  feature id — a face-bound wire renders through ITS frame; a missing
    *  frame keeps the wire honestly unavailable (never guessed). */
   setSketches(sketches: InspectedSketch[], frames?: ReadonlyMap<string, SketchFrame>): void
+  /** P (arc 20260717-2): the sketchSolicit hover affordance — brighten every
+   *  wire of ONE sketch id (null clears). Display-only, never identity. */
+  setHover(sketchId: string | null): void
   dispose(): void
 }
 
-export function createSketchWireOverlay(color = 0xd9a441): SketchWireOverlay {
+export function createSketchWireOverlay(color = 0xd9a441, hoverColor = 0xffe08a): SketchWireOverlay {
   const group = new THREE.Group()
   group.name = 'sketch-wire-overlay'
   let disposables: { dispose(): void }[] = []
+  let hovered: string | null = null
 
   const clear = () => {
     for (const d of disposables) d.dispose()
@@ -99,6 +103,15 @@ export function createSketchWireOverlay(color = 0xd9a441): SketchWireOverlay {
           group.add(line)
           disposables.push(geom, mat)
         }
+      }
+    },
+    setHover(sketchId) {
+      if (sketchId === hovered) return
+      hovered = sketchId
+      for (const child of group.children) {
+        const ud = child.userData as { sketchFeatureId?: string }
+        const mat = (child as THREE.Line).material as THREE.LineBasicMaterial
+        mat.color.setHex(ud.sketchFeatureId === sketchId ? hoverColor : color)
       }
     },
     dispose() {

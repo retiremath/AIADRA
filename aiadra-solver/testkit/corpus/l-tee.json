@@ -1,0 +1,168 @@
+{
+  "anchors": [
+    {
+      "args": [
+        "p1"
+      ],
+      "id": "n01",
+      "kind": "fix"
+    }
+  ],
+  "case_id": "l-tee",
+  "constraints": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "c01",
+      "kind": "horizontal"
+    },
+    {
+      "args": [
+        "p2",
+        "p3"
+      ],
+      "id": "c02",
+      "kind": "coincident"
+    },
+    {
+      "args": [
+        "l1",
+        "l2"
+      ],
+      "id": "c03",
+      "kind": "perpendicular"
+    },
+    {
+      "args": [
+        "l1",
+        "l2"
+      ],
+      "id": "c04",
+      "kind": "equal"
+    },
+    {
+      "args": [
+        "p5",
+        "l2"
+      ],
+      "id": "c05",
+      "kind": "point_on"
+    }
+  ],
+  "corpus_version": "skb-1",
+  "dimensions": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "d01",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 40.0
+    },
+    {
+      "args": [
+        "p5",
+        "l1"
+      ],
+      "id": "d02",
+      "kind": "distance",
+      "strength": "strong",
+      "value_mm": 25.0
+    }
+  ],
+  "entities": [
+    {
+      "id": "p1",
+      "nominal": {
+        "x": 0,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p2",
+      "nominal": {
+        "x": 40,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p3",
+      "nominal": {
+        "x": 40,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p4",
+      "nominal": {
+        "x": 40,
+        "y": 40
+      },
+      "type": "point"
+    },
+    {
+      "id": "p5",
+      "nominal": {
+        "x": 40,
+        "y": 25
+      },
+      "type": "point"
+    },
+    {
+      "end": "p2",
+      "id": "l1",
+      "start": "p1",
+      "type": "line"
+    },
+    {
+      "end": "p4",
+      "id": "l2",
+      "start": "p3",
+      "type": "line"
+    }
+  ],
+  "expected": {
+    "branch_oracle": null,
+    "classification": "well",
+    "diagnostics": [],
+    "dof_strong": 0,
+    "ledger": {
+      "anchor_eq": 2,
+      "constraint_eq": 6,
+      "dimension_eq": 2,
+      "entity_dof": 10,
+      "net_count": 0
+    },
+    "residual_max": {
+      "angle_deg": 0.0,
+      "direction": 0.0,
+      "length_mm": 0.0
+    },
+    "solved": {
+      "p1.x": 0.0,
+      "p1.y": 0.0,
+      "p2.x": 40.0,
+      "p2.y": 0.0,
+      "p3.x": 40.0,
+      "p3.y": 0.0,
+      "p4.x": 40.0,
+      "p4.y": 40.0,
+      "p5.x": 40.0,
+      "p5.y": 25.0
+    },
+    "tolerance": {
+      "angle_deg": 1e-09,
+      "direction": 1e-09,
+      "length_mm": 1e-09
+    },
+    "weak_completion": []
+  },
+  "solver_contract": "skb-c0",
+  "title": "perpendicular equal-length tee with a point held off the base",
+  "weak_policy": "skb-0"
+}

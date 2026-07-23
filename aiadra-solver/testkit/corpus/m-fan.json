@@ -1,0 +1,219 @@
+{
+  "anchors": [
+    {
+      "args": [
+        "p1"
+      ],
+      "id": "n01",
+      "kind": "fix"
+    }
+  ],
+  "case_id": "m-fan",
+  "constraints": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "c01",
+      "kind": "horizontal"
+    },
+    {
+      "args": [
+        "k1",
+        "l2"
+      ],
+      "id": "c02",
+      "kind": "tangent"
+    },
+    {
+      "args": [
+        "p4",
+        "k1"
+      ],
+      "id": "c03",
+      "kind": "point_on"
+    },
+    {
+      "args": [
+        "p4",
+        "l1"
+      ],
+      "id": "c04",
+      "kind": "point_on"
+    },
+    {
+      "args": [
+        "l1",
+        "l3"
+      ],
+      "id": "c05",
+      "kind": "parallel"
+    },
+    {
+      "args": [
+        "p3",
+        "p5"
+      ],
+      "id": "c06",
+      "kind": "coincident"
+    }
+  ],
+  "corpus_version": "skb-1",
+  "dimensions": [
+    {
+      "args": [
+        "l1"
+      ],
+      "id": "d01",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 50.0
+    },
+    {
+      "args": [
+        "l1",
+        "l2"
+      ],
+      "id": "d02",
+      "kind": "angle",
+      "strength": "strong",
+      "value_deg": 60.0
+    },
+    {
+      "args": [
+        "l2"
+      ],
+      "id": "d03",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 30.0
+    },
+    {
+      "args": [
+        "l3"
+      ],
+      "id": "d04",
+      "kind": "length",
+      "strength": "strong",
+      "value_mm": 20.0
+    }
+  ],
+  "entities": [
+    {
+      "id": "p1",
+      "nominal": {
+        "x": 0,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p2",
+      "nominal": {
+        "x": 50,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p3",
+      "nominal": {
+        "x": 15,
+        "y": 26
+      },
+      "type": "point"
+    },
+    {
+      "id": "p4",
+      "nominal": {
+        "x": 7,
+        "y": 0
+      },
+      "type": "point"
+    },
+    {
+      "id": "p5",
+      "nominal": {
+        "x": 15,
+        "y": 26
+      },
+      "type": "point"
+    },
+    {
+      "id": "p6",
+      "nominal": {
+        "x": 35,
+        "y": 26
+      },
+      "type": "point"
+    },
+    {
+      "end": "p2",
+      "id": "l1",
+      "start": "p1",
+      "type": "line"
+    },
+    {
+      "end": "p3",
+      "id": "l2",
+      "start": "p1",
+      "type": "line"
+    },
+    {
+      "end": "p6",
+      "id": "l3",
+      "start": "p5",
+      "type": "line"
+    },
+    {
+      "center": "p2",
+      "id": "k1",
+      "nominal": {
+        "radius": 43
+      },
+      "type": "circle"
+    }
+  ],
+  "expected": {
+    "branch_oracle": null,
+    "classification": "well",
+    "diagnostics": [],
+    "dof_strong": 0,
+    "ledger": {
+      "anchor_eq": 2,
+      "constraint_eq": 7,
+      "dimension_eq": 4,
+      "entity_dof": 13,
+      "net_count": 0
+    },
+    "residual_max": {
+      "angle_deg": 0.0,
+      "direction": 0.0,
+      "length_mm": 0.0
+    },
+    "solved": {
+      "k1.radius": 43.30127018922193,
+      "p1.x": 0.0,
+      "p1.y": 0.0,
+      "p2.x": 50.0,
+      "p2.y": 0.0,
+      "p3.x": 15.0,
+      "p3.y": 25.980762113533157,
+      "p4.x": 6.698729810778069,
+      "p4.y": 0.0,
+      "p5.x": 15.0,
+      "p5.y": 25.980762113533157,
+      "p6.x": 35.0,
+      "p6.y": 25.980762113533157
+    },
+    "tolerance": {
+      "angle_deg": 1e-09,
+      "direction": 1e-09,
+      "length_mm": 1e-09
+    },
+    "weak_completion": []
+  },
+  "solver_contract": "skb-c0",
+  "title": "60-degree ray, circle tangent to it, intersection point, parallel cap",
+  "weak_policy": "skb-0"
+}

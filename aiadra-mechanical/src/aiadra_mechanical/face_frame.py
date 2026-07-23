@@ -90,29 +90,52 @@ def resolve_face_plane(
             f"current {current_sig!r}). Re-pick the sketch plane."
         )
 
-    topo = topology.extract_part_topology(prefix_features)
     role = plane_record["face_role"]
-    matches = [f for f in topo.faces if f.face_id == role]
-    if not matches:
-        raise TransactionError(
-            f"{op_kind}: the sketch's support face {role!r} no longer exists on the "
-            f"parent solid (stale selection — the producing feature was removed or "
-            f"no longer yields this role). Re-pick the sketch plane."
-        )
-    if len(matches) > 1:
-        raise TransactionError(
-            f"{op_kind}: the sketch's support face role {role!r} is AMBIGUOUS on the "
-            f"parent solid ({len(matches)} faces) — refusing to guess."
-        )
-    match = matches[0]
-    if match.surface_kind != "plane":
-        raise TransactionError(
-            f"{op_kind}: the sketch's support face {role!r} is NOT PLANAR "
-            f"({match.surface_kind}) — a sketch lies on a flat face; pick a "
-            f"planar face or a datum plane."
-        )
+    # A4.5 (Codex5 B4): the LIVE LEDGER is the resolution authority whenever
+    # the prefix carries one — the support face comes from the fold's
+    # propagated roles, never a final-shape re-correlation. The extraction
+    # path remains ONLY for ledgerless prefixes (revolve / rectangle+hole
+    # supports, outside the sequential domain).
+    from . import geometry as _geometry
 
-    surf = BRepAdaptor_Surface(match.face)
+    result = _geometry.evaluate_part_with_provenance(prefix_features)
+    if result.ledger is not None:
+        lmatches = [f for f, r in result.ledger.faces if r == role]
+        if not lmatches:
+            raise TransactionError(
+                f"{op_kind}: the sketch's support face {role!r} no longer exists on the "
+                f"parent solid (stale selection — the producing feature was removed or "
+                f"no longer yields this role). Re-pick the sketch plane."
+            )
+        if len(lmatches) > 1:
+            raise TransactionError(
+                f"{op_kind}: the sketch's support face role {role!r} is AMBIGUOUS on the "
+                f"parent solid ({len(lmatches)} faces) — refusing to guess."
+            )
+        resolved_face = lmatches[0]
+    else:
+        topo = topology.extract_part_topology(prefix_features)
+        matches = [f for f in topo.faces if f.face_id == role]
+        if not matches:
+            raise TransactionError(
+                f"{op_kind}: the sketch's support face {role!r} no longer exists on the "
+                f"parent solid (stale selection — the producing feature was removed or "
+                f"no longer yields this role). Re-pick the sketch plane."
+            )
+        if len(matches) > 1:
+            raise TransactionError(
+                f"{op_kind}: the sketch's support face role {role!r} is AMBIGUOUS on the "
+                f"parent solid ({len(matches)} faces) — refusing to guess."
+            )
+        if matches[0].surface_kind != "plane":
+            raise TransactionError(
+                f"{op_kind}: the sketch's support face {role!r} is NOT PLANAR "
+                f"({matches[0].surface_kind}) — a sketch lies on a flat face; pick a "
+                f"planar face or a datum plane."
+            )
+        resolved_face = matches[0].face
+
+    surf = BRepAdaptor_Surface(resolved_face)
     # Codex7 B2: the resolver INDEPENDENTLY establishes exact OCCT planarity —
     # never trusting only the transported classification (fail closed).
     if surf.GetType() != GeomAbs_Plane:
@@ -124,7 +147,7 @@ def resolve_face_plane(
     pln = surf.Plane()
     ax = pln.Axis().Direction()
     n = (ax.X(), ax.Y(), ax.Z())
-    if match.face.Orientation() == TopAbs_REVERSED:
+    if resolved_face.Orientation() == TopAbs_REVERSED:
         n = (-n[0], -n[1], -n[2])
 
     u_axis: tuple[float, float, float] | None = None

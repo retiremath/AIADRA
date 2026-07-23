@@ -146,7 +146,10 @@ def test_aiadra_core_version_bumped_to_0_15_0():
     1.0/1.1/1.2 compatibility matrix and the standalone-HLR capable set
     {1.1, 1.2}. Additive public behavior → minor bump (prior: 0.14.0,
     arc 20260714-2 EP0 — the empty-Part display state)."""
-    assert aiadra_version == "0.15.0"
+    # 0.17.0: F2b — display contract v1.3 (arc 20260717-2); 0.16.0 was the
+    # D3 per-parameter provenance bundle (v0.29.0). Keep in lockstep with
+    # pyproject — the Studio engine badge reads THIS constant.
+    assert aiadra_version == "0.17.0"
 
 
 # =============================================================================

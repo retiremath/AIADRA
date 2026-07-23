@@ -1,0 +1,2 @@
+ac08b0513a9c9780267910fe2ab8a19219f40ac11f986df0592e3770df77dd2a *build/Release/planegcs.dll
+549e245db929ee14919ad053f5c30c0ec1f2e70d3dec885b43f47f452fa2a42b *build/Release/aiadra_solver.cp312-win_amd64.pyd

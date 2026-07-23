@@ -31,10 +31,12 @@ import {
   INTRINSIC_CSYS_ID,
   INTRINSIC_PLANE_IDS,
   PLANE_LABELS,
+  buildReferenceSketchOps,
   sketchAuthoringGate,
   supportFrame,
   type AuthoringBackend,
 } from './authoring/backend'
+import { createSessionLifecycle } from './authoring/sessionLifecycle'
 import {
   authoringFacts,
   deriveSelectorFacts,
@@ -46,7 +48,7 @@ import {
   type PartContextStore,
 } from './authoring/partContext'
 import { createPendingDisplayCoordinator } from './authoring/pendingDisplay'
-import { buildTreeRows, holeBaseRefusal, revolveSketchRefusal, unconsumedSketches } from './authoring/inspectDecode'
+import { buildTreeRows, eligibleExtrudeSketchIds, holeBaseRefusal, revolveSketchRefusal, unconsumedSketches } from './authoring/inspectDecode'
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { routeSketchPlacement, SketchChrome } from './sketch/SketchChrome'
@@ -430,7 +432,7 @@ function ModelTreePanel({
                 row.depth === 0 &&
                 (() => {
                   const feat = part.features.find((f) => f.id === row.featureId)
-                  const params = feat && feat.kind !== 'sketch' ? feat.parameters : []
+                  const params = feat && feat.kind !== 'sketch' && feat.kind !== 'sketchV2' ? feat.parameters : []
                   if (params.length === 0) return null
                   return (
                     <button
@@ -707,7 +709,7 @@ function Workbench({
         return
       }
       const feat = part.features.find((f) => f.id === featureId)
-      const parameters = feat && feat.kind !== 'sketch' ? feat.parameters : []
+      const parameters = feat && feat.kind !== 'sketch' && feat.kind !== 'sketchV2' ? feat.parameters : []
       if (parameters.length === 0) {
         setShellNote('this feature has no catalogued editable dimensions')
         return
@@ -775,6 +777,26 @@ function Workbench({
           partContext.getSnapshot().generation,
         )
       }
+    } else if (kind === 'references-sketch') {
+      // Gate F2b: the ONE-SHOT v2 references write — no interactive session;
+      // the engine's A2.9 transaction authors atomically and the commit's
+      // display installs through the same transition as every other commit.
+      const target = partFacts.readyPart
+      if (!target) {
+        setShellNote('Commit a Part first (New…) — References adds the v2 construction frame to a Part')
+        return
+      }
+      const lifecycle = createSessionLifecycle(featureBackend)
+      setShellNote('adding the references frame…')
+      void lifecycle.run(buildReferenceSketchOps(target.number), target.number, {
+        onBusy: () => {},
+        onError: (m) => setShellNote(m),
+        onSuccess: (res) => {
+          refreshPartContext(res.display)
+          setPartsRefresh((n) => n + 1)
+          setShellNote(null)
+        },
+      })
     } else if (kind === 'extrude' || kind === 'revolve') {
       // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
       // without a ready context or when the one-base rule already holds.
@@ -784,7 +806,7 @@ function Workbench({
           return
         }
         if (!partFacts.canExtrude) {
-          setShellNote('This Part already has a base creation feature (one per Part in v1)')
+          setShellNote('a sequential extrude consumes a FACE-BOUND sketch — sketch on a face of the body first (or the Part has a revolve base)')
           return
         }
       } else {
@@ -888,7 +910,12 @@ function Workbench({
     let wsId = switcher.current()?.workspaceId ?? null
     if (window.aiadra && wsId === null) {
       const r = await window.aiadra.chooseWorkspace()
-      if (!r.ok) return // chooser cancelled/failed — nothing committed anywhere
+      if (!r.ok) {
+        // Petre 2026-07-24: a REAL refusal (e.g. "not an AIADRA workspace")
+        // must surface — only a user cancel stays silent. Nothing committed.
+        if (r.error.message !== 'cancelled') setShellNote(r.error.message)
+        return
+      }
       const reason = await switcher.adopt(r.result)
       if (reason !== null) {
         setShellNote(reason) // the fresh capability was retired by the switcher
@@ -1053,8 +1080,33 @@ function Workbench({
   // session (Codex3 bar 2 — the store owns pure state; the viewport owns the
   // imperative consequences). Principal frames are TS-known; face frames
   // arrive from the engine in S2/S3.
+  // P (arc 20260717-2): the sketchSolicit ELIGIBLE set — the SAME derivation
+  // the ExtrudePanel greys by (one rule, both consumers): unconsumed, with a
+  // profile, sequential-eligible for the current Part state.
+  const solicitEligibleIds = useMemo<ReadonlySet<string>>(() => {
+    const part = partFacts.readyPart
+    if (
+      authoringSession.mode !== 'extrude'
+      || authoringSession.step !== 'select'
+      || authoringSession.feature !== 'extrude'
+      || !part
+    ) {
+      return new Set<string>()
+    }
+    return eligibleExtrudeSketchIds(part)
+  }, [authoringSession, partFacts.readyPart])
+
   const interactionMode = useMemo<SketchInteractionMode | null>(() => {
     if (authoringSession.mode === 'planePick') return { kind: 'planePick' }
+    if (
+      authoringSession.mode === 'extrude'
+      && authoringSession.step === 'select'
+      && authoringSession.feature === 'extrude'
+    ) {
+      // P: the on-screen sketch pick — the list in the panel stays as the
+      // keyboard/accessibility fallback feeding the same store transition.
+      return { kind: 'sketchSolicit', eligibleIds: solicitEligibleIds }
+    }
     if (authoringSession.mode === 'sketch') {
       return {
         kind: 'sketch',
@@ -1067,7 +1119,7 @@ function Workbench({
       }
     }
     return null
-  }, [authoringSession])
+  }, [authoringSession, solicitEligibleIds])
 
   // A generation change INVALIDATES the whole pick→sketch interaction
   // FAIL-CLOSED (Codex4 B2) — a DISTINCT transition from user Escape/cancel:
@@ -1163,7 +1215,10 @@ function Workbench({
         : (uiGate ?? 'Open an AIADRA workspace folder'),
       onClick: async () => {
         const r = await window.aiadra!.chooseWorkspace()
-        if (!r.ok) return
+        if (!r.ok) {
+          if (r.error.message !== 'cancelled') setShellNote(r.error.message)
+          return
+        }
         const reason = await switchWorkspace(r.result)
         if (reason !== null) setShellNote(reason)
       },
@@ -1212,7 +1267,10 @@ function Workbench({
             onNewPart={requestNew}
             onOpenWorkspace={async () => {
               const r = await window.aiadra!.chooseWorkspace()
-              if (!r.ok) return
+              if (!r.ok) {
+                if (r.error.message !== 'cancelled') setShellNote(r.error.message)
+                return
+              }
               const reason = await switchWorkspace(r.result)
               if (reason !== null) setShellNote(reason)
             }}
@@ -1296,6 +1354,18 @@ function Workbench({
                 onPlanePick={(hit) => {
                   if (hit.kind === 'datum') authoringStore.resolvePlanePick(hit.orientation)
                   else authoringStore.resolvePlanePick({ faceId: hit.faceId, frame: hit.frame })
+                }}
+                onSketchSolicit={(sketchId) => {
+                  // P (Codex1 B3 -> Codex14 B2): terminal REVALIDATION derives
+                  // eligibility from the LIVE inspection state read in THIS
+                  // callback — never a render-captured set. A stale overlay
+                  // click (consumed sketch, advanced Part) does nothing.
+                  const st = authoringStore.getSnapshot()
+                  const partSnap = partContext.getSnapshot()
+                  if (st.mode !== 'extrude' || st.step !== 'select' || st.feature !== 'extrude') return
+                  if (partSnap.inspection.status !== 'ready') return
+                  if (!eligibleExtrudeSketchIds(partSnap.inspection.part).has(sketchId)) return
+                  authoringStore.chooseCommittedSketch(sketchId)
                 }}
                 onSketchPlace={(uv) =>
                   routeSketchPlacement(authoringStore, uv, partContext.getSnapshot().generation)

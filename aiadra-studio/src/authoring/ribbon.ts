@@ -16,7 +16,7 @@
  */
 import type { PartContextState } from './partContext'
 import { authoringFacts, authoringStartRefusal } from './partContext'
-import { holeBaseRefusal, stackingRefusal, type InspectedPart } from './inspectDecode'
+import { eligibleExtrudeSketchIds, holeBaseRefusal, stackingRefusal, type InspectedPart } from './inspectDecode'
 
 export type RibbonGroup =
   | 'Operations'
@@ -150,6 +150,16 @@ const sketchDerive = (i: RibbonInputs): CommandState => {
   return { state: 'working' }
 }
 
+const referencesSketchDerive = (i: RibbonInputs): CommandState => {
+  const gate = gateRefusal(i)
+  if (gate) return { state: 'state-disabled', reason: gate }
+  // The one-shot v2 write commits against a Part on BOTH lanes.
+  if (readyPart(i) === null) {
+    return { state: 'state-disabled', reason: 'Commit a Part first (New…) — References adds the v2 construction frame to a Part' }
+  }
+  return { state: 'working' }
+}
+
 const extrudeDerive = (i: RibbonInputs): CommandState => {
   const gate = gateRefusal(i)
   if (gate) return { state: 'state-disabled', reason: gate }
@@ -157,8 +167,19 @@ const extrudeDerive = (i: RibbonInputs): CommandState => {
   // Codex3 B1.3: BOTH lanes need a ready Part — the base-feature panels
   // require one at commit, so a dev no-Part session would be a dead end.
   if (!part) return { state: 'state-disabled', reason: 'Commit a Part first (New…) — Extrude adds to a Part' }
-  if (part.hasExtrudeBase || part.hasRevolveBase) {
-    return { state: 'state-disabled', reason: 'the Part already has a base creation feature (one per Part in v1)' }
+  // P (arc 20260717-2): the one-base rule is LIFTED for extrudes — the
+  // engine's M thread supports sequential add (boss) and cut (pocket) on a
+  // FACE-BOUND sketch. Revolve bodies stay out of the sequential domain.
+  if (part.hasRevolveBase) {
+    return { state: 'state-disabled', reason: 'the Part has a revolve base — sequential features on a revolve are a later slice' }
+  }
+  if (part.hasExtrudeBase) {
+    if (eligibleExtrudeSketchIds(part).size === 0) {
+      return {
+        state: 'state-disabled',
+        reason: 'a sequential extrude consumes a FACE-BOUND sketch — sketch on a face of the body first',
+      }
+    }
   }
   return { state: 'working' }
 }
@@ -245,6 +266,9 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   { key: 'datum-point', label: 'Point', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-point', 'small', 1, 2) },
   { key: 'datum-csys', label: 'Coordinate System', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-csys', 'small', 2, 0) },
   { key: 'sketch', label: 'Sketch', group: 'Datum', derive: sketchDerive, presentation: P('sketch', 'anchor', 0) },
+  // Gate F2b (ADR/0044 A2): the slice-1 REFERENCES sketch — the first v2
+  // (adapter 0.2.0) writer. One-shot op; needs a READY Part like sketch.
+  { key: 'references-sketch', label: 'References', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 1) },
   // Shapes
   { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
   { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },
