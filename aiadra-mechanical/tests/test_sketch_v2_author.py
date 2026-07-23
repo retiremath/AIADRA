@@ -77,6 +77,118 @@ class TestAuthoringTransaction:
             _author(x=True)  # bools are not numbers anywhere
 
 
+class TestWriterDomainClosesBeforeTheSolver:
+    """Codex26 B1: out-of-domain input never crosses the AIADRA-owned
+    native-library boundary — proven by a sentinel solver that explodes if
+    reached."""
+
+    @pytest.fixture()
+    def _sentinel_solver(self, monkeypatch):
+        from aiadra_mechanical import solver as solver_pkg
+
+        def boom(_case):
+            raise AssertionError("out-of-domain input crossed into the solver")
+
+        monkeypatch.setattr(solver_pkg, "solve", boom)
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("nan"), float("-inf")])
+    def test_non_finite_lengths_refuse_pre_solver(self, _sentinel_solver, bad):
+        with pytest.raises(TransactionError, match="FINITE"):
+            _author(x=bad)
+        with pytest.raises(TransactionError, match="FINITE"):
+            _author(y=bad)
+
+    def test_unknown_axes_refuse_pre_solver(self, _sentinel_solver):
+        with pytest.raises(TransactionError, match="axes must be one of"):
+            _author(axes="bogus")
+
+    def test_face_plane_refuses_pre_solver(self, _sentinel_solver):
+        with pytest.raises(TransactionError, match="PRINCIPAL planes only"):
+            sketch_v2.author_reference_sketch(
+                feature_id="feat_0001", name="r",
+                plane={"kind": "face", "face_role": "feat_0001:face:cap_top",
+                       "resolved_against_topology_signature": "sig"},
+                axes="x", x_axis_mm=20.0, y_axis_mm=20.0,
+                fact_provenance={"category": "human_input"},
+            )
+
+    def test_a_hand_built_face_bound_v2_record_refuses_at_the_shared_validator(self):
+        # every surface (decode/evaluator/signature/display) inherits this —
+        # a face-bound v2 sketch can never become misplaced derived geometry
+        rec = _author(axes="x")
+        payload = dict(rec["adapter_payload"], plane={
+            "kind": "face", "face_role": "feat_0001:face:cap_top",
+            "resolved_against_topology_signature": "sig"})
+        bad = dict(rec, adapter_payload=payload)
+        with pytest.raises(TransactionError, match="PRINCIPAL-plane only"):
+            sketch_v2.validate_v2_sketch_record(bad)
+        with pytest.raises(TransactionError, match="PRINCIPAL-plane only"):
+            display_mod.build_v2_construction([bad])
+
+
+class TestAllPrincipalOrientations:
+    """Codex26 B1: the writer supports xy/yz/zx and the display maps each
+    to the correct WORLD axes (the engine _FRAME_AXES table)."""
+
+    @pytest.mark.parametrize("ori,px_world,py_world", [
+        ("xy", [20.0, 0.0, 0.0], [0.0, 20.0, 0.0]),
+        ("yz", [0.0, 20.0, 0.0], [0.0, 0.0, 20.0]),
+        ("zx", [0.0, 0.0, 20.0], [20.0, 0.0, 0.0]),
+    ])
+    def test_world_mapping_per_orientation(self, ori, px_world, py_world):
+        rec = sketch_v2.author_reference_sketch(
+            feature_id="feat_0001", name="r",
+            plane={"kind": "principal", "orientation": ori},
+            axes="xy", x_axis_mm=20.0, y_axis_mm=20.0,
+            fact_provenance={"category": "human_input"},
+        )
+        (item,) = display_mod.build_v2_construction([rec])
+        pts = {p["id"]: p["at"] for p in item["points"]}
+        assert pts["skp_0002"] == px_world
+        assert pts["skp_0003"] == py_world
+
+
+class TestCoreWireExactness:
+    """Codex26 B2: the BRIDGE output (engine dict → Core validation →
+    to_dict) is the contract Studio consumes — every declared member
+    survives, and the validator accepts nothing outside the TS shape."""
+
+    def _payload(self):
+        rec = _author()
+        return display_mod._no_solid_display(
+            [rec], object_uuid="u-1", object_number="P-1",
+            geometry_ref="sha256:" + "0" * 64, cache_key="ck",
+            linear_deflection_mm=0.1, angular_deflection_rad=0.3,
+        )
+
+    def test_round_trip_preserves_every_member(self):
+        from aiadra_core.protocol.display import DisplayRepresentation
+
+        payload = self._payload()
+        wire = DisplayRepresentation.from_engine_dict(payload).to_dict()
+        (item,) = wire["v2_construction"]
+        assert item["construction"] is True  # the field that used to vanish
+        assert item["shape"] == "G2"
+        assert {p["id"] for p in item["points"]} == {"skp_0001", "skp_0002", "skp_0003"}
+        assert {ln["id"] for ln in item["lines"]} == {"skp_0004", "skp_0005"}
+
+    @pytest.mark.parametrize("mutate,pattern", [
+        (lambda i: i.pop("construction"), "literal construction"),
+        (lambda i: i.update(construction="yes"), "literal construction"),
+        (lambda i: i.update(shape="bogus"), "G0|G1|G2"),
+        (lambda i: i.pop("lines"), "requires points\\[\\] and lines\\[\\]"),
+        (lambda i: i.pop("points"), "requires points\\[\\] and lines\\[\\]"),
+    ])
+    def test_negative_fixtures_refuse(self, mutate, pattern):
+        from aiadra_core.protocol.display import (
+            DisplayContractError, DisplayRepresentation)
+
+        payload = self._payload()
+        mutate(payload["v2_construction"][0])
+        with pytest.raises(DisplayContractError, match=pattern):
+            DisplayRepresentation.from_engine_dict(payload)
+
+
 class TestRegeneration:
     def test_read_lifecycle_returns_derived_solved(self):
         rec = _author()

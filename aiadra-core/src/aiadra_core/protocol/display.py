@@ -281,10 +281,14 @@ class V2ConstructionSketch:
     """v1.3 (Gate F2b): the SOLVED construction geometry of one v2
     constrained sketch — the engine's A2.9 read-lifecycle output. Derived
     display data (never Truth), identity-bound to THIS package by
-    containment, exactly like `SketchFrame`."""
+    containment, exactly like `SketchFrame`. Codex26 B2: the THREE surfaces
+    (engine, this validator, Studio) recite ONE exact member set — the
+    bridge's `to_dict()` output is the contract Studio consumes, so every
+    declared field survives the wire."""
 
     sketch_feature_id: str
     shape: str
+    construction: bool
     points: tuple[V2ConstructionPoint, ...]
     lines: tuple[V2ConstructionLine, ...]
 
@@ -321,9 +325,22 @@ def _validate_v2_construction(raw: Any, version: str) -> tuple[V2ConstructionSke
                 "v2_construction entries need unique non-empty sketch_feature_id"
             )
         seen.add(sid)
+        # Codex26 B2: the shape is CLOSED (the skb-b0 admitted universe),
+        # `construction` is a REQUIRED literal true, and the arrays are
+        # required MEMBERS — absence never defaults to empty.
         shape = item.get("shape")
-        if not isinstance(shape, str) or not shape:
-            raise DisplayContractError(f"v2_construction {sid!r} lacks its shape")
+        if shape not in ("G0", "G1", "G2"):
+            raise DisplayContractError(
+                f"v2_construction {sid!r} shape must be G0|G1|G2, got {shape!r}"
+            )
+        if item.get("construction") is not True:
+            raise DisplayContractError(
+                f"v2_construction {sid!r} requires literal construction: true"
+            )
+        if not (isinstance(item.get("points"), list) and isinstance(item.get("lines"), list)):
+            raise DisplayContractError(
+                f"v2_construction {sid!r} requires points[] and lines[] members"
+            )
         points = []
         pt_ids: set[str] = set()
         for p in item.get("points", []):
@@ -349,7 +366,7 @@ def _validate_v2_construction(raw: Any, version: str) -> tuple[V2ConstructionSke
                 a=_finite3(ln.get("a"), f"line {ln['id']!r} a"),
                 b=_finite3(ln.get("b"), f"line {ln['id']!r} b")))
         out.append(V2ConstructionSketch(
-            sketch_feature_id=sid, shape=shape,
+            sketch_feature_id=sid, shape=shape, construction=True,
             points=tuple(points), lines=tuple(lines)))
     return tuple(out)
 

@@ -125,9 +125,37 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
     // DETERMINISTIC for G0/G1/G2 (the engine derives them through the real
     // solver; the mock mirrors the known result — the same honesty posture
     // as every other mock record).
-    const axes = (params.axes as string) ?? 'xy'
-    const x = (params.x_axis_mm as number) ?? 20.0
-    const y = (params.y_axis_mm as number) ?? 20.0
+    // Codex26 B1 → Codex27 B1: the mock speaks the REAL writer's domain —
+    // and ABSENCE is not NULL: a default applies only when the member is
+    // absent; an explicit null (or any other invalid shape) REFUSES exactly
+    // like the engine handler's params.get(key, default). Nothing collapses
+    // into another valid graph.
+    const axes = 'axes' in params ? (params.axes as unknown) : 'xy'
+    if (axes !== 'none' && axes !== 'x' && axes !== 'xy') {
+      throw new Error(`mock: add_reference_sketch axes must be 'none'|'x'|'xy', got ${JSON.stringify(axes)}`)
+    }
+    const x = 'x_axis_mm' in params ? (params.x_axis_mm as unknown) : 20.0
+    const y = 'y_axis_mm' in params ? (params.y_axis_mm as unknown) : 20.0
+    for (const [label, v] of [['x_axis_mm', x], ['y_axis_mm', y]] as const) {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+        throw new Error(`mock: add_reference_sketch ${label} must be a strictly positive finite number`)
+      }
+    }
+    const planeParam = ('plane' in params
+      ? params.plane
+      : { kind: 'principal', orientation: 'xy' }) as Record<string, unknown> | null
+    const pOri = planeParam !== null && typeof planeParam === 'object' ? planeParam.orientation : undefined
+    if (
+      planeParam === null ||
+      typeof planeParam !== 'object' ||
+      planeParam.kind !== 'principal' ||
+      (pOri !== 'xy' && pOri !== 'yz' && pOri !== 'zx') ||
+      Object.keys(planeParam).length !== 2
+    ) {
+      throw new Error("mock: add_reference_sketch plane must be exactly {kind:'principal', orientation:'xy'|'yz'|'zx'} (face-bound v2 references refuse in F2b)")
+    }
+    const xN = x as number
+    const yN = y as number
     const entities: Record<string, unknown>[] = [
       { id: 'skp_0001', type: 'point', construction: true, nominal: { x: 0.0, y: 0.0 } },
     ]
@@ -144,16 +172,16 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       origin: { category: 'computed_result', policy: 'skb-0', solver_contract: 'skb-c0' },
     })
     if (axes === 'x' || axes === 'xy') {
-      entities.push({ id: 'skp_0002', type: 'point', construction: true, nominal: { x, y: 0.0 } })
+      entities.push({ id: 'skp_0002', type: 'point', construction: true, nominal: { x: xN, y: 0.0 } })
       entities.push({ id: 'skp_0004', type: 'line', construction: true, start: 'skp_0001', end: 'skp_0002' })
       constraints.push({ id: 'c02', kind: 'horizontal', args: ['skp_0004'] })
-      weak.push(mkWeak(1, 'skp_0002', 'x', x))
+      weak.push(mkWeak(1, 'skp_0002', 'x', xN))
     }
     if (axes === 'xy') {
-      entities.push({ id: 'skp_0003', type: 'point', construction: true, nominal: { x: 0.0, y } })
+      entities.push({ id: 'skp_0003', type: 'point', construction: true, nominal: { x: 0.0, y: yN } })
       entities.push({ id: 'skp_0005', type: 'line', construction: true, start: 'skp_0001', end: 'skp_0003' })
       constraints.push({ id: 'c03', kind: 'vertical', args: ['skp_0005'] })
-      weak.push(mkWeak(2, 'skp_0003', 'y', y))
+      weak.push(mkWeak(2, 'skp_0003', 'y', yN))
     }
     return {
       id,
@@ -165,7 +193,7 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
         solver_contract: 'skb-c0',
         weak_policy: 'skb-0',
         branch_policy: 'skb-b0',
-        plane: (params.plane as Record<string, unknown>) ?? { kind: 'principal', orientation: 'xy' },
+        plane: planeParam,
         entities,
         constraints,
         dimensions: [],
@@ -414,17 +442,23 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
   ): Array<Record<string, unknown>> => {
     const committed = parts.get(partNumber)?.features ?? []
     const out: Array<Record<string, unknown>> = []
+    // Codex26 B1: the (u, v) → world mapping follows the sketch's principal
+    // ORIENTATION — the exact engine _FRAME_AXES table (xy: u=X,v=Y ·
+    // yz: u=Y,v=Z · zx: u=Z,v=X), never a hardcoded world XY.
+    const toWorld = (ori: string, u: number, v: number): [number, number, number] =>
+      ori === 'yz' ? [0, u, v] : ori === 'zx' ? [v, 0, u] : [u, v, 0]
     for (const f of [...committed, ...pending]) {
       const asv = f.adapter_schema_version
       if (typeof asv !== 'string' || !asv.startsWith('0.2.')) continue
       const payload = (f.adapter_payload ?? {}) as Record<string, unknown>
+      const ori = ((payload.plane as Record<string, unknown> | undefined)?.orientation as string) ?? 'xy'
       const pts = new Map<string, [number, number, number]>()
       const points: Array<Record<string, unknown>> = []
       const lines: Array<Record<string, unknown>> = []
       for (const e of (payload.entities as Array<Record<string, unknown>>) ?? []) {
         if (e.type === 'point') {
           const nom = e.nominal as { x: number; y: number }
-          const at: [number, number, number] = [nom.x, nom.y, 0]
+          const at: [number, number, number] = toWorld(ori, nom.x, nom.y)
           pts.set(e.id as string, at)
           points.push({ id: e.id, at })
         }

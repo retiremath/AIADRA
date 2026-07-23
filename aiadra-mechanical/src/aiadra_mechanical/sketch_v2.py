@@ -116,7 +116,20 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
     if ids != want:
         _fail(f"contract ids {ids!r} != the supported {want!r}")
 
-    validate_plane_record(payload["plane"], op_kind=_OP)
+    # (validate_plane_record returns the orientation for principal records
+    # and the literal "face" for face records.)
+    plane_kind = validate_plane_record(payload["plane"], op_kind=_OP)
+    # Codex26 B1: a structurally-valid FACE plane on a v2 record refuses at
+    # the shared validator — every surface (encode, decode, evaluator,
+    # signature, display) inherits the refusal, so a face-bound v2 sketch
+    # can never survive into misplaced derived geometry. The lift arrives
+    # with the resolved-frame display lifecycle, not before.
+    if plane_kind == "face":
+        _fail(
+            f"sketch {record.get('id')!r} carries a face-bound plane — "
+            "v2 sketches are PRINCIPAL-plane only in F2b (the face-bound "
+            "resolved-frame display lifecycle is not yet implemented)"
+        )
 
     for name in ("entities", "constraints", "dimensions", "references",
                  "weak_completion", "witnesses"):
@@ -279,11 +292,28 @@ def author_reference_sketch(*, feature_id: str, name: str,
     ONE validated record. Every failure raises before anything exists —
     the caller stages atomically or not at all.
     """
+    # Codex26 B1: the EXACT operation domain closes BEFORE anything reaches
+    # the native solver — strict FINITE positive lengths (a bool or an
+    # infinity never crosses the AIADRA-owned library boundary) and a
+    # closed PRINCIPAL plane record (face-bound v2 references refuse until
+    # their resolved-frame display lifecycle exists; all three principal
+    # orientations are supported and world-mapping-tested).
     if axes not in _AXES_SHAPES:
         _fail(f"axes must be one of {sorted(_AXES_SHAPES)}, got {axes!r}")
+    import math as _math
+
     for label, v in (("x_axis_mm", x_axis_mm), ("y_axis_mm", y_axis_mm)):
-        if not (type(v) in (int, float) and v > 0.0):
-            _fail(f"{label} must be a strictly positive number, got {v!r}")
+        if not (type(v) in (int, float) and _math.isfinite(v) and v > 0.0):
+            _fail(f"{label} must be a strictly positive FINITE number, got {v!r}")
+    # validate_plane_record returns the ORIENTATION for a principal record
+    # and the literal "face" for a face record.
+    plane_kind = validate_plane_record(plane, op_kind=_OP)
+    if plane_kind == "face":
+        _fail(
+            "the F2b references writer authors on PRINCIPAL planes only "
+            "(xy/yz/zx); a face-bound plane refuses — face-bound v2 "
+            "references arrive with their resolved-frame display lifecycle"
+        )
 
     entities: list[dict[str, Any]] = [
         {"id": "skp_0001", "type": "point", "construction": True,

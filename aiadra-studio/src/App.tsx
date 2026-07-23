@@ -36,7 +36,7 @@ import {
   supportFrame,
   type AuthoringBackend,
 } from './authoring/backend'
-import { createSessionLifecycle } from './authoring/sessionLifecycle'
+import { createOneShotRunner } from './authoring/oneShotRun'
 import {
   authoringFacts,
   deriveSelectorFacts,
@@ -580,7 +580,14 @@ function Workbench({
   // targeted-but-not-ready Part context — ONE policy for the ribbon, the AI
   // session, and New/commit starts. Navigation (workspace open/close, Part
   // rows) stays on uiGate so a targeted `error` never blocks recovery.
-  const authoringGate = uiGate ?? authoringStartRefusal(pc)
+  // Codex26 B3: the one-shot references commit participates in the GLOBAL
+  // authoring gate — while it runs, every authoring start refuses with a
+  // named reason (single-flight is enforced in the runner too).
+  const [refsBusy, setRefsBusy] = useState(false)
+  const authoringGate =
+    (refsBusy ? 'the references commit is still running — wait for it to finish' : null) ??
+    uiGate ??
+    authoringStartRefusal(pc)
   // The inspect lane, bound to an EXPLICIT workspaceId (never a render-time
   // closure — commit-at-New adopts a workspace mid-flight): desktop = the
   // capability-checked bridge inspect; browser dev = the mock's honest mirror.
@@ -778,25 +785,47 @@ function Workbench({
         )
       }
     } else if (kind === 'references-sketch') {
-      // Gate F2b: the ONE-SHOT v2 references write — no interactive session;
-      // the engine's A2.9 transaction authors atomically and the commit's
-      // display installs through the same transition as every other commit.
+      // Gate F2b (Codex26 B3): the ONE-SHOT v2 references write through the
+      // PERSISTENT runner — single-flight, no-orphan on a failed commit,
+      // and a terminal generation guard (a stale result never installs
+      // into a moved-on context; the commit itself is real Truth either way).
       const target = partFacts.readyPart
       if (!target) {
         setShellNote('Commit a Part first (New…) — References adds the v2 construction frame to a Part')
         return
       }
-      const lifecycle = createSessionLifecycle(featureBackend)
-      setShellNote('adding the references frame…')
-      void lifecycle.run(buildReferenceSketchOps(target.number), target.number, {
-        onBusy: () => {},
-        onError: (m) => setShellNote(m),
+      const startCtx = partContext.getSnapshot()
+      const startGen = startCtx.generation
+      const startWs = switcher.current()?.workspaceId ?? null
+      const started = referencesRunner.start(buildReferenceSketchOps(target.number), target.number, {
+        isStale: () => {
+          const live = partContext.getSnapshot()
+          const liveWs = switcher.current()?.workspaceId ?? null
+          return live.generation !== startGen || liveWs !== startWs
+        },
+        onError: (m) => {
+          setRefsBusy(false)
+          setShellNote(m)
+        },
+        onStaleSuccess: (ref) => {
+          setRefsBusy(false)
+          setShellNote(`references committed to ${ref}, but the context changed — reopen it to see the frame`)
+        },
         onSuccess: (res) => {
-          refreshPartContext(res.display)
+          setRefsBusy(false)
+          refreshPartContext(res.display as Parameters<typeof refreshPartContext>[0])
           setPartsRefresh((n) => n + 1)
           setShellNote(null)
         },
       })
+      // Codex27 B3: a REJECTED duplicate must not clear the accepted run's
+      // busy publication — only a STARTED run owns the gate.
+      if (!started) {
+        setShellNote('the references commit is still running — wait for it to finish')
+        return
+      }
+      setRefsBusy(true)
+      setShellNote('adding the references frame…')
     } else if (kind === 'extrude' || kind === 'revolve') {
       // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
       // without a ready context or when the one-base rule already holds.
@@ -1015,6 +1044,10 @@ function Workbench({
     if (lane === 'unavailable') return createUnavailableBackend()
     return createMockAuthoringBackend()
   }, [currentWs])
+  // Codex26 B3: ONE persistent one-shot runner per backend — never a
+  // per-click lifecycle (which would orphan a retained failed session and
+  // defeat single-flight).
+  const referencesRunner = useMemo(() => createOneShotRunner(featureBackend), [featureBackend])
   // The stable handle the inspect fetcher reads (the mock lane's honest
   // `inspectRaw` mirror lives on the instance).
   const featureBackendRef = useRef(featureBackend)

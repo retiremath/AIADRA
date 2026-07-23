@@ -531,3 +531,51 @@ describe('Codex14 — the real sequential graph shape + mock honesty', () => {
     expect(sim.message).toMatch(/BASE top cap only.*desktop app|real engine lane/)
   })
 })
+
+describe('the mock references domain — the REAL writer’s language (Codex27 B1)', () => {
+  const REF = (params: Record<string, unknown>) => [
+    { kind: 'create_part', params: { number: 'P-77', name: 'Ref' } },
+    { kind: 'mechanical.add_reference_sketch', params: { part_number: 'P-77', ...params } },
+  ]
+
+  it('omitted optionals take the engine defaults (G2, 20mm, xy)', async () => {
+    const mock = createMockAuthoringBackend()
+    const s = await mock.begin(REF({}))
+    const res = await mock.commit(s.sessionId, 'P-77')
+    const d = (await res.display.getDisplay()) as unknown as {
+      v2_construction?: Array<{ shape: string; points: Array<{ id: string; at: number[] }> }>
+    }
+    expect(d.v2_construction?.[0].shape).toBe('G2')
+  })
+
+  it.each([
+    ['explicit null axes', { axes: null }],
+    ['unknown axes', { axes: 'diagonal' }],
+    ['explicit null length', { x_axis_mm: null }],
+    ['non-finite length', { y_axis_mm: Infinity }],
+    ['boolean length', { x_axis_mm: true }],
+    ['explicit null plane', { plane: null }],
+    ['face plane', { plane: { kind: 'face', target_face_id: 'f' } }],
+    ['extra-key principal plane', { plane: { kind: 'principal', orientation: 'xy', extra: 1 } }],
+    ['unknown orientation', { plane: { kind: 'principal', orientation: 'ab' } }],
+  ])('%s REFUSES — absence is not null; nothing collapses into a valid graph', async (_l, params) => {
+    const mock = createMockAuthoringBackend()
+    await expect(mock.begin(REF(params))).rejects.toThrow(/add_reference_sketch/)
+  })
+
+  it.each([
+    ['xy', [20, 0, 0], [0, 20, 0]],
+    ['yz', [0, 20, 0], [0, 0, 20]],
+    ['zx', [0, 0, 20], [20, 0, 0]],
+  ])('display maps (u,v) → world by ORIENTATION %s (the engine _FRAME_AXES table)', async (ori, px, py) => {
+    const mock = createMockAuthoringBackend()
+    const s = await mock.begin(REF({ plane: { kind: 'principal', orientation: ori } }))
+    const res = await mock.commit(s.sessionId, 'P-77')
+    const d = (await res.display.getDisplay()) as unknown as {
+      v2_construction?: Array<{ points: Array<{ id: string; at: number[] }> }>
+    }
+    const pts = new Map(d.v2_construction?.[0].points.map((p) => [p.id, p.at]))
+    expect(pts.get('skp_0002')).toEqual(px)
+    expect(pts.get('skp_0003')).toEqual(py)
+  })
+})
