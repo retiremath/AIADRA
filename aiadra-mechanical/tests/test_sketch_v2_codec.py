@@ -100,8 +100,10 @@ class TestRecordRefusals:
             sketch_v2.validate_v2_sketch_record(rec)
 
     def test_unknown_v2_minor_refuses(self):
-        rec = _record(adapter_schema_version="0.2.1")
-        with pytest.raises(TransactionError, match="0.2.0"):
+        # 0.2.1 became a DEFINED writer version (ADR/0044 A3) — the unknown
+        # minor moves up; the refusal law is unchanged.
+        rec = _record(adapter_schema_version="0.2.2")
+        with pytest.raises(TransactionError, match="unknown 0.2.x minor"):
             sketch_v2.validate_v2_sketch_record(rec)
 
     def test_missing_and_unknown_payload_keys_refuse(self):

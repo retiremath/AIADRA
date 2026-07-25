@@ -35,6 +35,7 @@ def register(registrar: "NativeEngineRegistrar") -> None:
         handle_add_revolve_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
+        handle_redefine_sketch_placement,
         handle_remove_feature,
     )
 
@@ -42,6 +43,9 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     # Gate F2b (ADR/0044 A2, arc 20260717-2): the FIRST v2 (adapter 0.2.0)
     # writer — the slice-1 references sketch (fixed origin + directed axes).
     registrar.add_operation("mechanical.add_reference_sketch", handle_add_reference_sketch)
+    # ADR/0044 A3 (arc 20260725-2, pass sketch-place-1; Petre's SP-06 ruling):
+    # the 0.2.1 placement redefine — the strict minimal-delta edit.
+    registrar.add_operation("mechanical.redefine_sketch_placement", handle_redefine_sketch_placement)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
     # First non-referencing CREATION feature since extrude — ADR/0037 D8 (arc 20260622-4).
     registrar.add_operation("mechanical.add_revolve_feature", handle_add_revolve_feature)

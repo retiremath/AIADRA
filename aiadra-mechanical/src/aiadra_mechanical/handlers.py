@@ -199,26 +199,54 @@ def handle_add_reference_sketch(context: "NativeEngineContext", params: dict[str
     persisted anywhere in this path."""
     part_number = _require_param(params, "part_number", str, "mechanical.add_reference_sketch")
     axes = params.get("axes", "xy")
-    plane = params.get("plane", {"kind": "principal", "orientation": "xy"})
     x_axis_mm = params.get("x_axis_mm", 20.0)
     y_axis_mm = params.get("y_axis_mm", 20.0)
+
+    # ADR/0044 A3.6.1 (pass sketch-place-1): the EXPLICIT version
+    # discriminator — presence of `placement` selects the 0.2.1 writer;
+    # absence (incl. the historical `plane` input and bare {part_number})
+    # is the LEGACY lane and writes byte-identical 0.2.0 forever. Mixing
+    # the two vocabularies refuses; nothing dispatches on silent omission.
+    has_placement = "placement" in params
+    if has_placement and "plane" in params:
+        raise TransactionError(
+            "mechanical.add_reference_sketch: `plane` (the legacy 0.2.0 "
+            "lane) and `placement` (the 0.2.1 lane) are mutually exclusive "
+            "— one explicit lane per call (A3.6.1)"
+        )
 
     part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
 
     feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
     geom_id = _next_id(sidecar.get("geometry_ref", []), prefix="geom_")
 
-    from .sketch_v2 import author_reference_sketch
+    provenance = {"category": _provenance_category_for_actor(context.actor)}
+    if has_placement:
+        from .sketch_v2 import author_reference_sketch_placed
 
-    feature_record = author_reference_sketch(
-        feature_id=feature_id,
-        name=f"references_{feature_id}",
-        plane=plane,
-        axes=axes,
-        x_axis_mm=x_axis_mm,
-        y_axis_mm=y_axis_mm,
-        fact_provenance={"category": _provenance_category_for_actor(context.actor)},
-    )
+        feature_record = author_reference_sketch_placed(
+            feature_id=feature_id,
+            name=f"references_{feature_id}",
+            placement_input=params["placement"],
+            axes=axes,
+            x_axis_mm=x_axis_mm,
+            y_axis_mm=y_axis_mm,
+            fact_provenance=provenance,
+        )
+    else:
+        plane = params.get("plane", {"kind": "principal", "orientation": "xy"})
+
+        from .sketch_v2 import author_reference_sketch
+
+        feature_record = author_reference_sketch(
+            feature_id=feature_id,
+            name=f"references_{feature_id}",
+            plane=plane,
+            axes=axes,
+            x_axis_mm=x_axis_mm,
+            y_axis_mm=y_axis_mm,
+            fact_provenance=provenance,
+        )
 
     sidecar = copy.deepcopy(sidecar)
     sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
@@ -241,6 +269,131 @@ def handle_add_reference_sketch(context: "NativeEngineContext", params: dict[str
         "rationale": f"add v2 reference sketch {feature_id} (shape axes={axes})",
         "feature_delta": {"added": [copy.deepcopy(feature_record)]},
         "geometry_ref_delta": {"added": [copy.deepcopy(geom_record)]},
+    })
+
+
+def handle_redefine_sketch_placement(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    """ADR/0044 A3.6.2 (pass sketch-place-1; Petre's SP-06 ruling): re-place
+    an EXISTING 0.2.1 sketch — the strict minimal-delta transaction.
+
+    Omitted placement members KEEP their current persisted values (edit
+    semantics, deliberately distinct from creation's defaults). Every
+    non-placement field is preserved byte-for-byte; the frame-only invariant
+    holds (the re-solve's weak completion must EQUAL the committed set); an
+    effective no-op refuses BEFORE staging; failure leaves no delta.
+    """
+    _op = "mechanical.redefine_sketch_placement"
+    part_number = _require_param(params, "part_number", str, _op)
+    sketch_feature_id = _require_param(params, "sketch_feature_id", str, _op)
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    # A3.6.2 step 1 — target resolution FIRST; every wrong-target case
+    # refuses before any solver invocation.
+    matches = [i for i, f in enumerate(sidecar.get("feature", []))
+               if f.get("id") == sketch_feature_id]
+    if len(matches) != 1:
+        raise TransactionError(
+            f"{_op}: feature {sketch_feature_id!r} "
+            f"{'not found' if not matches else 'is ambiguous'} on Part {part_number}"
+        )
+    target = sidecar["feature"][matches[0]]
+    asv = target.get("adapter_schema_version")
+    if target.get("feature_type") != "sketch" or target.get("engine") != "mechanical":
+        raise TransactionError(
+            f"{_op}: feature {sketch_feature_id!r} is not a mechanical sketch"
+        )
+    from .sketch_v2 import SKETCH_V21_ADAPTER_VERSION, regenerate_v2_sketch
+
+    if asv == "0.2.0":
+        raise TransactionError(
+            f"{_op}: sketch-placement-redefine-v020 — feature "
+            f"{sketch_feature_id!r} is a 0.2.0 record; its frame is immortal "
+            "history (A3.1). Redefine applies to 0.2.1 placed sketches only; "
+            "a cross-version rewrite is deliberately not opened in BS-1"
+        )
+    if asv != SKETCH_V21_ADAPTER_VERSION:
+        raise TransactionError(
+            f"{_op}: feature {sketch_feature_id!r} carries adapter version "
+            f"{asv!r}; redefine targets literal {SKETCH_V21_ADAPTER_VERSION!r} only"
+        )
+
+    # A3.6.2 step 2 — overlay the provided members on the CURRENT placement
+    # (omission keeps; explicit null/malformed refuses via validation).
+    current = dict(target["adapter_payload"]["placement"])
+    candidate = copy.deepcopy(current)
+    provided = False
+    for member in ("support", "orientation_ref", "orientation", "normal_side"):
+        if member in params:
+            candidate[member] = copy.deepcopy(params[member])
+            provided = True
+
+    from .sketch_placement import derive_frame, validate_placement_record
+
+    def _pfail(reason: str) -> None:
+        raise TransactionError(f"{_op}: {reason}")
+
+    validate_placement_record(candidate, _pfail)
+    derive_frame(candidate, _pfail)
+
+    # A3.6.2 step 6 — the effective no-change case refuses BEFORE staging:
+    # nothing is ever minted for a no-op.
+    if not provided or candidate == current:
+        raise TransactionError(
+            f"{_op}: sketch-placement-unchanged — the "
+            f"{'request names no members' if not provided else 'provided members equal the current placement'}; "
+            "no recipe, event, or geometry projection is minted for a no-op"
+        )
+
+    # A3.6.2 steps 3+4 — the minimal delta: ONLY placement changes; the
+    # frame-only invariant runs through the read lifecycle (regeneration
+    # validates the committed weak completion EQUALS the derivation — a
+    # placement edit can never alter local graph semantics). Original
+    # fact_provenance is preserved (step 5): old geometry is never
+    # relabeled; the redefine actor rides the EVENT.
+    updated_feature = copy.deepcopy(target)
+    updated_feature["adapter_payload"]["placement"] = copy.deepcopy(candidate)
+    regenerate_v2_sketch(updated_feature)
+
+    sidecar = copy.deepcopy(sidecar)
+    sidecar["feature"][matches[0]] = copy.deepcopy(updated_feature)
+
+    _gate_validity(context, sidecar["feature"])
+
+    # A4.7 discipline: re-stage every authoring_geometry output whose head
+    # closure contains the redefined feature (the construction sketch's own
+    # projection re-derives in the new frame).
+    updated_geoms: list[dict[str, Any]] = []
+    for i, g in enumerate(sidecar.get("geometry_ref", [])):
+        if g.get("role") != "authoring_geometry":
+            continue
+        head = _geom_head(g)
+        if head is None:
+            continue
+        closure = body_history.dependency_closure(sidecar["feature"], head)
+        if sketch_feature_id not in closure:
+            continue
+        new_ref, proj = _project_and_stage(context, sidecar["feature"], head)
+        updated = copy.deepcopy(g)
+        updated.update(_geom_fields_from_projection(new_ref, proj))
+        sidecar["geometry_ref"][i] = copy.deepcopy(updated)
+        updated_geoms.append(updated)
+    if not updated_geoms:
+        raise TransactionError(
+            f"{_op}: no authoring_geometry geom_ref found depending on "
+            f"feature {sketch_feature_id!r} on Part {part_number}"
+        )
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": f"redefine placement of {sketch_feature_id}",
+        # A3.6.2 step 5 — the NEW placement facts' provenance rides the
+        # event; the feature's original provenance/history is untouched.
+        "placement_provenance": {"category": _provenance_category_for_actor(context.actor)},
+        "feature_delta": {"updated": [{"id": sketch_feature_id,
+                                       "new_record": copy.deepcopy(updated_feature)}]},
+        "geometry_ref_delta": {"updated": [copy.deepcopy(g) for g in updated_geoms]},
     })
 
 

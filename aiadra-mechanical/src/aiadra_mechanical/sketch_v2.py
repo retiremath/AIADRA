@@ -41,6 +41,10 @@ from .solver import branch_policy
 from .solver.contract import SOLVER_CONTRACT, WEAK_POLICY
 
 SKETCH_V2_ADAPTER_VERSION = "0.2.0"
+# ADR/0044 A3 (arc 20260725-2, pass sketch-place-1): the placement writer.
+# 0.2.0 is IMMORTAL (A3.1) — its shape, semantics, bytes, and hashes never
+# change; 0.2.1 replaces `plane` with the 4-member `placement` record.
+SKETCH_V21_ADAPTER_VERSION = "0.2.1"
 SKETCH_MODEL_V2 = 2
 
 _OP = "mechanical.sketch_v2"
@@ -50,6 +54,7 @@ _PAYLOAD_KEYS = {
     "plane", "entities", "constraints", "dimensions", "references",
     "weak_completion", "witnesses",
 }
+_PAYLOAD_KEYS_021 = (_PAYLOAD_KEYS - {"plane"}) | {"placement"}
 
 
 def _fail(reason: str) -> None:
@@ -90,23 +95,28 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
             f"defined 0.2 semantics (ADR/0044 A2.4) — refuse"
         )
     version = record.get("adapter_schema_version")
-    if version != SKETCH_V2_ADAPTER_VERSION:
+    if version not in (SKETCH_V2_ADAPTER_VERSION, SKETCH_V21_ADAPTER_VERSION):
         _fail(
-            f"sketch {record.get('id')!r} carries {version!r}; the only "
-            f"defined v2 writer version is {SKETCH_V2_ADAPTER_VERSION!r} "
-            "(an unknown 0.2.x minor refuses rather than guessing)"
+            f"sketch {record.get('id')!r} carries {version!r}; the defined "
+            f"v2 writer versions are {SKETCH_V2_ADAPTER_VERSION!r} and "
+            f"{SKETCH_V21_ADAPTER_VERSION!r} (an unknown 0.2.x minor "
+            "refuses rather than guessing)"
         )
     payload = record.get("adapter_payload")
     if not isinstance(payload, Mapping):
         _fail(f"sketch {record.get('id')!r} has no object adapter_payload")
 
+    # A3.1: version dispatch is EXPLICIT and centralized HERE — each literal
+    # version owns its exact closed key set; no surface re-derives it.
+    want_keys = _PAYLOAD_KEYS if version == SKETCH_V2_ADAPTER_VERSION else _PAYLOAD_KEYS_021
     keys = set(payload.keys())
-    if keys != _PAYLOAD_KEYS:
-        missing = _PAYLOAD_KEYS - keys
-        extra = keys - _PAYLOAD_KEYS
+    if keys != want_keys:
+        missing = want_keys - keys
+        extra = keys - want_keys
         _fail(
-            f"v2 payload key set mismatch — missing {sorted(missing)}, "
-            f"unknown {sorted(extra)} (the v2 contract is closed; A2.5)"
+            f"v2 payload key set mismatch for {version} — missing "
+            f"{sorted(missing)}, unknown {sorted(extra)} (the v2 contract "
+            "is closed per version; A2.5/A3.2)"
         )
 
     if payload["sketch_model"] != SKETCH_MODEL_V2:
@@ -116,20 +126,27 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
     if ids != want:
         _fail(f"contract ids {ids!r} != the supported {want!r}")
 
-    # (validate_plane_record returns the orientation for principal records
-    # and the literal "face" for face records.)
-    plane_kind = validate_plane_record(payload["plane"], op_kind=_OP)
-    # Codex26 B1: a structurally-valid FACE plane on a v2 record refuses at
-    # the shared validator — every surface (encode, decode, evaluator,
-    # signature, display) inherits the refusal, so a face-bound v2 sketch
-    # can never survive into misplaced derived geometry. The lift arrives
-    # with the resolved-frame display lifecycle, not before.
-    if plane_kind == "face":
-        _fail(
-            f"sketch {record.get('id')!r} carries a face-bound plane — "
-            "v2 sketches are PRINCIPAL-plane only in F2b (the face-bound "
-            "resolved-frame display lifecycle is not yet implemented)"
-        )
+    if version == SKETCH_V2_ADAPTER_VERSION:
+        # (validate_plane_record returns the orientation for principal records
+        # and the literal "face" for face records.)
+        plane_kind = validate_plane_record(payload["plane"], op_kind=_OP)
+        # Codex26 B1: a structurally-valid FACE plane on a v2 record refuses at
+        # the shared validator — every surface (encode, decode, evaluator,
+        # signature, display) inherits the refusal, so a face-bound v2 sketch
+        # can never survive into misplaced derived geometry. The lift arrives
+        # with the resolved-frame display lifecycle, not before.
+        if plane_kind == "face":
+            _fail(
+                f"sketch {record.get('id')!r} carries a face-bound plane — "
+                "v2 sketches are PRINCIPAL-plane only in F2b (the face-bound "
+                "resolved-frame display lifecycle is not yet implemented)"
+            )
+    else:
+        # A3.2: the complete closed placement record (principal-only BS-1);
+        # sketch_placement is THE frame authority (A3.5/A3.7).
+        from .sketch_placement import validate_placement_record
+
+        validate_placement_record(payload["placement"], _fail)
 
     for name in ("entities", "constraints", "dimensions", "references",
                  "weak_completion", "witnesses"):
@@ -238,6 +255,44 @@ def encode_v2_sketch(*, feature_id: str, name: str, plane: Mapping[str, Any],
     return record
 
 
+def encode_v21_sketch(*, feature_id: str, name: str,
+                      placement: Mapping[str, Any],
+                      entities: Sequence[Mapping[str, Any]],
+                      constraints: Sequence[Mapping[str, Any]],
+                      weak_completion: Sequence[Mapping[str, Any]],
+                      fact_provenance: Mapping[str, Any]) -> dict[str, Any]:
+    """Build + VALIDATE a canonical `0.2.1` placed-sketch record (A3.2).
+
+    The caller supplies a COMPLETE placement record (the engine mints it via
+    `sketch_placement.complete_placement` — partials never reach here).
+    Deep-copies inputs like the 0.2.0 encoder; validation is the shared
+    per-version rule set.
+    """
+    record = {
+        "id": feature_id,
+        "name": name,
+        "feature_type": "sketch",
+        "engine": "mechanical",
+        "adapter_schema_version": SKETCH_V21_ADAPTER_VERSION,
+        "adapter_payload": {
+            "sketch_model": SKETCH_MODEL_V2,
+            "solver_contract": SOLVER_CONTRACT,
+            "weak_policy": WEAK_POLICY,
+            "branch_policy": branch_policy.POLICY_ID,
+            "placement": copy.deepcopy(dict(placement)),
+            "entities": [copy.deepcopy(dict(e)) for e in entities],
+            "constraints": [copy.deepcopy(dict(c)) for c in constraints],
+            "dimensions": [],
+            "references": [],
+            "weak_completion": [copy.deepcopy(dict(w)) for w in weak_completion],
+            "witnesses": [],
+        },
+        "fact_provenance": copy.deepcopy(dict(fact_provenance)),
+    }
+    validate_v2_sketch_record(record)
+    return record
+
+
 # ---------------------------------------------------------------------------
 # Gate F2b (Codex25 signoff): solver-backed authoring + read-side regeneration.
 # The A2.9 lifecycles, disjoint by construction:
@@ -315,6 +370,22 @@ def author_reference_sketch(*, feature_id: str, name: str,
             "references arrive with their resolved-frame display lifecycle"
         )
 
+    entities, constraints, weak = _author_reference_graph(
+        feature_id, axes, x_axis_mm, y_axis_mm)
+
+    record = encode_v2_sketch(
+        feature_id=feature_id, name=name, plane=plane, entities=entities,
+        constraints=constraints, weak_completion=weak,
+        fact_provenance=fact_provenance,
+    )
+    return record
+
+
+def _author_reference_graph(feature_id: str, axes: str, x_axis_mm: float,
+                            y_axis_mm: float) -> tuple[list, list, list]:
+    """Build + preview-solve the canonical G0/G1/G2 reference graph — the
+    ONE graph/solve path shared by BOTH authoring lanes (the 2D system is
+    frame-independent; placement changes the frame, never the graph)."""
     entities: list[dict[str, Any]] = [
         {"id": "skp_0001", "type": "point", "construction": True,
          "nominal": {"x": 0.0, "y": 0.0}},
@@ -348,13 +419,44 @@ def author_reference_sketch(*, feature_id: str, name: str,
             f"{diags} — nothing was authored"
         )
     weak = [w.to_record() for w in result.weak_completion]
+    return entities, constraints, weak
 
-    record = encode_v2_sketch(
-        feature_id=feature_id, name=name, plane=plane, entities=entities,
-        constraints=constraints, weak_completion=weak,
+
+def author_reference_sketch_placed(*, feature_id: str, name: str,
+                                   placement_input: Mapping[str, Any],
+                                   axes: str, x_axis_mm: float,
+                                   y_axis_mm: float,
+                                   fact_provenance: Mapping[str, Any]) -> dict[str, Any]:
+    """The `0.2.1` PLACEMENT authoring lane (A3.6.1) — selected ONLY by an
+    explicit `placement` operation input; the legacy lane (absence) keeps
+    writing byte-identical `0.2.0` through `author_reference_sketch`.
+
+    Completes the placement (support required; nested omissions take the
+    A3.3 defaults), derives the frame (A3.5 — validity proof before any
+    solve), then runs the SAME graph/preview-solve as the legacy lane and
+    encodes the `0.2.1` record atomically.
+    """
+    if axes not in _AXES_SHAPES:
+        _fail(f"axes must be one of {sorted(_AXES_SHAPES)}, got {axes!r}")
+    import math as _math
+
+    for label, v in (("x_axis_mm", x_axis_mm), ("y_axis_mm", y_axis_mm)):
+        if not (type(v) in (int, float) and _math.isfinite(v) and v > 0.0):
+            _fail(f"{label} must be a strictly positive FINITE number, got {v!r}")
+
+    from .sketch_placement import complete_placement, derive_frame
+
+    placement = complete_placement(placement_input, _fail)
+    derive_frame(placement, _fail)  # the A3.5 validity proof, pre-solve
+
+    entities, constraints, weak = _author_reference_graph(
+        feature_id, axes, x_axis_mm, y_axis_mm)
+
+    return encode_v21_sketch(
+        feature_id=feature_id, name=name, placement=placement,
+        entities=entities, constraints=constraints, weak_completion=weak,
         fact_provenance=fact_provenance,
     )
-    return record
 
 
 def regenerate_v2_sketch(record: Mapping[str, Any]) -> Mapping[str, float]:

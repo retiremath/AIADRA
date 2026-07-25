@@ -579,3 +579,83 @@ describe('the mock references domain — the REAL writer’s language (Codex27 B
     expect(pts.get('skp_0003')).toEqual(py)
   })
 })
+
+describe('the mock placement lane (ADR/0044 A3; pass sketch-place-1)', () => {
+  const REF = (params: Record<string, unknown>) => [
+    { kind: 'create_part', params: { number: 'P-88', name: 'Placed' } },
+    { kind: 'mechanical.add_reference_sketch', params: { part_number: 'P-88', ...params } },
+  ]
+  const getV2 = async (mock: ReturnType<typeof createMockAuthoringBackend>, sid: string) => {
+    const res = await mock.commit(sid, 'P-88')
+    return (await res.display.getDisplay()) as unknown as {
+      v2_construction?: Array<{ points: Array<{ id: string; at: number[] }> }>
+    }
+  }
+
+  it('placement selects the 0.2.1 writer with the A3.3 defaults completed', async () => {
+    const mock = createMockAuthoringBackend()
+    const s = await mock.begin(REF({ placement: { support: { kind: 'principal', orientation: 'xy' } } }))
+    await getV2(mock, s.sessionId)
+    const raw = mock.inspectRaw('P-88') as { sidecar: { feature: Array<{ adapter_schema_version?: string; adapter_payload?: Record<string, unknown> }> } }
+    const sk = raw.sidecar.feature.find((f) => f.adapter_schema_version === '0.2.1')!
+    expect(sk.adapter_payload!.placement).toEqual({
+      support: { kind: 'principal', orientation: 'xy' },
+      orientation_ref: { kind: 'principal', orientation: 'yz' },
+      orientation: 'right',
+      normal_side: 'positive',
+    })
+    expect(sk.adapter_payload!.plane).toBeUndefined()
+  })
+
+  it('mixing plane and placement refuses (A3.6.1)', async () => {
+    const mock = createMockAuthoringBackend()
+    await expect(mock.begin(REF({
+      plane: { kind: 'principal', orientation: 'xy' },
+      placement: { support: { kind: 'principal', orientation: 'xy' } },
+    }))).rejects.toThrow(/mutually exclusive/)
+  })
+
+  it('a negative normal_side mirrors the v axis in the world mapping', async () => {
+    const mock = createMockAuthoringBackend()
+    const s = await mock.begin(REF({ placement: {
+      support: { kind: 'principal', orientation: 'xy' }, normal_side: 'negative' } }))
+    const d = await getV2(mock, s.sessionId)
+    const pts = new Map(d.v2_construction?.[0].points.map((p) => [p.id, p.at]))
+    expect(pts.get('skp_0002')).toEqual([20, 0, 0])
+    expect(pts.get('skp_0003')!.map((x) => x + 0)).toEqual([0, -20, 0])
+  })
+
+  it('redefine applies the MINIMAL delta; omission keeps; no-op refuses; 0.2.0 refuses', async () => {
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(REF({ placement: { support: { kind: 'principal', orientation: 'xy' } } }))
+    await mock.commit(s1.sessionId, 'P-88')
+    const feat = (mock.inspectRaw('P-88') as { sidecar: { feature: Array<{ id: string; adapter_schema_version?: string }> } }).sidecar.feature.find((f) => f.adapter_schema_version === '0.2.1')!
+    // the redefine op through the full begin/simulate/commit lifecycle
+    const s2 = await mock.begin([{ kind: 'mechanical.redefine_sketch_placement',
+      params: { part_number: 'P-88', sketch_feature_id: feat.id, orientation: 'top' } }])
+    expect((await mock.simulate(s2.sessionId)).valid).toBe(true)
+    await mock.commit(s2.sessionId, 'P-88')
+    const after = (mock.inspectRaw('P-88') as { sidecar: { feature: Array<{ id: string; adapter_payload?: Record<string, unknown> }> } }).sidecar.feature.find((f) => f.id === feat.id)!
+    const placement = after.adapter_payload!.placement as Record<string, unknown>
+    expect(placement.orientation).toBe('top')
+    expect(placement.support).toEqual({ kind: 'principal', orientation: 'xy' }) // KEPT
+    // the no-op refusal
+    const s3 = await mock.begin([{ kind: 'mechanical.redefine_sketch_placement',
+      params: { part_number: 'P-88', sketch_feature_id: feat.id, orientation: 'top' } }])
+    const sim = await mock.simulate(s3.sessionId)
+    expect(sim.valid).toBe(false)
+    expect(sim.message).toMatch(/sketch-placement-unchanged/)
+  })
+
+  it('a 0.2.0 legacy sketch refuses redefine with the named copy', async () => {
+    const mock = createMockAuthoringBackend()
+    const s1 = await mock.begin(REF({ plane: { kind: 'principal', orientation: 'xy' } }))
+    await mock.commit(s1.sessionId, 'P-88')
+    const feat = (mock.inspectRaw('P-88') as { sidecar: { feature: Array<{ id: string; adapter_schema_version?: string }> } }).sidecar.feature.find((f) => f.adapter_schema_version === '0.2.0')!
+    const s2 = await mock.begin([{ kind: 'mechanical.redefine_sketch_placement',
+      params: { part_number: 'P-88', sketch_feature_id: feat.id, orientation: 'top' } }])
+    const sim = await mock.simulate(s2.sessionId)
+    expect(sim.valid).toBe(false)
+    expect(sim.message).toMatch(/sketch-placement-redefine-v020/)
+  })
+})

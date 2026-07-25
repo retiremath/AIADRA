@@ -271,11 +271,24 @@ def build_v2_construction(features: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         solved = regenerate_v2_sketch(f)
         payload = f.get("adapter_payload", {})
-        plane = payload.get("plane", {})
-        frame = principal_frame(plane.get("orientation", "xy"))
+        if "placement" in payload:
+            # 0.2.1 (ADR/0044 A3): the frame is DERIVED from the persisted
+            # placement facts — sketch_placement is the one frame authority.
+            from .sketch_placement import derive_frame as _derive_frame
 
-        def to_world(u: float, v: float) -> list[float]:
-            return list(frame.to_3d(u, v))
+            def _dfail(reason: str) -> None:
+                raise ValueError(f"display: {reason}")
+
+            u_vec, v_vec, _n = _derive_frame(payload["placement"], _dfail)
+
+            def to_world(u: float, v: float) -> list[float]:
+                return [u_vec[i] * u + v_vec[i] * v for i in range(3)]
+        else:
+            plane = payload.get("plane", {})
+            frame = principal_frame(plane.get("orientation", "xy"))
+
+            def to_world(u: float, v: float) -> list[float]:
+                return list(frame.to_3d(u, v))
 
         points: list[dict[str, Any]] = []
         lines: list[dict[str, Any]] = []

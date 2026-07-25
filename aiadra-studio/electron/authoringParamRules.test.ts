@@ -14,6 +14,7 @@ import {
   buildHoleOps,
   buildRectangleRevolveOps,
   buildRectangleSketchOps,
+  buildRedefinePlacementOps,
   buildReferenceSketchOps,
   buildRevolveOnSketchOps,
   buildSketchOnlyOps,
@@ -56,7 +57,17 @@ const REPRESENTATIVE: Array<[string, ReturnType<typeof buildCreatePartOps>]> = [
   ['rectangle-sketch datum', buildRectangleSketchOps('P-000001', RECT, 'xy', false)],
   ['rectangle-sketch FACE', buildRectangleSketchOps('P-000001', RECT, FACE_SUPPORT, false)],
   ['create+rectangle', buildCreateWithRectangleOps('P-000001', 'Probe', RECT, 'xy', false)],
-  ['references-sketch (F2b)', buildReferenceSketchOps('P-000001')],
+  ['references-sketch (F2b/A3 default placement)', buildReferenceSketchOps('P-000001')],
+  ['references-sketch (A3 full placement)', buildReferenceSketchOps('P-000001', {
+    support: { kind: 'principal', orientation: 'zx' },
+    orientation_ref: { kind: 'principal', orientation: 'xy' },
+    orientation: 'top',
+    normal_side: 'negative',
+  })],
+  ['redefine-placement (A3.6.2)', buildRedefinePlacementOps('P-000001', 'feat_0001', {
+    orientation: 'left',
+    normal_side: 'negative',
+  })],
   ['sketch-only datum', buildSketchOnlyOps('P-000001', PTS, 'zx')],
   // the EXACT walk omission: the face-bound sketch input vocabulary
   ['sketch-only FACE', buildSketchOnlyOps('P-000001', PTS, FACE_SUPPORT)],
@@ -125,7 +136,32 @@ describe('add_reference_sketch boundary negatives (Codex27 B1: absence ≠ null)
     ['explicit null plane', { ...base, plane: null }, /plane/],
     ['face plane', { ...base, plane: { kind: 'face', target_face_id: 'f' } }, /principal/],
     ['extra-key principal plane', { ...base, plane: { kind: 'principal', orientation: 'xy', extra: 1 } }, /plane/],
+    // A3.6.1 placement wire shapes
+    ['plane AND placement together', { ...base, plane: { kind: 'principal', orientation: 'xy' }, placement: { support: { kind: 'principal', orientation: 'xy' } } }, /mutually exclusive/],
+    ['null placement', { ...base, placement: null }, /placement must be an object/],
+    ['placement without support', { ...base, placement: { orientation: 'right' } }, /requires support/],
+    ['placement with unknown member', { ...base, placement: { support: { kind: 'principal', orientation: 'xy' }, flip: true } }, /unknown members/],
+    ['placement with bad orientation', { ...base, placement: { support: { kind: 'principal', orientation: 'xy' }, orientation: 'diagonal' } }, /orientation must be/],
+    ['placement with bad normal_side', { ...base, placement: { support: { kind: 'principal', orientation: 'xy' }, normal_side: 'up' } }, /normal_side must be/],
+    ['placement with face support', { ...base, placement: { support: { kind: 'face', target_face_id: 'f' } } }, /principal/],
   ])('%s refuses before bridge dispatch', (_l, params, pattern) => {
     expect(validateAuthoringParams('mechanical.add_reference_sketch', params)).toMatch(pattern)
+  })
+})
+
+describe('redefine_sketch_placement boundary (A3.6.2 wire shape)', () => {
+  const base = { part_number: 'P-000001', sketch_feature_id: 'feat_0001' }
+  it('the target pair is required; provided members validate; omission is the ENGINE’s (keep-current)', () => {
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement', base)).toBeNull()
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement', { part_number: 'P-1' }))
+      .toMatch(/sketch_feature_id/)
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement',
+      { ...base, orientation: 'top' })).toBeNull()
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement',
+      { ...base, orientation: 'diagonal' })).toMatch(/orientation must be/)
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement',
+      { ...base, normal_side: null })).toMatch(/normal_side must be/)
+    expect(validateAuthoringParams('mechanical.redefine_sketch_placement',
+      { ...base, support: { kind: 'principal', orientation: 'xy', extra: 1 } })).toMatch(/support/)
   })
 })

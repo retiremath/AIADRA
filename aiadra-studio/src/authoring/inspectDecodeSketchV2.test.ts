@@ -207,8 +207,17 @@ describe('the v2 refusal matrix at the Studio surface', () => {
   })
 
   it('an unknown 0.2.x minor refuses rather than guessing', () => {
+    // 0.2.1 became a DEFINED writer version (ADR/0044 A3) — the unknown
+    // minor moves up; the refusal law is unchanged.
+    expect(() => decodeInspectedPart(view([v2sketch({ adapter_schema_version: '0.2.2' })])))
+      .toThrow(/unknown 0\.2\.x minor/)
+  })
+
+  it('a 0.2.1 record with a 0.2.0-shaped payload refuses (per-version key sets)', () => {
+    // stamping the placed version over a legacy `plane` payload is a
+    // producer error — the closed key set catches it by name
     expect(() => decodeInspectedPart(view([v2sketch({ adapter_schema_version: '0.2.1' })])))
-      .toThrow(/0\.2\.0/)
+      .toThrow(/unknown payload key "plane" for 0\.2\.1|missing payload key "placement"/)
   })
 
   it('the fixed-circle + point_on + weak-x counterexample refuses (layer 1)', () => {

@@ -1,0 +1,195 @@
+{
+ "canonical_sha256": "b986415ecc21aa12665e29561291b84fb6188f5e178a69d03422f5442aeb37d8",
+ "record": {
+  "adapter_payload": {
+   "branch_policy": "skb-b0",
+   "constraints": [
+    {
+     "args": [
+      "skp_0001"
+     ],
+     "id": "c01",
+     "kind": "fix"
+    },
+    {
+     "args": [
+      "skp_0004"
+     ],
+     "id": "c02",
+     "kind": "horizontal"
+    },
+    {
+     "args": [
+      "skp_0005"
+     ],
+     "id": "c03",
+     "kind": "vertical"
+    }
+   ],
+   "dimensions": [],
+   "entities": [
+    {
+     "construction": true,
+     "id": "skp_0001",
+     "nominal": {
+      "x": 0.0,
+      "y": 0.0
+     },
+     "type": "point"
+    },
+    {
+     "construction": true,
+     "id": "skp_0002",
+     "nominal": {
+      "x": 20.0,
+      "y": 0.0
+     },
+     "type": "point"
+    },
+    {
+     "construction": true,
+     "end": "skp_0002",
+     "id": "skp_0004",
+     "start": "skp_0001",
+     "type": "line"
+    },
+    {
+     "construction": true,
+     "id": "skp_0003",
+     "nominal": {
+      "x": 0.0,
+      "y": 20.0
+     },
+     "type": "point"
+    },
+    {
+     "construction": true,
+     "end": "skp_0003",
+     "id": "skp_0005",
+     "start": "skp_0001",
+     "type": "line"
+    }
+   ],
+   "plane": {
+    "kind": "principal",
+    "orientation": "zx"
+   },
+   "references": [],
+   "sketch_model": 2,
+   "solver_contract": "skb-c0",
+   "weak_completion": [
+    {
+     "id": "w01",
+     "kind": "fix_param",
+     "origin": {
+      "category": "computed_result",
+      "policy": "skb-0",
+      "solver_contract": "skb-c0"
+     },
+     "role": "driving",
+     "strength": "weak",
+     "target": {
+      "entity": "skp_0002",
+      "parameter": "x"
+     },
+     "value": {
+      "magnitude": 20.0,
+      "unit": "mm"
+     },
+     "visibility": "internal"
+    },
+    {
+     "id": "w02",
+     "kind": "fix_param",
+     "origin": {
+      "category": "computed_result",
+      "policy": "skb-0",
+      "solver_contract": "skb-c0"
+     },
+     "role": "driving",
+     "strength": "weak",
+     "target": {
+      "entity": "skp_0003",
+      "parameter": "y"
+     },
+     "value": {
+      "magnitude": 20.0,
+      "unit": "mm"
+     },
+     "visibility": "internal"
+    }
+   ],
+   "weak_policy": "skb-0",
+   "witnesses": []
+  },
+  "adapter_schema_version": "0.2.0",
+  "engine": "mechanical",
+  "fact_provenance": {
+   "category": "human_input"
+  },
+  "feature_type": "sketch",
+  "id": "feat_0001",
+  "name": "references_feat_0001"
+ },
+ "v2_construction": [
+  {
+   "construction": true,
+   "lines": [
+    {
+     "a": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "b": [
+      0.0,
+      0.0,
+      20.0
+     ],
+     "id": "skp_0004"
+    },
+    {
+     "a": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "b": [
+      20.0,
+      0.0,
+      0.0
+     ],
+     "id": "skp_0005"
+    }
+   ],
+   "points": [
+    {
+     "at": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "id": "skp_0001"
+    },
+    {
+     "at": [
+      0.0,
+      0.0,
+      20.0
+     ],
+     "id": "skp_0002"
+    },
+    {
+     "at": [
+      20.0,
+      0.0,
+      0.0
+     ],
+     "id": "skp_0003"
+    }
+   ],
+   "shape": "G2",
+   "sketch_feature_id": "feat_0001"
+  }
+ ]
+}

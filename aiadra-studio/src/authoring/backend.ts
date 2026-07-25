@@ -377,16 +377,49 @@ export function buildCreateWithRectangleOps(
  *  transaction (preview solve → verbatim skb-0 weak completion → the exact
  *  empty witness set) and stages ONE record; solved coordinates are derived
  *  display data and never persisted. */
-export function buildReferenceSketchOps(partNumber: string): FeatureOp[] {
+/** The A3.6.1 placement input — the PRODUCT path always sends `placement`
+ *  (selecting the 0.2.1 writer); `support` is required, the rest defaults
+ *  engine-side. The legacy `plane` input remains valid API for old traces
+ *  but no Studio builder emits it anymore. */
+export interface PlacementOpInput {
+  support: { kind: 'principal'; orientation: 'xy' | 'yz' | 'zx' }
+  orientation_ref?: { kind: 'principal'; orientation: 'xy' | 'yz' | 'zx' }
+  orientation?: 'right' | 'top' | 'left' | 'bottom'
+  normal_side?: 'positive' | 'negative'
+}
+
+export function buildReferenceSketchOps(
+  partNumber: string,
+  placement: PlacementOpInput = { support: { kind: 'principal', orientation: 'xy' } },
+): FeatureOp[] {
   return [
     {
       kind: 'mechanical.add_reference_sketch',
       params: {
         part_number: partNumber,
         axes: 'xy',
-        plane: { kind: 'principal', orientation: 'xy' },
+        placement,
         x_axis_mm: 20.0,
         y_axis_mm: 20.0,
+      },
+    },
+  ]
+}
+
+/** A3.6.2 (Petre's SP-06 ruling): redefine an existing 0.2.1 sketch's
+ *  placement — omitted members KEEP their current persisted values. */
+export function buildRedefinePlacementOps(
+  partNumber: string,
+  sketchFeatureId: string,
+  members: Partial<PlacementOpInput>,
+): FeatureOp[] {
+  return [
+    {
+      kind: 'mechanical.redefine_sketch_placement',
+      params: {
+        part_number: partNumber,
+        sketch_feature_id: sketchFeatureId,
+        ...members,
       },
     },
   ]

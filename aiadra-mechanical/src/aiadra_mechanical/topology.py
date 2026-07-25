@@ -485,9 +485,23 @@ def compute_topology_signature(features: list[dict[str, Any]]) -> str:
             decoded = _decode_v2(f)
             entry["sketch_model"] = 2
             entry["v2_shape"] = decoded["shape"]
-            plane_sk = plane_skeleton(f)
-            if plane_sk is not None:
-                entry["plane"] = plane_sk
+            payload = f.get("adapter_payload", {})
+            if "placement" in payload:
+                # ADR/0044 A3.4: the COMPLETE placement record is topology
+                # skeleton — changing support/orientation_ref/orientation/
+                # normal_side changes world placement and must invalidate
+                # held selection + derived display state.
+                pl = payload["placement"]
+                entry["placement"] = {
+                    "support": dict(pl["support"]),
+                    "orientation_ref": dict(pl["orientation_ref"]),
+                    "orientation": pl["orientation"],
+                    "normal_side": pl["normal_side"],
+                }
+            else:
+                plane_sk = plane_skeleton(f)
+                if plane_sk is not None:
+                    entry["plane"] = plane_sk
             skeleton.append(entry)
             continue
         if ftype == "sketch":

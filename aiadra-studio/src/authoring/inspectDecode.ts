@@ -12,6 +12,7 @@ import type { Pt } from '../sketch/contour'
 import { tessellateCircle, tessellateSegments, type ContourSegment } from '../sketch/arcGeometry'
 import { classifySketch } from '../sketch/profileClassify'
 import type { PlaneOrientation } from './backend'
+import { isPlacementRecord, type PlacementRecord } from './placementFrame'
 
 /** The ONE engine whose recipes this decoder is authorized to interpret
  *  (Codex3 B1 — the native-engine boundary reaches the renderer): mechanical
@@ -27,9 +28,11 @@ const MECHANICAL_ENGINE = 'mechanical'
 const KNOWN_ADAPTER_SERIES = '0.1.'
 // ADR/0044 A2.4 (arc 20260717-2): per-record-family series — ONLY the sketch
 // family has defined 0.2 semantics; every other mechanical family refuses
-// 0.2.x by name. The concrete first-writer version is pinned.
+// 0.2.x by name. The concrete writer versions are pinned (ADR/0044 A3:
+// 0.2.0 legacy `plane` + 0.2.1 placed).
 const SKETCH_V2_SERIES = '0.2.'
 const SKETCH_V2_VERSION = '0.2.0'
+const SKETCH_V21_VERSION = '0.2.1'
 // skb-b0 constants (Docs/SolverContracts/skb-b0.md §1; the engine module is
 // the parity-tested implementation — these mirror it at the decode surface).
 const SKB_B0_L_MIN_MM = 1e-9
@@ -103,6 +106,11 @@ export interface InspectedSketchV2 {
   branchPolicy: string
   entityCount: number
   constraintCount: number
+  /** ADR/0044 A3: the literal writer version ('0.2.0' legacy | '0.2.1' placed). */
+  version: '0.2.0' | '0.2.1'
+  /** Present iff version is 0.2.1 — the persisted placement facts (the tree's
+   *  ✎ redefine entry seeds its session from these). */
+  placement?: import('./placementFrame').PlacementRecord
 }
 
 export interface InspectedSketch {
@@ -259,10 +267,19 @@ function v2fail(id: string, msg: string): never {
   fail(`v2 sketch ${id}: ${msg}`)
 }
 
-function decodeSketchV2(payload: Record<string, unknown>, id: string): InspectedSketchV2 {
+function decodeSketchV2(
+  payload: Record<string, unknown>,
+  id: string,
+  version: '0.2.0' | '0.2.1' = '0.2.0',
+): InspectedSketchV2 {
+  // A3.1/A3.2 mirror: per-version closed key sets — 0.2.1 replaces `plane`
+  // with the 4-member `placement` record; dispatch is explicit, never guessed.
+  const wantKeys = version === '0.2.0'
+    ? SKETCH_V2_PAYLOAD_KEYS
+    : new Set([...SKETCH_V2_PAYLOAD_KEYS].map((k) => (k === 'plane' ? 'placement' : k)))
   const keys = Object.keys(payload)
-  for (const k of keys) if (!SKETCH_V2_PAYLOAD_KEYS.has(k)) v2fail(id, `unknown payload key ${JSON.stringify(k)}`)
-  for (const k of SKETCH_V2_PAYLOAD_KEYS) if (!(k in payload)) v2fail(id, `missing payload key ${JSON.stringify(k)}`)
+  for (const k of keys) if (!wantKeys.has(k)) v2fail(id, `unknown payload key ${JSON.stringify(k)} for ${version}`)
+  for (const k of wantKeys) if (!(k in payload)) v2fail(id, `missing payload key ${JSON.stringify(k)} for ${version}`)
   if (payload.sketch_model !== 2) v2fail(id, `sketch_model ${JSON.stringify(payload.sketch_model)} !== 2`)
   const solverContract = payload.solver_contract
   const weakPolicy = payload.weak_policy
@@ -271,8 +288,19 @@ function decodeSketchV2(payload: Record<string, unknown>, id: string): Inspected
     v2fail(id, `contract ids (${JSON.stringify(solverContract)}, ${JSON.stringify(weakPolicy)}, ` +
       `${JSON.stringify(branchPolicy)}) are not the supported (skb-c0, skb-0, skb-b0)`)
   }
-  if (payload.plane === undefined) v2fail(id, 'plane is required (the v2 contract is closed)')
-  const plane = decodePlane(payload)
+  let plane: SketchPlaneBinding
+  let placement: PlacementRecord | undefined
+  if (version === '0.2.0') {
+    if (payload.plane === undefined) v2fail(id, 'plane is required (the v2 contract is closed)')
+    plane = decodePlane(payload)
+  } else {
+    if (!isPlacementRecord(payload.placement)) {
+      v2fail(id, 'placement must be the closed 4-member A3.2 record (principal-only; ref ≠ support)')
+    }
+    placement = payload.placement
+    // the tree's plane binding shows the SUPPORT (derived view, never persisted)
+    plane = { kind: 'principal', orientation: placement.support.orientation }
+  }
 
   const arr = (name: string): Record<string, unknown>[] => {
     const v = payload[name]
@@ -301,6 +329,7 @@ function decodeSketchV2(payload: Record<string, unknown>, id: string): Inspected
     kind: 'sketchV2', id, plane, shape,
     solverContract, weakPolicy, branchPolicy,
     entityCount: entities.length, constraintCount: constraints.length,
+    version, placement,
   }
 }
 
@@ -633,13 +662,15 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
               `family has defined 0.2 semantics (ADR/0044 A2.4) — refuse`,
           )
         }
-        if (v2v !== SKETCH_V2_VERSION) {
+        if (v2v !== SKETCH_V2_VERSION && v2v !== SKETCH_V21_VERSION) {
           fail(
-            `v2 sketch ${id} carries ${v2v}; the only defined v2 writer version is ` +
-              `${SKETCH_V2_VERSION} (an unknown 0.2.x minor refuses rather than guessing)`,
+            `v2 sketch ${id} carries ${v2v}; the defined v2 writer versions are ` +
+              `${SKETCH_V2_VERSION} and ${SKETCH_V21_VERSION} (an unknown 0.2.x minor refuses rather than guessing)`,
           )
         }
-        features.push(decodeSketchV2((raw.adapter_payload ?? {}) as Record<string, unknown>, id))
+        features.push(decodeSketchV2(
+          (raw.adapter_payload ?? {}) as Record<string, unknown>, id,
+          v2v as '0.2.0' | '0.2.1'))
         continue
       }
     }

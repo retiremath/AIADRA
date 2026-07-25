@@ -18,6 +18,8 @@ export const AUTHORING_KINDS = new Set<string>([
   'mechanical.add_sketch_feature',
   // Gate F2b (arc 20260717-2): the first v2 writer — the references sketch.
   'mechanical.add_reference_sketch',
+  // ADR/0044 A3.6.2 (pass sketch-place-1): the 0.2.1 placement redefine.
+  'mechanical.redefine_sketch_placement',
   'mechanical.add_extrude_feature',
   'mechanical.add_revolve_feature',
   'mechanical.add_fillet_feature',
@@ -27,6 +29,35 @@ export const AUTHORING_KINDS = new Set<string>([
 ])
 
 const posNum = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v > 0
+
+// ADR/0044 A3 wire shapes (D6: main owns the CLOSED envelope only — enums,
+// keys, types; the engine owns derivation/semantic validity).
+const isPrincipalRec = (rec: unknown): boolean => {
+  if (rec === null || typeof rec !== 'object') return false
+  const r = rec as Record<string, unknown>
+  return (
+    r.kind === 'principal' &&
+    (r.orientation === 'xy' || r.orientation === 'yz' || r.orientation === 'zx') &&
+    Object.keys(r).length === 2
+  )
+}
+const PLACEMENT_MEMBERS = ['support', 'orientation_ref', 'orientation', 'normal_side'] as const
+/** Validate ONE provided placement member's wire shape; null = ok. */
+const placementMemberError = (op: string, key: string, v: unknown): string | null => {
+  if (key === 'support' || key === 'orientation_ref') {
+    return isPrincipalRec(v)
+      ? null
+      : `${op} ${key} must be exactly {kind:'principal', orientation:'xy'|'yz'|'zx'}`
+  }
+  if (key === 'orientation') {
+    return v === 'right' || v === 'top' || v === 'left' || v === 'bottom'
+      ? null
+      : `${op} orientation must be 'right'|'top'|'left'|'bottom'`
+  }
+  return v === 'positive' || v === 'negative'
+    ? null
+    : `${op} normal_side must be 'positive'|'negative'`
+}
 
 export function validateAuthoringParams(kind: string, params: unknown): string | null {
   if (params === null || typeof params !== 'object') return 'op params must be an object'
@@ -97,6 +128,41 @@ export function validateAuthoringParams(kind: string, params: unknown): string |
         if (!ok) {
           return "add_reference_sketch plane must be exactly {kind:'principal', orientation:'xy'|'yz'|'zx'} (face-bound v2 references refuse in F2b)"
         }
+      }
+      // A3.6.1: the explicit 0.2.1 lane — `placement` is a closed object
+      // with REQUIRED support; the two lanes are mutually exclusive at the
+      // wire (the engine refuses too; main refuses the SHAPE early).
+      if (p.placement !== undefined) {
+        if (p.plane !== undefined) {
+          return 'add_reference_sketch plane and placement are mutually exclusive (A3.6.1)'
+        }
+        const pm = p.placement as Record<string, unknown> | null
+        if (pm === null || typeof pm !== 'object') {
+          return 'add_reference_sketch placement must be an object'
+        }
+        const unknown = Object.keys(pm).filter((k) => !(PLACEMENT_MEMBERS as readonly string[]).includes(k))
+        if (unknown.length > 0) {
+          return `add_reference_sketch placement carries unknown members ${JSON.stringify(unknown)}`
+        }
+        if (pm.support === undefined) return 'add_reference_sketch placement requires support'
+        for (const key of PLACEMENT_MEMBERS) {
+          if (pm[key] === undefined) continue
+          const err = placementMemberError('add_reference_sketch placement', key, pm[key])
+          if (err !== null) return err
+        }
+      }
+      return null
+    }
+    case 'mechanical.redefine_sketch_placement': {
+      // A3.6.2 wire shape: target + any PROVIDED placement members must be
+      // well-formed; omission semantics (keep-current) are the ENGINE's.
+      if (typeof p.part_number !== 'string' || typeof p.sketch_feature_id !== 'string') {
+        return 'redefine_sketch_placement requires part_number + sketch_feature_id'
+      }
+      for (const key of PLACEMENT_MEMBERS) {
+        if (p[key] === undefined) continue
+        const err = placementMemberError('redefine_sketch_placement', key, p[key])
+        if (err !== null) return err
       }
       return null
     }

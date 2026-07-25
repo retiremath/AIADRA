@@ -14,6 +14,7 @@ _OPS = {
     "mechanical.add_sketch_feature",
     # Gate F2b (ADR/0044 A2): the first v2 writer — the references sketch.
     "mechanical.add_reference_sketch",
+    "mechanical.redefine_sketch_placement",
     "mechanical.add_extrude_feature",
     "mechanical.add_revolve_feature",
     "mechanical.add_fillet_feature",

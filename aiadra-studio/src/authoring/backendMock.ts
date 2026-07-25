@@ -25,6 +25,14 @@ import { buildContourDisplay, displayToSource, mergeDisplays } from '../sketch/p
 import { classifySketch } from '../sketch/profileClassify'
 import { tessellateCircle, tessellateSegments } from '../sketch/arcGeometry'
 import {
+  defaultPlacement,
+  isPlacementRecord,
+  isPrincipalRecord,
+  placementToWorld,
+  type PlacementRecord,
+  type PrincipalOrientation,
+} from './placementFrame'
+import {
   resolveOpAliases,
   type AuthoringBackend,
   type BeginResult,
@@ -92,6 +100,47 @@ export interface MockAuthoringBackend extends AuthoringBackend {
  *  mechanical payloads only under `engine === 'mechanical'`, exactly like the
  *  real sidecar records — an unstamped mirror record would decode as a
  *  generic feature (no wire, unselectable, invisible to Extrude). */
+// A3.6.2: overlay provided placement members on the committed record —
+// omission KEEPS (edit semantics, distinct from creation's defaults).
+function overlayPlacement(
+  current: Record<string, unknown>,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...current }
+  for (const key of ['support', 'orientation_ref', 'orientation', 'normal_side'] as const) {
+    if (key in params) next[key] = params[key]
+  }
+  return next
+}
+
+// A3.6.1: the mock's completion mirror — support REQUIRED inside an
+// explicit placement input; nested omissions take the A3.3 defaults.
+function completePlacementInput(input: unknown): Record<string, unknown> {
+  const op = 'mock: add_reference_sketch'
+  if (input === null || typeof input !== 'object') {
+    throw new Error(`${op} placement must be an object`)
+  }
+  const inp = input as Record<string, unknown>
+  const unknown = Object.keys(inp).filter(
+    (k) => !['support', 'orientation_ref', 'orientation', 'normal_side'].includes(k),
+  )
+  if (unknown.length > 0) throw new Error(`${op} placement carries unknown members ${JSON.stringify(unknown)} (A3.2 is closed)`)
+  if (!isPrincipalRecord(inp.support)) {
+    throw new Error(`${op} placement requires support as {kind:'principal', orientation:'xy'|'yz'|'zx'} (A3.6.1)`)
+  }
+  const defaults = defaultPlacement((inp.support as { orientation: PrincipalOrientation }).orientation)
+  const record = {
+    support: inp.support,
+    orientation_ref: inp.orientation_ref ?? defaults.orientation_ref,
+    orientation: inp.orientation ?? defaults.orientation,
+    normal_side: inp.normal_side ?? defaults.normal_side,
+  }
+  if (!isPlacementRecord(record)) {
+    throw new Error(`${op} placement is out of the A3.2 domain (principal-only; ref must differ from support; orientation right|top|left|bottom; normal_side positive|negative)`)
+  }
+  return record as unknown as Record<string, unknown>
+}
+
 function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: string): Record<string, unknown> | null {
   if (kind === 'mechanical.add_sketch_feature') {
     // SK-C0 Codex3 B3: the mock mints the SAME deterministic identity shapes
@@ -141,18 +190,33 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
         throw new Error(`mock: add_reference_sketch ${label} must be a strictly positive finite number`)
       }
     }
-    const planeParam = ('plane' in params
-      ? params.plane
-      : { kind: 'principal', orientation: 'xy' }) as Record<string, unknown> | null
-    const pOri = planeParam !== null && typeof planeParam === 'object' ? planeParam.orientation : undefined
-    if (
-      planeParam === null ||
-      typeof planeParam !== 'object' ||
-      planeParam.kind !== 'principal' ||
-      (pOri !== 'xy' && pOri !== 'yz' && pOri !== 'zx') ||
-      Object.keys(planeParam).length !== 2
-    ) {
-      throw new Error("mock: add_reference_sketch plane must be exactly {kind:'principal', orientation:'xy'|'yz'|'zx'} (face-bound v2 references refuse in F2b)")
+    // A3.6.1: the EXPLICIT version discriminator — `placement` selects the
+    // 0.2.1 writer; absence (incl. the legacy `plane` input) writes 0.2.0
+    // exactly as before; mixing refuses in the engine's voice.
+    const hasPlacement = 'placement' in params
+    if (hasPlacement && 'plane' in params) {
+      throw new Error(
+        'mock: add_reference_sketch `plane` (the legacy 0.2.0 lane) and `placement` (the 0.2.1 lane) are mutually exclusive — one explicit lane per call (A3.6.1)',
+      )
+    }
+    let placementRecord: Record<string, unknown> | null = null
+    let planeParam: Record<string, unknown> | null = null
+    if (hasPlacement) {
+      placementRecord = completePlacementInput(params.placement)
+    } else {
+      planeParam = ('plane' in params
+        ? params.plane
+        : { kind: 'principal', orientation: 'xy' }) as Record<string, unknown> | null
+      const pOri = planeParam !== null && typeof planeParam === 'object' ? planeParam.orientation : undefined
+      if (
+        planeParam === null ||
+        typeof planeParam !== 'object' ||
+        planeParam.kind !== 'principal' ||
+        (pOri !== 'xy' && pOri !== 'yz' && pOri !== 'zx') ||
+        Object.keys(planeParam).length !== 2
+      ) {
+        throw new Error("mock: add_reference_sketch plane must be exactly {kind:'principal', orientation:'xy'|'yz'|'zx'} (face-bound v2 references refuse in F2b)")
+      }
     }
     const xN = x as number
     const yN = y as number
@@ -187,13 +251,14 @@ function rawFeatureFromOp(kind: string, params: Record<string, unknown>, id: str
       id,
       feature_type: 'sketch',
       engine: 'mechanical',
-      adapter_schema_version: '0.2.0',
+      adapter_schema_version: hasPlacement ? '0.2.1' : '0.2.0',
       adapter_payload: {
         sketch_model: 2,
         solver_contract: 'skb-c0',
         weak_policy: 'skb-0',
         branch_policy: 'skb-b0',
-        plane: planeParam,
+        // per-version closed key set (A3.2): plane XOR placement
+        ...(hasPlacement ? { placement: placementRecord } : { plane: planeParam }),
         entities,
         constraints,
         dimensions: [],
@@ -244,6 +309,39 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
   // The committed mirror: partNumber → { name, features } (grows per commit,
   // ids continue across commits — same numbering behavior as the engine).
   const parts = new Map<string, { name: string; features: Record<string, unknown>[] }>()
+
+  // A3.6.2 (sketch-place-1): the redefine mirror's refusal law — target
+  // resolution FIRST, literal 0.2.1 only, valid provided members, and the
+  // named no-op refusal. Speaks in the engine's voice.
+  const redefineRefusal = (
+    params: Record<string, unknown>,
+    fallbackPart: string | null | undefined,
+  ): string | null => {
+    const op = 'mechanical.redefine_sketch_placement'
+    const part = parts.get((params.part_number as string) ?? fallbackPart ?? '')
+    const feat = part?.features.find((f) => f.id === params.sketch_feature_id)
+    if (!feat) return `${op}: feature ${JSON.stringify(params.sketch_feature_id)} not found`
+    const asv = feat.adapter_schema_version
+    if (asv === '0.2.0') {
+      return `${op}: sketch-placement-redefine-v020 — the 0.2.0 frame is immortal history (A3.1); redefine applies to 0.2.1 placed sketches only`
+    }
+    if (asv !== '0.2.1') return `${op}: redefine targets literal '0.2.1' only, got ${JSON.stringify(asv)}`
+    const current = (feat.adapter_payload as Record<string, unknown>).placement as Record<string, unknown>
+    let provided = false
+    const candidate: Record<string, unknown> = { ...current }
+    for (const key of ['support', 'orientation_ref', 'orientation', 'normal_side'] as const) {
+      if (key in params) {
+        candidate[key] = params[key]
+        provided = true
+      }
+    }
+    if (!isPlacementRecord(candidate)) return `${op}: the candidate placement is out of the A3.2 domain`
+    if (!provided || JSON.stringify(candidate) === JSON.stringify(current)) {
+      return `${op}: sketch-placement-unchanged — no recipe, event, or geometry projection is minted for a no-op`
+    }
+    return null
+  }
+
 
   /** R3: resolve a revolve op's rectangle — from THIS session's sketch op
    *  (the chained path) or the mirror's committed sketch (entry A). */
@@ -445,13 +543,18 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
     // Codex26 B1: the (u, v) → world mapping follows the sketch's principal
     // ORIENTATION — the exact engine _FRAME_AXES table (xy: u=X,v=Y ·
     // yz: u=Y,v=Z · zx: u=Z,v=X), never a hardcoded world XY.
-    const toWorld = (ori: string, u: number, v: number): [number, number, number] =>
+    const legacyToWorld = (ori: string, u: number, v: number): [number, number, number] =>
       ori === 'yz' ? [0, u, v] : ori === 'zx' ? [v, 0, u] : [u, v, 0]
     for (const f of [...committed, ...pending]) {
       const asv = f.adapter_schema_version
       if (typeof asv !== 'string' || !asv.startsWith('0.2.')) continue
       const payload = (f.adapter_payload ?? {}) as Record<string, unknown>
       const ori = ((payload.plane as Record<string, unknown> | undefined)?.orientation as string) ?? 'xy'
+      // 0.2.1: the frame is DERIVED from the persisted placement (the TS
+      // mirror of the engine's A3.5 law); 0.2.0 keeps the legacy table.
+      const placement = payload.placement as PlacementRecord | undefined
+      const toWorld = (o: string, u: number, v: number): [number, number, number] =>
+        placement !== undefined ? placementToWorld(placement, u, v) : legacyToWorld(o, u, v)
       const pts = new Map<string, [number, number, number]>()
       const points: Array<Record<string, unknown>> = []
       const lines: Array<Record<string, unknown>> = []
@@ -574,10 +677,13 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
       let featSeq = targetNumber ? (parts.get(targetNumber)?.features.length ?? 0) : 0
       const resolved: FeatureOp[] = ops.map((op, i) => {
         const params = resolveOpAliases(op.params, i, perOpIds) as Record<string, unknown>
-        if (op.kind === 'mechanical.adjust_feature_parameter') {
-          // S3: a parameter EDIT mints no feature — it retargets a committed
-          // one; the mirror mutation happens at commit, existence is checked
-          // at simulate (the same honesty split as the real engine).
+        if (
+          op.kind === 'mechanical.adjust_feature_parameter' ||
+          op.kind === 'mechanical.redefine_sketch_placement'
+        ) {
+          // S3: a parameter/placement EDIT mints no feature — it retargets a
+          // committed one; the mirror mutation happens at commit, existence
+          // is checked at simulate (the same honesty split as the engine).
           perOpIds.push([])
         } else if (op.kind.startsWith('mechanical.add_')) {
           const id = `feat_${String(++featSeq).padStart(4, '0')}`
@@ -684,6 +790,14 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           return { valid: false, message: 'mock: unknown feature/parameter for adjust_feature_parameter' }
         }
       }
+      // A3.6.2 (sketch-place-1): the redefine mirror validates like the
+      // engine — target exists, literal 0.2.1, valid members, NOT a no-op,
+      // 0.2.0 refuses with the named copy.
+      for (const op of session.ops) {
+        if (op.kind !== 'mechanical.redefine_sketch_placement') continue
+        const err = redefineRefusal(op.params, session.partNumber)
+        if (err !== null) return { valid: false, message: err }
+      }
       // P (arc 20260717-2): the SEQUENTIAL mirror — the one-base refusal is
       // lifted for extrudes exactly as far as the mock can honestly go.
       const target = session.partNumber ? parts.get(session.partNumber) : undefined
@@ -753,6 +867,18 @@ export function createMockAuthoringBackend(): MockAuthoringBackend {
           .find((pr) => pr.name === op.params.parameter_name)
         if (!prm) throw new Error('mock: unknown feature/parameter for adjust_feature_parameter')
         prm.value = op.params.new_value
+      }
+      // A3.6.2: the redefine mirror — the MINIMAL delta (only placement
+      // changes; omitted members keep their committed values).
+      for (const op of ops) {
+        if (op.kind !== 'mechanical.redefine_sketch_placement') continue
+        const err = redefineRefusal(op.params, session.partNumber ?? objectRef)
+        if (err !== null) throw new Error(err)
+        const part = parts.get((op.params.part_number as string) ?? objectRef)
+        const feat = part?.features.find((f) => f.id === op.params.sketch_feature_id)
+        const payload = feat?.adapter_payload as Record<string, unknown>
+        payload.placement = overlayPlacement(
+          payload.placement as Record<string, unknown>, op.params)
       }
       const badge = `${objectRef} — dev mock (procedural, not a real Part)`
       const contour = contourFromOps(ops)
