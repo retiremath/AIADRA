@@ -33,11 +33,14 @@ import {
   INTRINSIC_CSYS_ID,
   INTRINSIC_PLANE_IDS,
   PLANE_LABELS,
+  buildRedefinePlacementOps,
   buildReferenceSketchOps,
   sketchAuthoringGate,
   supportFrame,
   type AuthoringBackend,
+  type PlacementOpInput,
 } from './authoring/backend'
+import { PlacementPanel } from './authoring/PlacementPanel'
 import { createOneShotRunner } from './authoring/oneShotRun'
 import {
   authoringFacts,
@@ -726,7 +729,28 @@ function Workbench({
         return
       }
       const feat = part.features.find((f) => f.id === featureId)
-      const parameters = feat && feat.kind !== 'sketch' && feat.kind !== 'sketchV2' ? feat.parameters : []
+      // A3.6.2 (Petre's SP-06 ruling): the ✎ on a PLACED v2 sketch opens the
+      // placement session seeded from its persisted record; a 0.2.0 legacy
+      // sketch refuses honestly (its frame is immortal history per A3.1).
+      if (feat && feat.kind === 'sketchV2') {
+        if (feat.version !== '0.2.1' || !feat.placement) {
+          setShellNote('this is a legacy (0.2.0) references sketch — its frame is fixed history; placement redefine applies to placed (0.2.1) sketches')
+          return
+        }
+        authoringStore.startPlacementRedefine(
+          featureId,
+          {
+            support: feat.placement.support.orientation,
+            orientationRef: feat.placement.orientation_ref.orientation,
+            orientation: feat.placement.orientation,
+            normalSide: feat.placement.normal_side,
+          },
+          partContext.getSnapshot().generation,
+          { number: part.number, name: part.name },
+        )
+        return
+      }
+      const parameters = feat && feat.kind !== 'sketch' ? feat.parameters : []
       if (parameters.length === 0) {
         setShellNote('this feature has no catalogued editable dimensions')
         return
@@ -795,47 +819,19 @@ function Workbench({
         )
       }
     } else if (kind === 'references-sketch') {
-      // Gate F2b (Codex26 B3): the ONE-SHOT v2 references write through the
-      // PERSISTENT runner — single-flight, no-orphan on a failed commit,
-      // and a terminal generation guard (a stale result never installs
-      // into a moved-on context; the commit itself is real Truth either way).
+      // A3.6.1 / Codex1 B4 (pass sketch-place-1): References enters the ONE
+      // placement session — support pick → the engine-default confirm panel
+      // → explicit accept (which runs the persistent one-shot). The old
+      // hard-coded-xy immediate commit is gone.
       const target = partFacts.readyPart
       if (!target) {
         setShellNote('Commit a Part first (New…) — References adds the v2 construction frame to a Part')
         return
       }
-      const startCtx = partContext.getSnapshot()
-      const startGen = startCtx.generation
-      const startWs = switcher.current()?.workspaceId ?? null
-      const started = referencesRunner.start(buildReferenceSketchOps(target.number), target.number, {
-        isStale: () => {
-          const live = partContext.getSnapshot()
-          const liveWs = switcher.current()?.workspaceId ?? null
-          return live.generation !== startGen || liveWs !== startWs
-        },
-        onError: (m) => {
-          setRefsBusy(false)
-          setShellNote(m)
-        },
-        onStaleSuccess: (ref) => {
-          setRefsBusy(false)
-          setShellNote(`references committed to ${ref}, but the context changed — reopen it to see the frame`)
-        },
-        onSuccess: (res) => {
-          setRefsBusy(false)
-          refreshPartContext(res.display as Parameters<typeof refreshPartContext>[0])
-          setPartsRefresh((n) => n + 1)
-          setShellNote(null)
-        },
-      })
-      // Codex27 B3: a REJECTED duplicate must not clear the accepted run's
-      // busy publication — only a STARTED run owns the gate.
-      if (!started) {
-        setShellNote('the references commit is still running — wait for it to finish')
-        return
-      }
-      setRefsBusy(true)
-      setShellNote('adding the references frame…')
+      authoringStore.startPlacementPick(
+        partContext.getSnapshot().generation,
+        { number: target.number, name: target.name },
+      )
     } else if (kind === 'extrude' || kind === 'revolve') {
       // S2 B3 (UI eligibility from INSPECTED state): the real lane refuses
       // without a ready context or when the one-base rule already holds.
@@ -1058,6 +1054,76 @@ function Workbench({
   // per-click lifecycle (which would orphan a retained failed session and
   // defeat single-flight).
   const referencesRunner = useMemo(() => createOneShotRunner(featureBackend), [featureBackend])
+
+  // A3.6 (pass sketch-place-1): the placement session's EXPLICIT accept —
+  // builds the create (full placement) or redefine (the DIFF only —
+  // omission-keeps is the engine contract) op and runs the persistent
+  // one-shot. Terminal hooks keep session + busy truth aligned.
+  const acceptPlacement = () => {
+    const s = authoringStore.getSnapshot()
+    if (s.mode !== 'placement' || s.busy) return
+    const target = s.targetPart
+    if (!target) {
+      authoringStore.failPlacement('no target Part — reopen the session')
+      return
+    }
+    const wireSupport = { kind: 'principal' as const, orientation: s.support }
+    const wireRef = { kind: 'principal' as const, orientation: s.orientationRef }
+    let ops: ReturnType<typeof buildReferenceSketchOps>
+    if (s.redefineOf) {
+      const cur = s.redefineOf.current
+      const members: Partial<PlacementOpInput> = {}
+      if (s.support !== cur.support) members.support = wireSupport
+      if (s.orientationRef !== cur.orientationRef) members.orientation_ref = wireRef
+      if (s.orientation !== cur.orientation) members.orientation = s.orientation
+      if (s.normalSide !== cur.normalSide) members.normal_side = s.normalSide
+      if (Object.keys(members).length === 0) {
+        authoringStore.failPlacement('nothing changed — adjust a member or cancel')
+        return
+      }
+      ops = buildRedefinePlacementOps(target.number, s.redefineOf.featureId, members)
+    } else {
+      ops = buildReferenceSketchOps(target.number, {
+        support: wireSupport,
+        orientation_ref: wireRef,
+        orientation: s.orientation,
+        normal_side: s.normalSide,
+      })
+    }
+    const startGen = partContext.getSnapshot().generation
+    const startWs = switcher.current()?.workspaceId ?? null
+    const started = referencesRunner.start(ops, target.number, {
+      isStale: () => {
+        const live = partContext.getSnapshot()
+        const liveWs = switcher.current()?.workspaceId ?? null
+        return live.generation !== startGen || liveWs !== startWs
+      },
+      onError: (m) => {
+        setRefsBusy(false)
+        authoringStore.failPlacement(m)
+      },
+      onStaleSuccess: (ref) => {
+        setRefsBusy(false)
+        authoringStore.setPlacementBusy(false)
+        authoringStore.cancelPlacement()
+        setShellNote(`placement committed to ${ref}, but the context changed — reopen it to see the frame`)
+      },
+      onSuccess: (res) => {
+        setRefsBusy(false)
+        authoringStore.setPlacementBusy(false)
+        authoringStore.cancelPlacement()
+        refreshPartContext(res.display as Parameters<typeof refreshPartContext>[0])
+        setPartsRefresh((n) => n + 1)
+        setShellNote(null)
+      },
+    })
+    if (!started) {
+      authoringStore.failPlacement('the previous placement commit is still running — wait for it to finish')
+      return
+    }
+    setRefsBusy(true)
+    authoringStore.setPlacementBusy(true)
+  }
   // The stable handle the inspect fetcher reads (the mock lane's honest
   // `inspectRaw` mirror lives on the instance).
   const featureBackendRef = useRef(featureBackend)
@@ -1200,6 +1266,13 @@ function Workbench({
           return
         }
         if (mode === 'sketch') return // SketchChrome owns sketch Escape
+        if (mode === 'placement') {
+          // A3.6/B4: Escape cancels the pre-commit placement capture (a BUSY
+          // session never cancels — the terminal is uninterruptible)
+          authoringStore.cancelPlacement()
+          e.preventDefault()
+          return
+        }
         if (selectionStore.getSnapshot().selected) {
           selectionStore.clearSelected()
           e.preventDefault()
@@ -1548,13 +1621,18 @@ function Workbench({
           />
           {authoringSession.mode === 'planePick' && (
             <div className="pick-prompt">
-              <span>Select a sketch plane — a datum plane or a flat face of the Part</span>
+              <span>
+                {authoringSession.continuation.type === 'placement'
+                  ? 'Select the SUPPORT plane for the references sketch — a principal datum plane'
+                  : 'Select a sketch plane — a datum plane or a flat face of the Part'}
+              </span>
               <button type="button" className="btn small" onClick={() => setPlaneListOpen(true)}>
                 Choose from list…
               </button>
               <span className="muted small">Esc cancels</span>
             </div>
           )}
+          <PlacementPanel store={authoringStore} isReal={featureBackend.isReal} onAccept={acceptPlacement} />
           <SketchChrome
             store={authoringStore}
             backend={featureBackend}

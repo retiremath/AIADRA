@@ -134,3 +134,99 @@ Each id has exactly ONE durable tracked normative source (A2.10); production cod
 2. **Regeneration (read)**: solve from committed nominals and facts only; validate EVERY committed witness; derive display geometry or refuse. Regeneration never remints witnesses, never rebases nominals, never changes weak completion, never writes recovered state. Recovery from any refusal is a NEW accepted authoring transaction, recorded as events.
 
 **A2.10 — Normative sources.** `skb-c0` and `skb-0`: the frozen SK-B `SCHEMA.md` (§2b residual blocks, §4 completion, §5 serialization) as adopted at `aiadra-solver/testkit/corpus/SCHEMA.md`, implemented by the production contract module, digest/parity-tested. `skb-b0`: [`Docs/SolverContracts/skb-b0.md`](../SolverContracts/skb-b0.md) (immutable-by-id; a semantic change is a new file `skb-b1.md`), implemented by the production branch-policy module, parity-tested over its COMPLETE machine-readable content (constants, the local table, the whole graph predicate, the array-order rules). Golden-vector parity attaches to the first policy with a non-empty catalog; the draft measure schemas live in [`witness-kinds-draft.md`](../SolverContracts/witness-kinds-draft.md) (explicitly informative, production-unconsumed). One durable tracked source per id; production implements; tests enforce.
+
+## Amendment A3 (arc 20260725-2, pass sketch-place-1; Codex4 build authorization) — sketch placement as Truth (`0.2.1`)
+
+- **Amends:** A2 — extends A2.4/A2.5/A2.7/A2.8/A2.9; A2's `0.2.0` contract is preserved VERBATIM (A3.1).
+- **Benchmark authority:** Petre's Creo 10 placement-dialog capture + the Flip experiment (arc record Petre2: positive-depth extrusions grow to opposite sides ⇒ the signed support normal is MODEL semantics, `normal_side`).
+- **Rulings:** SP-04 model fact · SP-05 Use-Previous deferred · SP-06 redefine INCLUDED · SP-08 ordinary v1 Sketch = named one-reference legacy path until the first drawing-capable v2 pass (arc record Petre3).
+
+### A3.1 — Versions and dispatch (extends A2.4)
+
+- `0.2.0` is IMMUTABLE: its exact payload key set (`sketch_model, solver_contract, weak_policy, branch_policy, plane, entities, constraints, dimensions, references, weak_completion, witnesses`), its `plane` semantics (`_FRAME_AXES` frames), its canonical bytes and hashes, and its world constructions are preserved forever. No migration, no rewrite, no reinterpretation.
+- `0.2.1` is the placement writer's version. Codec dispatch is EXPLICIT per literal version; unknown `0.2.x` refuses (unchanged).
+- Regression: literal pre-A3 `0.2.0` fixtures (bytes + expected canonical hash + expected world coordinates AS LITERALS) decode/regenerate/display identically after `0.2.1` lands.
+
+### A3.2 — The `0.2.1` payload (extends A2.5)
+
+Exact closed key set: the `0.2.0` set with `plane` replaced by `placement`:
+`{sketch_model, solver_contract, weak_policy, branch_policy, placement, entities, constraints, dimensions, references, weak_completion, witnesses}`.
+
+The persisted placement record — one closed shape, all four members REQUIRED:
+
+```
+placement: {
+  support:         {kind: "principal", orientation: "xy"|"yz"|"zx"},   # closed, 2 keys
+  orientation_ref: {kind: "principal", orientation: "xy"|"yz"|"zx"},   # closed, 2 keys; MUST differ from support (nonparallel by construction)
+  orientation:     "right"|"top"|"left"|"bottom",
+  normal_side:     "positive"|"negative",
+}
+```
+
+BS-1 domain: principal-only (both records). Face/surface/edge orientation references are later passes under ADR/0038 reference semantics. Studio overlay ids (`intrinsic-plane:*`) NEVER persist.
+
+### A3.3 — Canonical defaults (engine-owned)
+
+Picking a support auto-defaults the rest; ONE canonical encoding per support (no equivalent-record diversity):
+
+| support | orientation_ref | orientation | normal_side | resulting frame |
+|---|---|---|---|---|
+| `xy` | `yz` | `right` | `positive` | `u=+X, v=+Y, n=+Z` |
+| `yz` | `zx` | `right` | `positive` | `u=+Y, v=+Z, n=+X` |
+| `zx` | `xy` | `right` | `positive` | `u=+Z, v=+X, n=+Y` |
+
+These reproduce the `0.2.0`/`_FRAME_AXES` frames EXACTLY (tolerance-free). Defaulting is SCOPED (Codex3 B1): it applies ONLY to members omitted INSIDE an explicitly provided `placement` operation input (A3.6) — never to omission of the version-selecting input itself. The PERSISTED record is always complete — the engine mints it. Studio's pre-commit mirror is transient and parity-tested against the engine.
+
+### A3.4 — Identity, skeleton, caches (extends A2.7)
+
+- All FOUR placement facts enter the canonical recipe bytes; changing any one changes recipe identity.
+- The complete placement record contributes to `plane_skeleton` and `topology_signature`: changing support/orientation_ref/orientation/normal_side changes world placement — held selection and derived display state invalidate fail-closed; every derived cache key changes.
+- Derived axes (`u/v/n` vectors), camera state, and any Studio mirror output NEVER enter canonical bytes. `adapter_schema_version` stays excluded under the standing rule; the payload carries its own semantic discriminators.
+
+### A3.5 — The derivation (engine law; exact order)
+
+1. `n₀` = the support plane's canonical normal (engine table); **`n = n₀` if `normal_side=positive`, `n = −n₀` if `negative`** — the signed normal is selected FIRST (Petre2).
+2. `p₀` = the orientation_ref plane's canonical normal; project `p₀` into the support plane → `p`. Same/parallel support+ref REFUSES before any solver invocation (impossible in the principal-only domain by the differ-rule, still checked).
+3. Normalize `p`.
+4. Map: `right: u=+p, v=n×u` · `left: u=−p, v=n×u` · `top: v=+p, u=v×n` · `bottom: v=−p, u=v×n`.
+5. Assert finite, unit, orthogonal, `v = n×u` (right-handed on BOTH normal sides).
+
+Solver systems are built in this `u/v` frame — H/V constraints mean the USER'S horizontal/vertical. `skb-c0`/`skb-0`/`skb-b0` are untouched (frame choice is upstream of graph admission).
+
+### A3.6 — Operations: authoring and redefine (extends A2.9; SP-06 ruled IN; Codex3 B1/B2 absorbed)
+
+### A3.6.1 — Authoring: the explicit version discriminator (Codex3 B1)
+
+`mechanical.add_reference_sketch` carries TWO creation lanes, discriminated by ONE explicit operation member — never by silent reinterpretation of formerly-optional omissions:
+
+- **The legacy lane (`0.2.0`)**: the absence of `placement` — including the historical inputs `{part_number}` alone and `{part_number, plane}` — writes a `0.2.0` record EXACTLY as before: same payload shape, same canonical bytes/hash. Old operation traces replay byte-identically forever.
+- **The placement lane (`0.2.1`)**: the presence of the single operation member
+  `placement: {support, orientation_ref?, orientation?, normal_side?}` selects the `0.2.1` writer. `support` is REQUIRED inside it; omitted nested members take the A3.3 defaults; the engine persists the complete A3.2 record.
+- **Refusals**: `plane` + `placement` together; `placement` without `support`; unknown/extra/`null` members at either level — all under the D6 authority split (main = wire shape; engine = semantic validity).
+- **The product path**: Studio's placement session ALWAYS sends `placement` — the hard-coded-`xy` product path dies WITHOUT deleting old API replay.
+- **Trace-compatibility floor** (beside the stored-record literals): old `{part_number}` and `{part_number, plane}` inputs → exact `0.2.0` records/hashes; explicit `placement` → `0.2.1`; mixed/ambiguous inputs refuse; main/mock/handler dispatch identically at the shape level.
+
+### A3.6.2 — Redefine: the minimal, provenance-honest transaction (Codex3 B2)
+
+`mechanical.redefine_sketch_placement` re-places an EXISTING `0.2.1` sketch. Params: `part_number`, `sketch_feature_id`, + the four optional placement members (omission ⇒ **KEEP the current persisted value** — edit semantics, deliberately distinct from creation's defaults; explicit `null` refuses). The strict delta contract:
+
+1. **Target resolution first**: exactly ONE feature on the named Part; it must be a mechanical sketch with literal version `0.2.1`. `0.2.0` (`sketch-placement-redefine-v020` — immortal history per A3.1; the user-intent re-encode alternative is a possible later pass, never BS-1), wrong family/engine, missing, and ambiguous targets refuse BEFORE solver invocation.
+2. **Candidate construction**: overlay the provided members on the current placement; validate + derive completely (A3.5).
+3. **Minimal delta**: every non-placement semantic field is preserved BYTE-FOR-BYTE — feature id/name, entity/constraint/dimension/reference ids and records, authored nominals, contract ids, the witness set, and all unrelated top-level feature material. No rebaseline, no id remint, no caller-derived solved state.
+4. **Frame-only invariant**: the A2.9 re-solve runs, but the derived weak completion must EQUAL the committed set — a placement redefine may never alter local graph semantics; inequality refuses.
+5. **Provenance honesty** (A2.6 discipline): the redefine commit event carries the actor/acceptance provenance for the NEW placement facts; the original feature provenance/history is preserved — old geometry is never relabeled as newly authored.
+6. **The no-change case**: all members omitted, or provided members canonicalizing to the current placement, refuses with the named `sketch-placement-unchanged` BEFORE staging — no new recipe, event, or geometry projection is ever minted for a no-op.
+7. **Failure atomicity**: on any validation/solve/projection failure, NO sidecar/event/geometry-ref delta survives. On success, the new geometry projection/cache identity corresponds to the new recipe; the old materialization is non-authoritative.
+
+Identity per A3.4 (recipe + skeleton/signature change; held selection/derived state invalidate fail-closed; `v2_construction` re-maps). Downstream consumers cannot exist under `skb-b0`, so redefine-with-consumers joins the floor-9 INTEGRATION GATE. UI: the tree's ✎ enters the SAME placement session seeded with current values; accept runs the same one-shot commit lifecycle.
+Tests prove the minimal delta by comparing old/new records with `placement` removed, plus provenance, no-change, and failure-atomicity cases.
+
+### A3.7 — Surfaces (ADR/0045 D6 obligations)
+
+Per-version obligations at: the codec (encode/decode), the handler(s), the evaluator + signature, display (`v2_construction` through the A3.5 frame), the Studio decoder (TS admission mirror incl. the `0.2.1` placement shape), the electron-main envelope (closed wire shape ONLY — placement enums/keys/types; never derivation validity), and the mock (honest projection; engine-voice refusals; parity-tested world mapping both normal sides). Engine refusals cross the bridge unweakened; envelope refusals carry main's own voice.
+
+The list is a PROOF MATRIX, not a count (Codex3 N2): the implementation ledger names each actual entry point, and version dispatch stays CENTRALIZED — encoder/decoder/evaluator/signature/display must never become independently editable placement authorities.
+
+### A3.8 — Evidence (the ledger's floors, gated)
+
+Floors 1–8 + 10 as adopted (Codex1), with Codex2's literal-oracle and production-builder clarifications; floor 9 SPLIT: BS-1 proves frame/identity/regeneration/`v2_construction` on both normal sides + the production direction helper (`normal+` resolves the persisted signed normal); the actual downstream extrude proof is a NAMED GATE on the first pass admitting a topology-contributing v2 profile. Redefine adds: derivation-equality with authoring, keep-vs-change omission semantics, identity change + fail-closed invalidation, the `0.2.0` refusal, lifecycle (cancel/duplicate/stale), and the tree-✎ UI route.
