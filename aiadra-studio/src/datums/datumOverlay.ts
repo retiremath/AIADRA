@@ -30,6 +30,10 @@ export interface DatumOverlay {
   /** Per-kind visibility (the Creo datum-display dropdown); master `setVisible`
    *  still gates the whole overlay. */
   setKindVisible(kind: DatumKind, v: boolean): void
+  /** The plane-pick raycast surface — the three plane quads, AS A CONTRACT.
+   *  Consumers must never harvest `group.children` (the internal grouping is
+   *  free to change — it already broke a non-recursive raycast once). */
+  pickTargets(): THREE.Mesh[]
   dispose(): void
 }
 
@@ -62,6 +66,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
   kinds.fill.name = 'datum-fill'
   kinds.origin.name = 'datum-origin'
   group.add(kinds.planes, kinds.fill, kinds.origin)
+  const quads: THREE.Mesh[] = []
 
   for (const ori of ['xy', 'yz', 'zx'] as PlaneOrientation[]) {
     const [u, v] = PLANE_AXES[ori]
@@ -89,6 +94,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     quad.name = INTRINSIC_PLANE_IDS[ori]
     quad.userData = { kind: 'intrinsic-plane', intrinsicId: INTRINSIC_PLANE_IDS[ori], orientation: ori }
     kinds.fill.add(quad)
+    quads.push(quad)
     disposables.push(quadGeom, quadMat)
 
     // The border.
@@ -156,6 +162,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     setKindVisible: (kind, v) => {
       kinds[kind].visible = v
     },
+    pickTargets: () => quads,
     dispose: () => {
       for (const d of disposables) d.dispose()
     },

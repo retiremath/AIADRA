@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import * as THREE from 'three'
 import { createDatumOverlay } from './datumOverlay'
 import { INTRINSIC_CSYS_ID, INTRINSIC_PLANE_IDS } from '../authoring/backend'
 
@@ -43,6 +44,27 @@ describe('the datum overlay (EP1 — the empty-part scaffold)', () => {
     overlay.setVisible(false)
     expect(overlay.group.visible).toBe(false)
     expect(lane('datum-fill').visible).toBe(true)
+    overlay.dispose()
+  })
+
+  it('pickTargets() is the plane-pick CONTRACT: three quads, raycastable, grouping-independent', () => {
+    // REGRESSION (2026-07-25): the sub-lane restructure moved the quads one
+    // level deeper and a non-recursive raycast over `group.children` went
+    // silently dead — the sketch plane pick broke with every suite green.
+    const overlay = createDatumOverlay()
+    const targets = overlay.pickTargets()
+    expect(targets).toHaveLength(3)
+    const oris = targets.map((t) => (t.userData as { orientation: string }).orientation).sort()
+    expect(oris).toEqual(['xy', 'yz', 'zx'])
+    for (const t of targets) {
+      expect((t.userData as { kind: string }).kind).toBe('intrinsic-plane')
+    }
+    // and they actually INTERSECT: a ray down the -Z axis must hit the XY quad
+    overlay.group.updateMatrixWorld(true)
+    const ray = new THREE.Raycaster(new THREE.Vector3(5, 5, 100), new THREE.Vector3(0, 0, -1))
+    const hits = ray.intersectObjects(overlay.pickTargets(), false)
+    expect(hits.length).toBeGreaterThan(0)
+    expect((hits[0].object.userData as { orientation: string }).orientation).toBe('xy')
     overlay.dispose()
   })
 

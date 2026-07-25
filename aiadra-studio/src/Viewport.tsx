@@ -861,7 +861,9 @@ export default function Viewport({
       const r = canvas.getBoundingClientRect()
       ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      const hits = raycaster.intersectObjects(datums.group.children, false)
+      // the overlay's pick-surface CONTRACT — never its internal children
+      // (the sub-lane restructure silently killed a non-recursive raycast)
+      const hits = raycaster.intersectObjects(datums.pickTargets(), false)
       const hit = hits.find((h) => (h.object.userData as { kind?: string }).kind === 'intrinsic-plane')
       return (hit?.object as THREE.Mesh) ?? null
     }
