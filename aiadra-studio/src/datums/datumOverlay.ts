@@ -20,9 +20,16 @@ import {
   type PlaneOrientation,
 } from '../authoring/backend'
 
+/** The Creo datum-display filter kinds (shell pass 1): plane borders+labels /
+ *  translucent plane fills / the origin csys triad. */
+export type DatumKind = 'planes' | 'fill' | 'origin'
+
 export interface DatumOverlay {
   group: THREE.Group
   setVisible(v: boolean): void
+  /** Per-kind visibility (the Creo datum-display dropdown); master `setVisible`
+   *  still gates the whole overlay. */
+  setKindVisible(kind: DatumKind, v: boolean): void
   dispose(): void
 }
 
@@ -43,6 +50,18 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
   const group = new THREE.Group()
   group.name = 'datum-overlay'
   const disposables: { dispose(): void }[] = []
+
+  // The three filterable sub-lanes (Creo datum-display kinds). Children keep
+  // their existing userData identity; only the PARENTING changed.
+  const kinds: Record<DatumKind, THREE.Group> = {
+    planes: new THREE.Group(),
+    fill: new THREE.Group(),
+    origin: new THREE.Group(),
+  }
+  kinds.planes.name = 'datum-planes'
+  kinds.fill.name = 'datum-fill'
+  kinds.origin.name = 'datum-origin'
+  group.add(kinds.planes, kinds.fill, kinds.origin)
 
   for (const ori of ['xy', 'yz', 'zx'] as PlaneOrientation[]) {
     const [u, v] = PLANE_AXES[ori]
@@ -69,7 +88,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     const quad = new THREE.Mesh(quadGeom, quadMat)
     quad.name = INTRINSIC_PLANE_IDS[ori]
     quad.userData = { kind: 'intrinsic-plane', intrinsicId: INTRINSIC_PLANE_IDS[ori], orientation: ori }
-    group.add(quad)
+    kinds.fill.add(quad)
     disposables.push(quadGeom, quadMat)
 
     // The border.
@@ -79,7 +98,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     const borderMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 })
     const border = new THREE.Line(borderGeom, borderMat)
     border.userData = { kind: 'intrinsic-plane-border', intrinsicId: INTRINSIC_PLANE_IDS[ori] }
-    group.add(border)
+    kinds.planes.add(border)
     disposables.push(borderGeom, borderMat)
 
     // The corner label sprite (canvas-textured, always camera-facing).
@@ -90,7 +109,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
         u.clone().multiplyScalar(halfSize * 0.86).addScaledVector(v, halfSize * 0.9),
       )
       label.userData = { kind: 'intrinsic-plane-label', intrinsicId: INTRINSIC_PLANE_IDS[ori] }
-      group.add(label)
+      kinds.planes.add(label)
       disposables.push(label.material as THREE.SpriteMaterial)
       disposables.push((label.material as THREE.SpriteMaterial).map as THREE.Texture)
     }
@@ -100,7 +119,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
   const triad = new THREE.AxesHelper(halfSize * 0.35)
   triad.name = INTRINSIC_CSYS_ID
   triad.userData = { kind: 'intrinsic-csys', intrinsicId: INTRINSIC_CSYS_ID }
-  group.add(triad)
+  kinds.origin.add(triad)
   disposables.push(triad.geometry, triad.material as THREE.Material)
   // X/Y/Z axis labels at the triad tips (Petre round 2): THIS is the
   // coordinate system — at 0,0,0, the datum intersection — replacing the
@@ -116,7 +135,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     tip.position.copy(dir.clone().multiplyScalar(halfSize * 0.42))
     tip.scale.set(9, 2.25, 1)
     tip.userData = { kind: 'intrinsic-csys-label', intrinsicId: INTRINSIC_CSYS_ID }
-    group.add(tip)
+    kinds.origin.add(tip)
     disposables.push(tip.material as THREE.SpriteMaterial)
     disposables.push((tip.material as THREE.SpriteMaterial).map as THREE.Texture)
   }
@@ -124,7 +143,7 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
   if (originLabel) {
     originLabel.position.set(halfSize * 0.04, halfSize * 0.04, halfSize * 0.04)
     originLabel.scale.multiplyScalar(0.5)
-    group.add(originLabel)
+    kinds.origin.add(originLabel)
     disposables.push(originLabel.material as THREE.SpriteMaterial)
     disposables.push((originLabel.material as THREE.SpriteMaterial).map as THREE.Texture)
   }
@@ -133,6 +152,9 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     group,
     setVisible: (v) => {
       group.visible = v
+    },
+    setKindVisible: (kind, v) => {
+      kinds[kind].visible = v
     },
     dispose: () => {
       for (const d of disposables) d.dispose()

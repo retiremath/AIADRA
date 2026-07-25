@@ -60,6 +60,8 @@ import type { Command, CommandActions } from './commands/types'
 export type ViewportApi = {
   fit: () => void
   reset: () => void
+  /** Step the ortho zoom by a factor (Creo Zoom In/Out; shell pass 1). */
+  zoomBy: (factor: number) => void
   /** Live re-theming (arc 20260619-1 / 6a). */
   applyTheme: (theme: Theme) => void
   /** Load (or clear) the canonical lane from a display source (arc 20260610-1).
@@ -647,6 +649,14 @@ export default function Viewport({
       return box
     }
 
+    // Stepped ortho zoom (Creo Zoom In/Out): camera.zoom scaling, clamped so a
+    // runaway click series can never invert or vanish the frustum.
+    const zoomBy = (factor: number) => {
+      camera.zoom = Math.min(50, Math.max(0.02, camera.zoom * factor))
+      camera.updateProjectionMatrix()
+      machine.cameraMoved()
+    }
+
     const fit = () => {
       const box = sceneBox()
       if (box.isEmpty()) {
@@ -758,12 +768,23 @@ export default function Viewport({
     }
 
     let datumsVisible = viewStore.getSnapshot().datumsVisible
+    let datumFilters = viewStore.getSnapshot().datumFilters
+    const applyDatumFilters = () => {
+      datums.setKindVisible('planes', datumFilters.planes)
+      datums.setKindVisible('fill', datumFilters.fill)
+      datums.setKindVisible('origin', datumFilters.origin)
+    }
+    applyDatumFilters()
     const unsubStore = viewStore.subscribe(() => {
       const s = viewStore.getSnapshot()
       if (s.mode !== currentMode) applyModeChange(s.mode)
       if (s.datumsVisible !== datumsVisible) {
         datumsVisible = s.datumsVisible
         datums.setVisible(datumsVisible)
+      }
+      if (s.datumFilters !== datumFilters) {
+        datumFilters = s.datumFilters
+        applyDatumFilters()
       }
     })
 
@@ -981,11 +1002,16 @@ export default function Viewport({
           datums.setVisible(datumsPriorVisible)
           datumsPriorVisible = null
         }
+        applyDatumFilters() // restore the user's datum-display filters
       }
       if (kind === 'planePick' && modeKind !== 'planePick') {
-        // mode-scoped datum exposure (Codex1 B4.4) — restored on exit above
+        // mode-scoped datum exposure (Codex1 B4.4) — restored on exit above.
+        // The pick surface is the plane QUADS — force fill + borders visible
+        // for the pick regardless of the user's display filters.
         datumsPriorVisible = viewStore.getSnapshot().datumsVisible
         datums.setVisible(true)
+        datums.setKindVisible('fill', true)
+        datums.setKindVisible('planes', true)
       }
       if (kind === 'sketch' && modeKind !== 'sketch' && m?.kind === 'sketch') {
         ghostPart(true)
@@ -1264,6 +1290,7 @@ export default function Viewport({
     apiRef.current = {
       fit,
       reset,
+      zoomBy,
       applyTheme,
       setDisplaySource,
       snapToView,
@@ -1283,6 +1310,12 @@ export default function Viewport({
       renderer.setSize(w(), h())
     }
     window.addEventListener('resize', onResize)
+    // The dock dismiss/drag and sidebar changes reflow the CONTAINER without
+    // any window resize — the canvas kept its stale pixel size (the blank
+    // right-region bug). Observe the mount itself; jsdom has no
+    // ResizeObserver, so guard like the ribbon fold does.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null
+    ro?.observe(mount)
 
     let rafId = 0
     const navDir = new THREE.Vector3()
@@ -1310,6 +1343,7 @@ export default function Viewport({
       unsubSelection()
       machine.dispose()
       window.removeEventListener('resize', onResize)
+      ro?.disconnect()
       canvas.removeEventListener('pointerdown', onPointerDownCapture, true)
       canvas.removeEventListener('pointerdown', onLeftDown)
       canvas.removeEventListener('pointerup', onLeftUp)

@@ -13,12 +13,15 @@ import { COMMANDS, commandsInGroup } from './commands/registry'
 import type { CommandActions } from './commands/types'
 import { createViewStateStore, type ViewState } from './viewstate/store'
 import { createSelectionStore } from './selection/store'
+import { SettingsProvider } from './settings/useSettings'
+import { createSettingsRegistry } from './settings/registry'
 
 afterEach(cleanup)
 
 const state = (over: Partial<ViewState> = {}): ViewState => ({
   mode: 'shading-edges',
   datumsVisible: true,
+  datumFilters: { planes: true, fill: true, origin: true },
   hasCanonicalPart: true,
   hasReferenceGeometry: false,
   ...over,
@@ -28,28 +31,56 @@ function mount(over: Partial<ViewState> = {}) {
   const actions: CommandActions = {
     fit: vi.fn(),
     reset: vi.fn(),
+    zoomBy: vi.fn(),
     setMode: vi.fn(),
     toggleDatums: vi.fn(),
+    toggleDatumFilter: vi.fn(),
     standardView: vi.fn(),
     toggleFilterKind: vi.fn(),
     clearSelection: vi.fn(),
   }
   render(
-    <Toolbar store={createViewStateStore(state(over))} selectionStore={createSelectionStore()} actions={actions} />,
+    // the toolbar's placement chrome reads the settings registry
+    <SettingsProvider registry={createSettingsRegistry()}>
+      <Toolbar store={createViewStateStore(state(over))} selectionStore={createSelectionStore()} actions={actions} />
+    </SettingsProvider>,
   )
   return actions
 }
 
 describe('the condensed graphics toolbar (V-4)', () => {
-  it('renders icon buttons + the three dropdowns; the display trigger names the CURRENT mode', () => {
+  it('renders icon buttons + the four dropdowns; the display trigger names the CURRENT mode', () => {
     mount()
-    expect(screen.getByRole('button', { name: 'Fit to view' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Refit' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Zoom in' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Zoom out' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Reset view' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Display style — Shading With Edges/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Named views' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Selection' })).toBeTruthy()
-    const datums = screen.getByRole('button', { name: 'Datum planes' })
-    expect(datums.getAttribute('aria-pressed')).toBe('true')
+    // datums moved from a lone icon-toggle to the Creo datum-display dropdown
+    expect(screen.getByRole('button', { name: 'Datum display' })).toBeTruthy()
+  })
+
+  it('the datum-display dropdown: master + per-kind filters; filters disable when the master is off', () => {
+    const actions = mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Datum display' }))
+    expect(screen.getByText(/All datum display/).className).toContain('current')
+    fireEvent.click(screen.getByText(/Plane fill display/))
+    expect(actions.toggleDatumFilter).toHaveBeenCalledWith('fill')
+    // master OFF → the per-kind rows are honestly disabled
+    cleanup()
+    mount({ datumsVisible: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Datum display' }))
+    expect(screen.getByText(/Plane display/).getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('zoom buttons dispatch stepped factors', () => {
+    const actions = mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    expect(actions.zoomBy).toHaveBeenCalledWith(1.25)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }))
+    expect(actions.zoomBy).toHaveBeenCalledWith(1 / 1.25)
   })
 
   it('the display menu lists all five modes with the current marked; selecting dispatches', () => {
@@ -81,11 +112,11 @@ describe('the condensed graphics toolbar (V-4)', () => {
     expect(actions.toggleFilterKind).toHaveBeenCalledWith('face')
   })
 
-  it('no renderable scene: display/views triggers disable; datums stays available', () => {
+  it('no renderable scene: display/views triggers disable; datum display stays available', () => {
     mount({ hasCanonicalPart: false })
     expect((screen.getByRole('button', { name: /Display style/ }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Named views' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: 'Datum planes' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Datum display' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('toolbar addressability: every taxonomy command is reachable (button or menu child)', () => {

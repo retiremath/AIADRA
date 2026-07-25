@@ -9,6 +9,8 @@ import { Dock, startBracketSession } from './dock/Dock'
 import { HomeSurface } from './home/HomeSurface'
 import { HomeRibbon } from './home/HomeRibbon'
 import { FileMenu, type FileMenuItem } from './home/FileMenu'
+import { QuickAccessBar, type QatCommand } from './ui/QuickAccessBar'
+import { NavigatorTabs, type NavTabKey } from './ui/NavigatorTabs'
 import { NewDialog, type NewObjectChoice } from './home/NewDialog'
 import { WorkspaceStart, type OpenedWorkspace } from './home/HomeShared'
 import {
@@ -583,6 +585,14 @@ function Workbench({
   // Codex26 B3: the one-shot references commit participates in the GLOBAL
   // authoring gate — while it runs, every authoring start refuses with a
   // named reason (single-flight is enforced in the runner too).
+  // The navigator tab (Creo tabbed tree). Starts on Workspace (where a part
+  // is picked), auto-switches to Model Tree when a part loads, and is FORCED
+  // to Model Tree during a plane pick. Manual choice stands otherwise.
+  const [navTabChoice, setNavTabChoice] = useState<NavTabKey>('workspace')
+  useEffect(() => {
+    if (pc.partNumber !== null) setNavTabChoice('model')
+  }, [pc.partNumber])
+  const navTab: NavTabKey = authoringSession.mode === 'planePick' ? 'model' : navTabChoice
   const [refsBusy, setRefsBusy] = useState(false)
   const authoringGate =
     (refsBusy ? 'the references commit is still running — wait for it to finish' : null) ??
@@ -1090,8 +1100,10 @@ function Workbench({
     () => ({
       fit: () => viewportApi.current?.fit(),
       reset: () => viewportApi.current?.reset(),
+      zoomBy: (f) => viewportApi.current?.zoomBy(f),
       setMode: (m) => viewStore.setMode(m),
       toggleDatums: () => viewStore.setDatumsVisible(!viewStore.getSnapshot().datumsVisible),
+      toggleDatumFilter: (k) => viewStore.setDatumFilter(k, !viewStore.getSnapshot().datumFilters[k]),
       standardView: (id) => viewportApi.current?.standardView(id),
       toggleFilterKind: (k) => selectionStore.toggleFilterKind(k),
       clearSelection: () => selectionStore.clearSelected(),
@@ -1233,6 +1245,68 @@ function Workbench({
   // disabled with a tooltip (Codex6: Check-In stays disabled until it performs
   // the real git-backed transition).
   const bridged = !!window.aiadra
+  // ONE open-workspace flow shared by the File menu, the Home ribbon, and the
+  // Quick Access bar (was three inline copies).
+  const openWorkspaceFlow = async () => {
+    const r = await window.aiadra!.chooseWorkspace()
+    if (!r.ok) {
+      if (r.error.message !== 'cancelled') setShellNote(r.error.message)
+      return
+    }
+    const reason = await switchWorkspace(r.result)
+    if (reason !== null) setShellNote(reason)
+  }
+  // The Quick Access bar (Creo QAT benchmark): same gates + handlers as the
+  // File menu — one behavior, two surfaces. Placement is a typed setting.
+  const [qatBelowRibbon] = useSetting('qatBelowRibbon')
+  const [gfxToolbarPos] = useSetting('graphicsToolbarPosition')
+  // The navigator sash (Creo drag-resize; same pattern as the dock grip).
+  const [navWidth, setNavWidth] = useSetting('navigatorWidth')
+  const navDragging = useRef(false)
+  const onNavGripDown = (e: React.PointerEvent) => {
+    navDragging.current = true
+    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    const startX = e.clientX
+    const startW = navWidth as number
+    const move = (ev: PointerEvent) => {
+      if (!navDragging.current) return
+      setNavWidth(Math.min(640, Math.max(170, startW + (ev.clientX - startX))))
+    }
+    const up = () => {
+      navDragging.current = false
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  const qatCommands: QatCommand[] = [
+    {
+      key: 'new',
+      disabledReason: authoringGate,
+      title: 'Create a new object (Part, …)',
+      onClick: requestNew,
+    },
+    {
+      key: 'open',
+      disabledReason: !bridged ? 'Available in the desktop app' : uiGate,
+      title: 'Open an AIADRA workspace folder',
+      onClick: () => void openWorkspaceFlow(),
+    },
+    {
+      key: 'import',
+      disabledReason: appSession === 'modeling' ? null : IMPORT_HOME_REASON,
+      title: 'External geometry - reference only, never Product Truth',
+      onClick: () => referenceImport.openPicker(),
+    },
+    {
+      key: 'close',
+      disabledReason: appSession !== 'modeling' ? 'No model is open' : uiGate,
+      title: 'Close the model and return Home',
+      onClick: () => void closeToHome(),
+    },
+  ]
+  const qatBar = <QuickAccessBar commands={qatCommands} />
   const fileItems: FileMenuItem[] = [
     {
       label: 'New…',
@@ -1246,15 +1320,7 @@ function Workbench({
       title: !bridged
         ? 'Available in the desktop app'
         : (uiGate ?? 'Open an AIADRA workspace folder'),
-      onClick: async () => {
-        const r = await window.aiadra!.chooseWorkspace()
-        if (!r.ok) {
-          if (r.error.message !== 'cancelled') setShellNote(r.error.message)
-          return
-        }
-        const reason = await switchWorkspace(r.result)
-        if (reason !== null) setShellNote(reason)
-      },
+      onClick: () => void openWorkspaceFlow(),
     },
     {
       // V-3 (Codex1 B1): the ONE typed import entry — enabled only in the
@@ -1286,29 +1352,31 @@ function Workbench({
 
   return (
     <div className="studio">
-      <header className="topbar">
-        <span className="brand">AIADRA&nbsp;Studio</span>
-        <FileMenu items={fileItems} />
-        <span className="muted small">{appSession === 'home' ? 'Home' : 'Modeling workspace'}</span>
+      {/* The title bar (Creo chrome benchmark): the frame area itself — the
+          app title in the LEFT corner, Quick Access following it (so a grown
+          QAT never collides with the title), the OS overlay window controls
+          on the right. Draggable except its controls. */}
+      <header className="titlebar">
+        <span className="titlebar-title">AIADRA&nbsp;Studio</span>
+        {qatBelowRibbon !== true && qatBar}
         {appSession === 'modeling' && fixtureBadge && (
           <span className="ref-badge small">{fixtureBadge}</span>
         )}
       </header>
+      {/* The tab strip (Creo grammar): the green File button + the active
+          ribbon's tab title, ABOVE the ribbon content row. */}
+      <div className="ribbon-tabs">
+        <FileMenu items={fileItems} />
+        <span className="rtab active">{appSession === 'home' ? 'Home' : 'Model'}</span>
+      </div>
       {appSession === 'home' && (
         <>
           <HomeRibbon
             onNewPart={requestNew}
-            onOpenWorkspace={async () => {
-              const r = await window.aiadra!.chooseWorkspace()
-              if (!r.ok) {
-                if (r.error.message !== 'cancelled') setShellNote(r.error.message)
-                return
-              }
-              const reason = await switchWorkspace(r.result)
-              if (reason !== null) setShellNote(reason)
-            }}
+            onOpenWorkspace={() => void openWorkspaceFlow()}
             canOpenWorkspace={bridged && !uiGate}
           />
+          {qatBelowRibbon === true && <div className="qat-row">{qatBar}</div>}
           <HomeSurface
             onOpened={switchWorkspace}
             onOpenSample={import.meta.env.DEV && !window.aiadra ? openSample : undefined}
@@ -1331,39 +1399,56 @@ function Workbench({
         }}
         onStart={onStartFeature}
       />
+      {qatBelowRibbon === true && <div className="qat-row">{qatBar}</div>}
       {referenceImport.inputElement}
       <div className="workbench">
+        {/* the wrap owns width + the sash; the aside scrolls independently */}
+        <div className="sidebar-wrap" style={{ width: navWidth as number }}>
         <aside className="sidebar">
-          <EnginePanel
-            ws={currentWs}
-            onOpen={switchWorkspace}
-            gate={uiGate}
-            refresh={partsRefresh}
-            loadedPart={pc.partNumber}
-            onPartLoaded={(n) => adoptPart(currentWs?.workspaceId ?? null, n)}
-          />
-          <ReferencesList imports={referenceImport} />
-          <AppearancePanel />
-          <div className="panel-title">Model tree</div>
-          <ModelTreePanel
-            session={authoringStore}
-            context={partContext}
-            onEditFeature={editFeatureEntry}
-            onPlaneRow={
-              authoringSession.mode === 'planePick'
-                ? (ori) => authoringStore.resolvePlanePick(ori)
-                : null
-            }
-          />
-          <div className="muted small pad">
-            Create features from the <b>Model</b> ribbon above.
-          </div>
+          {/* The tabbed navigator (Creo grammar): Model Tree / Workspace.
+              A plane pick FORCES the Model Tree tab (its plane rows are an
+              active pick surface); otherwise the user's choice stands, with
+              part-load auto-switching handled where the part adopts. */}
+          <NavigatorTabs active={navTab} onSelect={setNavTabChoice} />
           {fixtureError && <div className="small pad err">{fixtureError}</div>}
-          <div className="panel-title">Properties</div>
-          <div className="muted small pad">
-            Windchill-style Product-Truth panel — placeholder.
-          </div>
+          {navTab === 'model' && (
+            <>
+              <ModelTreePanel
+                session={authoringStore}
+                context={partContext}
+                onEditFeature={editFeatureEntry}
+                onPlaneRow={
+                  authoringSession.mode === 'planePick'
+                    ? (ori) => authoringStore.resolvePlanePick(ori)
+                    : null
+                }
+              />
+              <div className="muted small pad">
+                Create features from the <b>Model</b> ribbon above.
+              </div>
+              <ReferencesList imports={referenceImport} />
+            </>
+          )}
+          {navTab === 'workspace' && (
+            <>
+              <EnginePanel
+                ws={currentWs}
+                onOpen={switchWorkspace}
+                gate={uiGate}
+                refresh={partsRefresh}
+                loadedPart={pc.partNumber}
+                onPartLoaded={(n) => adoptPart(currentWs?.workspaceId ?? null, n)}
+              />
+              <div className="panel-title">Properties</div>
+              <div className="muted small pad">
+                Windchill-style Product-Truth panel — placeholder.
+              </div>
+            </>
+          )}
+          <AppearancePanel />
         </aside>
+        <div className="nav-grip" onPointerDown={onNavGripDown} title="Drag to resize" />
+        </div>
         <main className="viewport">
           {ready ? (
             <>
@@ -1496,7 +1581,8 @@ function Workbench({
               setPartsRefresh((n) => n + 1)
             }}
           />
-          <div className="hud muted small">middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
+          {/* the mouse hint yields the bottom edge to a bottom-placed toolbar */}
+          <div className={`hud muted small${gfxToolbarPos === 'bottom' ? ' hud-top' : ''}`}>middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
         {dockOpen && (
           <Dock
@@ -1568,6 +1654,7 @@ export default function App() {
     viewStoreRef.current = createViewStateStore({
       mode: registry.get('defaultDisplayMode') as DisplayMode,
       datumsVisible: true, // the empty-part scaffold shows by default (EP1)
+      datumFilters: { planes: true, fill: true, origin: true },
       hasCanonicalPart: false,
       hasReferenceGeometry: false,
     })

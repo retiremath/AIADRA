@@ -17,10 +17,19 @@ import { useSyncExternalStore } from 'react'
 import type { DisplayMode } from '../display/modes'
 import type { CommandContext } from '../commands/types'
 
+/** The Creo datum-display filters (shell pass 1) — refine WHICH datum kinds
+ *  show while the master `datumsVisible` toggle gates the whole overlay. */
+export interface DatumFilters {
+  planes: boolean
+  fill: boolean
+  origin: boolean
+}
+
 export interface ViewState {
   mode: DisplayMode
   /** The datum overlay (EP1): the origin triad + three principal planes. */
   datumsVisible: boolean
+  datumFilters: DatumFilters
   hasCanonicalPart: boolean
   hasReferenceGeometry: boolean
 }
@@ -30,6 +39,7 @@ export interface ViewStateStore {
   subscribe(fn: () => void): () => void
   setMode(mode: DisplayMode): void
   setDatumsVisible(v: boolean): void
+  setDatumFilter(kind: keyof DatumFilters, v: boolean): void
   setSceneFacts(facts: Partial<Pick<ViewState, 'hasCanonicalPart' | 'hasReferenceGeometry'>>): void
 }
 
@@ -58,6 +68,10 @@ export function createViewStateStore(initial: ViewState): ViewStateStore {
     },
     setMode: (mode) => update({ mode }),
     setDatumsVisible: (datumsVisible) => update({ datumsVisible }),
+    setDatumFilter: (kind, v) => {
+      if (state.datumFilters[kind] === v) return // shallow-compare guard for the nested object
+      update({ datumFilters: { ...state.datumFilters, [kind]: v } })
+    },
     setSceneFacts: (facts) => update(facts),
   }
 }
@@ -81,6 +95,7 @@ export function toCommandContext(
     hasRenderableScene: s.hasCanonicalPart || s.hasReferenceGeometry,
     mode: s.mode,
     datumsVisible: s.datumsVisible,
+    datumFilters: s.datumFilters,
     filter: sel.filter,
     hasSelection: sel.hasSelection,
   }

@@ -1,17 +1,22 @@
 /**
  * The CONDENSED in-graphics toolbar (arc 20260619-2 / 6b → 20260716-1 V-4,
- * Codex1 B4) — Creo-benchmarked density: icon buttons + THREE dropdowns on
- * the shared `DropdownMenu` primitive (display style · named views ·
- * selection), replacing the old full-width text-chip strip. Still rendered
- * FROM the command taxonomy + the shared view-state — NOT hand-wired — so the
- * same descriptors keep driving the context menu and the keyboard dispatcher
- * (shortcuts unchanged). Every command stays reachable: fit/reset/datums as
- * icon buttons, everything else as a menu child with its own enabled state.
+ * Codex1 B4 → shell pass 1) — Creo-benchmarked density: icon buttons + FOUR
+ * dropdowns on the shared `DropdownMenu` primitive (display style · named
+ * views · selection · datum display), rendered FROM the command taxonomy +
+ * the shared view-state — NOT hand-wired — so the same descriptors keep
+ * driving the context menu and the keyboard dispatcher.
+ *
+ * Shell pass 1 adds the Creo CHROME behaviors: the bar is MOVABLE (top /
+ * bottom of the graphics area) and DISMISSABLE — right-click the bar for the
+ * position menu; when hidden, a small edge handle restores it. Placement is a
+ * TYPED SETTING (persisted), never ad-hoc state.
  */
+import { useEffect, useState } from 'react'
 import { commandsInGroup } from './commands/registry'
 import type { Command, CommandActions } from './commands/types'
 import { ICONS } from './commands/icons'
 import { DropdownMenu, type MenuItem } from './ui/DropdownMenu'
+import { useSetting } from './settings/useSettings'
 import { toCommandContext, useViewState, type ViewStateStore } from './viewstate/store'
 import { useSelectionState, type SelectionStore } from './selection/store'
 
@@ -29,6 +34,15 @@ export function Toolbar({
     filter: sel.filter,
     hasSelection: sel.selected !== null,
   })
+  const [position, setPosition] = useSetting('graphicsToolbarPosition')
+  const [ctxMenu, setCtxMenu] = useState(false)
+  useEffect(() => {
+    if (!ctxMenu) return
+    const close = () => setCtxMenu(false)
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [ctxMenu])
+
   const tip = (c: Command) => (c.shortcut ? `${c.label} (${c.shortcut.toUpperCase()})` : c.label)
 
   const iconButton = (c: Command) => (
@@ -48,11 +62,15 @@ export function Toolbar({
 
   // A command group as menu items — each child keeps its OWN enabled state
   // and dispatches through its command (never re-derived in the renderer).
+  // A command's declared `disabledReason` (roadmap honesty) wins over the
+  // generic state copy.
   const menuItems = (commands: Command[]): MenuItem[] =>
     commands.map((c) => ({
       key: c.id,
-      label: c.shortcut ? `${c.label} (${c.shortcut.toUpperCase()})` : c.label,
-      disabledReason: c.isEnabled(ctx) ? null : 'unavailable in the current state',
+      label: c.shortcut ? `${c.label} (${c.shortcut.toUpperCase()})` : c.label,
+      disabledReason: c.isEnabled(ctx)
+        ? null
+        : (c.disabledReason ?? 'unavailable in the current state'),
       current: !!c.isActive?.(ctx),
     }))
   const runById = (commands: Command[]) => (id: string) => {
@@ -63,11 +81,42 @@ export function Toolbar({
   const display = commandsInGroup('display')
   const orientation = commandsInGroup('orientation')
   const selection = commandsInGroup('selection')
+  const scene = commandsInGroup('scene')
   const currentMode = display.find((c) => c.isActive?.(ctx))
   const anyRenderable = display.some((c) => c.isEnabled(ctx))
 
+  // Dismissed: a small, always-discoverable restore handle (the user must
+  // never need a buried setting to get the bar back — Petre's UX rule).
+  if (position === 'hidden') {
+    return (
+      <button
+        type="button"
+        className="tb-restore"
+        title="Show the graphics toolbar"
+        aria-label="Show the graphics toolbar"
+        onClick={() => setPosition('top')}
+      >
+        ▾
+      </button>
+    )
+  }
+
+  const positionItems: MenuItem[] = [
+    { key: 'top', label: 'Top', current: position === 'top' },
+    { key: 'bottom', label: 'Bottom', current: position === 'bottom' },
+    { key: 'hidden', label: 'Hide toolbar', sepBefore: true },
+  ]
+
   return (
-    <div className="toolbar" role="toolbar" aria-label="Display commands">
+    <div
+      className={`toolbar pos-${position}`}
+      role="toolbar"
+      aria-label="Display commands"
+      onContextMenu={(e) => {
+        e.preventDefault()
+        setCtxMenu(true)
+      }}
+    >
       <div className="tb-group">{commandsInGroup('view').map(iconButton)}</div>
       <span className="tb-sep" />
       <DropdownMenu
@@ -102,7 +151,37 @@ export function Toolbar({
         <span className="tb-caret">▾</span>
       </DropdownMenu>
       <span className="tb-sep" />
-      <div className="tb-group">{commandsInGroup('scene').map(iconButton)}</div>
+      {/* The datum-display dropdown (Creo's checkbox filter list): the master
+          toggle + the per-kind filters, all taxonomy rows. */}
+      <DropdownMenu
+        label="Datum display"
+        className="tb-dd"
+        items={menuItems(scene)}
+        onSelect={runById(scene)}
+      >
+        {ICONS.datums}
+        <span className="tb-caret">▾</span>
+      </DropdownMenu>
+      {ctxMenu && (
+        <ul className="tb-ctx dd-menu" role="menu" aria-label="Toolbar position">
+          {positionItems.map((it) => (
+            <li
+              key={it.key}
+              role="menuitem"
+              tabIndex={-1}
+              className={`dd-item${it.current ? ' current' : ''}${it.sepBefore ? ' sep' : ''}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                setPosition(it.key)
+                setCtxMenu(false)
+              }}
+            >
+              {it.current ? '✓ ' : ''}
+              {it.label}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

@@ -25,6 +25,27 @@ describe('the datum overlay (EP1 — the empty-part scaffold)', () => {
     overlay.dispose()
   })
 
+  it('per-kind filters hide ONLY their sub-lane (the Creo datum-display dropdown)', () => {
+    const overlay = createDatumOverlay()
+    const lane = (name: string) => overlay.group.children.find((c) => c.name === name)!
+    expect(lane('datum-planes').visible).toBe(true)
+    expect(lane('datum-fill').visible).toBe(true)
+    expect(lane('datum-origin').visible).toBe(true)
+    overlay.setKindVisible('fill', false)
+    expect(lane('datum-fill').visible).toBe(false)
+    expect(lane('datum-planes').visible).toBe(true) // untouched
+    expect(lane('datum-origin').visible).toBe(true)
+    overlay.setKindVisible('origin', false)
+    expect(lane('datum-origin').visible).toBe(false)
+    overlay.setKindVisible('fill', true)
+    expect(lane('datum-fill').visible).toBe(true)
+    // the master gate is INDEPENDENT of the filters
+    overlay.setVisible(false)
+    expect(overlay.group.visible).toBe(false)
+    expect(lane('datum-fill').visible).toBe(true)
+    overlay.dispose()
+  })
+
   it('is an OVERLAY lane — no child carries canonical display identity', () => {
     const overlay = createDatumOverlay()
     overlay.group.traverse((o) => {

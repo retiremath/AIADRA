@@ -15,6 +15,7 @@ function ctx(over: Partial<CommandContext> = {}): CommandContext {
     hasRenderableScene: false,
     mode: 'shading-edges',
     datumsVisible: true,
+    datumFilters: { planes: true, fill: true, origin: true },
     filter: { face: true, edge: true },
     hasSelection: false,
     ...over,
@@ -26,8 +27,10 @@ function ctx(over: Partial<CommandContext> = {}): CommandContext {
 const mkActions = (): CommandActions => ({
   fit: vi.fn(),
   reset: vi.fn(),
+  zoomBy: vi.fn(),
   setMode: vi.fn(),
   toggleDatums: vi.fn(),
+  toggleDatumFilter: vi.fn(),
   standardView: vi.fn(),
   toggleFilterKind: vi.fn(),
   clearSelection: vi.fn(),
@@ -75,10 +78,15 @@ describe('command taxonomy', () => {
 
   // --- 6c: orientation (standard views) + selection (filters/clear) ---
   it('6c: standard-view commands cover the 7 named views and orient the camera', () => {
+    // + the roadmap-disabled View Manager row (shell pass 1) — declared
+    // reason, never enabled.
     const views = commandsInGroup('orientation')
     expect(views.map((c) => c.id).sort()).toEqual(
-      ['back', 'bottom', 'front', 'iso', 'left', 'right', 'top'].map((v) => `orientation.${v}`).sort(),
+      [...['back', 'bottom', 'front', 'iso', 'left', 'right', 'top'].map((v) => `orientation.${v}`), 'orientation.view-manager'].sort(),
     )
+    const vm = COMMANDS_BY_ID['orientation.view-manager']
+    expect(vm.isEnabled(ctx({ hasCanonicalPart: true }))).toBe(false)
+    expect(vm.disabledReason).toContain('View Manager')
     const a = mkActions()
     COMMANDS_BY_ID['orientation.front'].run(a, ctx({ hasReferenceGeometry: true }))
     expect(a.standardView).toHaveBeenCalledWith('front')

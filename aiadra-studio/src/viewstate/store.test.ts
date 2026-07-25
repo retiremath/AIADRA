@@ -4,6 +4,7 @@ import { createViewStateStore, toCommandContext, type ViewState } from './store'
 const initial = (): ViewState => ({
   mode: 'shading-edges',
   datumsVisible: true,
+  datumFilters: { planes: true, fill: true, origin: true },
   hasCanonicalPart: false,
   hasReferenceGeometry: false,
 })

@@ -25,7 +25,10 @@ const renderable = (c: CommandContext) => c.hasRenderableScene
 const canonical = (c: CommandContext) => c.hasCanonicalPart
 
 export const COMMANDS: Command[] = [
-  { id: 'view.fit', group: 'view', kind: 'action', label: 'Fit to view', iconKey: 'fit', shortcut: 'f', isEnabled: renderable, run: (a) => a.fit() },
+  { id: 'view.fit', group: 'view', kind: 'action', label: 'Refit', iconKey: 'fit', shortcut: 'f', isEnabled: renderable, run: (a) => a.fit() },
+  // Creo Zoom In / Zoom Out (shell pass 1) — stepped ortho zoom beside Refit.
+  { id: 'view.zoom-in', group: 'view', kind: 'action', label: 'Zoom in', iconKey: 'zoom-in', isEnabled: renderable, run: (a) => a.zoomBy(1.25) },
+  { id: 'view.zoom-out', group: 'view', kind: 'action', label: 'Zoom out', iconKey: 'zoom-out', isEnabled: renderable, run: (a) => a.zoomBy(1 / 1.25) },
   { id: 'view.reset', group: 'view', kind: 'action', label: 'Reset view', iconKey: 'reset', shortcut: 'r', isEnabled: renderable, run: (a) => a.reset() },
   // Standard views (arc 20260625-1 / 6c). The nav cube and these buttons share
   // ONE orientation table; keybindings are deferred to the benchmark packet
@@ -39,6 +42,8 @@ export const COMMANDS: Command[] = [
     isEnabled: renderable,
     run: (a) => a.standardView(id),
   })),
+  // Roadmap-honest (Creo View Manager): named/saved views are a LATER strand.
+  { id: 'orientation.view-manager', group: 'orientation', kind: 'action', label: 'View Manager…', disabledReason: 'Named views arrive with the View Manager strand', isEnabled: () => false, run: () => {} },
   ...DISPLAY_MODES.map((m, i): Command => ({
     id: `display.${m}`,
     group: 'display',
@@ -58,7 +63,13 @@ export const COMMANDS: Command[] = [
   // visibility toggle (origin triad + the three principal planes). Always
   // available (datums are useful with no geometry — that IS the empty-part
   // paradigm).
-  { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'Datum planes', shortLabel: 'Datums', iconKey: 'datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
+  { id: 'scene.datums', group: 'scene', kind: 'toggle', label: 'All datum display', shortLabel: 'Datums', iconKey: 'datums', shortcut: 'p', isEnabled: () => true, isActive: (c) => c.datumsVisible, run: (a) => a.toggleDatums() },
+  // The Creo datum-display FILTERS (shell pass 1): per-kind refinement under
+  // the master toggle. Enabled only while the master is on (a filter of a
+  // hidden overlay is a no-op — honest disable, mirroring Creo's grey-out).
+  { id: 'scene.datum-planes', group: 'scene', kind: 'toggle', label: 'Plane display', isEnabled: (c) => c.datumsVisible, isActive: (c) => c.datumFilters.planes, run: (a) => a.toggleDatumFilter('planes') },
+  { id: 'scene.datum-fill', group: 'scene', kind: 'toggle', label: 'Plane fill display', isEnabled: (c) => c.datumsVisible, isActive: (c) => c.datumFilters.fill, run: (a) => a.toggleDatumFilter('fill') },
+  { id: 'scene.datum-origin', group: 'scene', kind: 'toggle', label: 'Origin csys display', isEnabled: (c) => c.datumsVisible, isActive: (c) => c.datumFilters.origin, run: (a) => a.toggleDatumFilter('origin') },
   // Selection filters + clear (arc 20260625-1 / 6c). Selection is canonical-only,
   // so these gate on `hasCanonicalPart`. Vertex selection is deferred (no vertex
   // markers rendered yet) — like the `operations` reserved slot.

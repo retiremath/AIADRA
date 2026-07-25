@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol } from 'electron'
 import { contentTypeFor, resolveAppAssetRelPath } from './appProtocol'
 import { extractCreatedFeatureIds, finalizeBegunAuthoring } from './authoringGuards'
 import { createRecentsRegistry, type RecentsRegistry } from './recents'
@@ -581,6 +581,11 @@ function createWindow(): void {
     backgroundColor: '#16171d',
     title: 'AIADRA Studio',
     show: !SMOKE, // headless window for the built-Electron smoke
+    // Shell pass 1 (Creo chrome benchmark): the renderer draws the title bar
+    // (Quick Access + title) in the frame area; the OS keeps ONLY the overlay
+    // window controls. Colors = the light-default --panel/--text tokens.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#f7f8fa', symbolColor: '#24272c', height: 36 },
     webPreferences: {
       preload: join(app.getAppPath(), 'out', 'preload', 'index.cjs'),
       contextIsolation: true, // B1
@@ -594,6 +599,22 @@ function createWindow(): void {
   // B1: deny renderer-initiated navigation + new windows.
   win.webContents.on('will-navigate', (e) => e.preventDefault())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+
+  // Creo shows no native menu bar — File lives as a ribbon tab in the
+  // renderer. The default menu's dev accelerators are re-provided below,
+  // DEV-LANE ONLY (loopback dev server), never in the packaged app.
+  Menu.setApplicationMenu(null)
+  if (process.env.ELECTRON_RENDERER_URL) {
+    win.webContents.on('before-input-event', (_e, input) => {
+      if (input.type !== 'keyDown') return
+      const key = input.key.toLowerCase()
+      if (key === 'f12' || (input.control && input.shift && key === 'i')) {
+        win?.webContents.toggleDevTools()
+      } else if (input.control && !input.shift && key === 'r') {
+        win?.webContents.reload()
+      }
+    })
+  }
 
   // B1: load ONLY the Vite dev server (dev) or the built local app over the
   // read-only app://bundle origin (prod). Never file:// (occt WASM fetch needs a

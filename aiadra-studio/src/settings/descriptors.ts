@@ -108,6 +108,74 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     group: 'Behavior',
     help: 'Startup default; the live toggle is transient (like grid/mode).',
   },
+  // ---- Quick Access Toolbar (shell pass 1; Creo QAT benchmark). One boolean
+  // per pinnable command — the v1 scalar type set holds, no schema change.
+  // Defaults mirror Creo's out-of-box QAT (New/Open pinned). ----
+  {
+    key: 'qatShowNew',
+    type: 'boolean',
+    default: true,
+    label: 'Quick Access: New…',
+    group: 'Behavior',
+  },
+  {
+    key: 'qatShowOpen',
+    type: 'boolean',
+    default: true,
+    label: 'Quick Access: Open Workspace…',
+    group: 'Behavior',
+  },
+  {
+    key: 'qatShowImport',
+    type: 'boolean',
+    default: false,
+    label: 'Quick Access: Import reference geometry…',
+    group: 'Behavior',
+  },
+  {
+    key: 'qatShowClose',
+    type: 'boolean',
+    default: false,
+    label: 'Quick Access: Close',
+    group: 'Behavior',
+  },
+  {
+    key: 'qatBelowRibbon',
+    type: 'boolean',
+    default: false,
+    label: 'Quick Access below the ribbon',
+    group: 'Behavior',
+    help: 'Creo’s "Show Below the Ribbon" — moves the Quick Access bar under the ribbon row.',
+  },
+  // The navigator (tabbed tree) width — DRAG-RESIZABLE like Creo's sash
+  // (Petre 2026-07-25: future columns — parameters etc. — need room).
+  {
+    key: 'navigatorWidth',
+    type: 'number',
+    default: 218,
+    label: 'Navigator width',
+    group: 'Behavior',
+    min: 170,
+    max: 640,
+    step: 2,
+    unit: 'px',
+    help: 'Also set by dragging the navigator’s right edge.',
+  },
+  // The graphics toolbar's placement (Creo: movable/dismissable in-graphics
+  // toolbar; shell pass 1). Right-click the bar to move/hide it; a small
+  // restore handle appears when hidden.
+  {
+    key: 'graphicsToolbarPosition',
+    type: 'enum',
+    default: 'top',
+    label: 'Graphics toolbar position',
+    group: 'Behavior',
+    options: [
+      { value: 'top', label: 'Top' },
+      { value: 'bottom', label: 'Bottom' },
+      { value: 'hidden', label: 'Hidden' },
+    ],
+  },
 ]
 
 export const DESCRIPTOR_BY_KEY: Record<string, SettingDescriptor> = Object.fromEntries(

@@ -8,6 +8,7 @@
 import type { DisplayMode } from '../display/modes'
 import type { StandardViewId } from '../display/viewOrientation'
 import type { SelectableKind } from '../selection/store'
+import type { DatumFilters } from '../viewstate/store'
 
 export type CommandKind = 'action' | 'toggle' | 'radio'
 export type CommandGroup =
@@ -31,6 +32,8 @@ export interface CommandContext {
   mode: DisplayMode
   /** The datum overlay (arc 20260714-2 EP1). */
   datumsVisible: boolean
+  /** The per-kind datum-display filters (Creo dropdown; shell pass 1). */
+  datumFilters: DatumFilters
   /** Selection filter + selection presence (arc 20260625-1 / 6c). */
   filter: { face: boolean; edge: boolean }
   hasSelection: boolean
@@ -40,8 +43,11 @@ export interface CommandContext {
 export interface CommandActions {
   fit(): void
   reset(): void
+  /** Step the ortho zoom by a factor (Creo Zoom In/Out; shell pass 1). */
+  zoomBy(factor: number): void
   setMode(mode: DisplayMode): void
   toggleDatums(): void
+  toggleDatumFilter(kind: keyof DatumFilters): void
   /** Orient the main camera to a standard view (arc 20260625-1 / 6c). */
   standardView(id: StandardViewId): void
   toggleFilterKind(kind: SelectableKind): void
@@ -61,6 +67,9 @@ export interface Command {
   shortcut?: string
   /** For radio members — the mode this command selects. */
   radioValue?: DisplayMode
+  /** Roadmap-honest copy shown when the command is disabled BY DESIGN (not by
+   *  state) — e.g. "arrives with the named-views strand". */
+  disabledReason?: string
   isEnabled(ctx: CommandContext): boolean
   isActive?(ctx: CommandContext): boolean
   run(actions: CommandActions, ctx: CommandContext): void

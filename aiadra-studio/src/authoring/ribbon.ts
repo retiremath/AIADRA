@@ -51,6 +51,7 @@ export type IconKey =
   | 'unify' | 'boundary-blend' | 'fill' | 'style' | 'freestyle'
   | 'component-interface' | 'menu-more' | 'overflow'
   | 'fit' | 'reset' | 'display-style' | 'views' | 'sel-filter' | 'datums'
+  | 'zoom-in' | 'zoom-out'
 
 export type MenuFamilyId = 'body-ops' | 'editing-more' | 'surfaces-all' | 'model-intent-all'
 

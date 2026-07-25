@@ -37,6 +37,18 @@ export const ICONS = {
       <rect x="5.5" y="5.5" width="5" height="5" rx="0.5" />
     </>,
   ),
+  'zoom-in': svg(
+    <>
+      <circle cx="7" cy="7" r="4.5" />
+      <path d="M10.4 10.4 13.5 13.5M5 7h4M7 5v4" />
+    </>,
+  ),
+  'zoom-out': svg(
+    <>
+      <circle cx="7" cy="7" r="4.5" />
+      <path d="M10.4 10.4 13.5 13.5M5 7h4" />
+    </>,
+  ),
   reset: svg(
     <>
       <path d="M3.2 8a4.8 4.8 0 1 1 1.4 3.4" />

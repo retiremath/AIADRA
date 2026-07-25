@@ -118,8 +118,7 @@ export function ModelRibbon({
         if (w > 0) widthsRef.current.set(el.dataset.ribbonGroup as RibbonGroup, w)
       }
       const widths = RIBBON_GROUP_ORDER.map((g) => widthsRef.current.get(g) ?? 0)
-      const tab = root.querySelector<HTMLElement>('.ribbon-tab')
-      const available = root.clientWidth - (tab?.offsetWidth ?? 0) - 40 // the » trigger's reserve
+      const available = root.clientWidth - 40 // the » trigger's reserve
       setVisible(visibleGroupCount(available, widths, 40))
     }
     remeasure()
@@ -143,7 +142,6 @@ export function ModelRibbon({
 
   return (
     <div ref={rootRef} className="ribbon" role="toolbar" aria-label="Model ribbon">
-      <div className="ribbon-tab">Model</div>
       {directGroups.map((group) => {
         const columns = groupCells(group)
         if (columns.length === 0) return null
