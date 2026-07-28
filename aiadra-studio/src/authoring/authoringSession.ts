@@ -71,7 +71,7 @@ export interface SketchMeta {
   generation: number
 }
 
-interface SketchSubstate {
+export interface SketchSubstate {
   mode: 'sketch'
   /** Chained = launched from the base-feature select step; OK returns the
    *  drawing to that session instead of committing the sketch alone. */

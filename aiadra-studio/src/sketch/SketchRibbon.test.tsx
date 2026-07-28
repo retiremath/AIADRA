@@ -12,6 +12,23 @@ import { createAuthoringSessionStore } from '../authoring/authoringSession'
 
 afterEach(cleanup)
 
+// increment 2: the ribbon owns the terminal — the harness supplies an inert
+// backend/context (these tests exercise the projection; the commit lifecycle
+// has its own integration floors in sketchCommit.test.ts).
+const harness = (store: ReturnType<typeof createAuthoringSessionStore>) => ({
+  store,
+  backend: {
+    isReal: false,
+    async begin() { throw new Error('unused') },
+    async simulate() { throw new Error('unused') },
+    async commit() { throw new Error('unused') },
+    async rollback() {},
+  } as unknown as import('../authoring/backend').AuthoringBackend,
+  context: { getSnapshot: () => ({ generation: 1 }) } as unknown as import('../authoring/partContext').PartContextStore,
+  onClose: () => {},
+})
+
+
 const enterSketch = () => {
   const store = createAuthoringSessionStore()
   // the SketchMeta contract: principal support derives from `plane` inside
@@ -31,13 +48,13 @@ const enterSketch = () => {
 describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
   it('renders nothing outside sketch mode', () => {
     const store = createAuthoringSessionStore()
-    const { container } = render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    const { container } = render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     expect(container.firstChild).toBeNull()
   })
 
   it('groups render; tools dispatch the SAME store actions; the active tool is marked', () => {
     const store = enterSketch()
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     expect(screen.getByRole('toolbar', { name: 'Sketch ribbon' })).toBeTruthy()
     // 'Dimension' is both a group title and its roadmap button — count-safe
     for (const g of ['Setup', 'Sketching', 'Editing', 'Constrain', 'Dimension']) {
@@ -56,7 +73,7 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
 
   it('construction toggles through the store and reflects back', () => {
     const store = enterSketch()
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     const constr = screen.getByRole('button', { name: 'Constr.' })
     expect(constr.className).not.toContain('on')
     fireEvent.click(constr)
@@ -66,14 +83,14 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
   it('Sketch view dispatches the camera callback', () => {
     const store = enterSketch()
     const onView = vi.fn()
-    render(<SketchRibbon store={store} onSketchView={onView} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={onView} />)
     fireEvent.click(screen.getByRole('button', { name: 'Sketch view' }))
     expect(onView).toHaveBeenCalledTimes(1)
   })
 
   it('Constrain/Dimension are roadmap-disabled with their NAMED strands', () => {
     const store = enterSketch()
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     const vertical = screen.getByRole('button', { name: 'Vertical' }) as HTMLButtonElement
     expect(vertical.disabled).toBe(true)
     expect(vertical.title).toContain('skb-b1')
@@ -87,7 +104,7 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
     store.addPoint({ x: 0, y: 0 })
     store.addPoint({ x: 20, y: 0 })
     store.addPoint({ x: 20, y: 20 })
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     let st = store.getSnapshot()
     expect(st.mode === 'sketch' && st.tool.kind === 'contour' && st.tool.points.length).toBe(2)
@@ -104,7 +121,7 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
     store.addPoint({ x: 0, y: 0 })
     store.addPoint({ x: 10, y: 0 })
     store.addPoint({ x: 20, y: 0 })
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     const close = screen.getByRole('button', { name: 'Close ring' }) as HTMLButtonElement
     expect(close.disabled).toBe(true)
     expect(close.title.length).toBeGreaterThan(0) // the problem IS the tooltip
@@ -119,7 +136,7 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
     store.addPoint({ x: 20, y: 0 })
     store.addPoint({ x: 20, y: 20 })
     store.closeRing()
-    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     expect(screen.getByRole('button', { name: 'Reopen' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Close ring' })).toBeNull()
@@ -133,7 +150,7 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
     store.closeRing()
     store.setSketchPhase('busy', 'committing sketch…')
     const onView = vi.fn()
-    render(<SketchRibbon store={store} onSketchView={onView} />)
+    render(<SketchRibbon {...harness(store)} onSketchView={onView} />)
     const view = screen.getByRole('button', { name: 'Sketch view' }) as HTMLButtonElement
     expect(view.disabled).toBe(false)
     fireEvent.click(view)

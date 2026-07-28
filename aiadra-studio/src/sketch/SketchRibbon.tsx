@@ -18,29 +18,69 @@
  * increment (the commit lifecycle owns them); the Close group migrates with
  * that lifecycle in increment 2 (ADR/0045 pass ledger SR-03/SR-08).
  */
+import { useEffect, useMemo } from 'react'
 import { useAuthoringSession, type AuthoringSessionStore } from '../authoring/authoringSession'
-import { contourProblem } from './contour'
+import { createSessionLifecycle } from '../authoring/sessionLifecycle'
+import type { AuthoringBackend } from '../authoring/backend'
+import type { PartContextStore } from '../authoring/partContext'
+import { cancelSketch, runSketchOk, sketchDerived, type SketchCommitHooks } from './sketchCommit'
 
 export function SketchRibbon({
   store,
+  backend,
+  context,
+  onClose,
+  onCommitted,
   onSketchView,
 }: {
   store: AuthoringSessionStore
+  backend: AuthoringBackend
+  /** The generation-owned Part context — the terminal commit REVALIDATES the
+   *  captured target against it (fail closed). */
+  context: PartContextStore
+  onClose: () => void
+  onCommitted?: SketchCommitHooks['onCommitted']
   /** Camera-only reorient to the sketch plane (SK-C1.0 Codex2 B5.4). Stays
    *  available during a commit — a camera move mutates nothing (Codex1 N1:
    *  the pre-ribbon surface allowed it; the projection preserves it). */
   onSketchView: () => void
 }) {
   const st = useAuthoringSession(store)
+  // Codex1 B4: ONE SessionLifecycle per mount × backend identity — NEVER
+  // recreated by store renders or hook-identity changes. sketchCommit.ts is
+  // pure invocation code over this persistent owner.
+  const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
+  const inSketch = st.mode === 'sketch'
+
+  // The ONE sketch keyboard owner (moved with the lifecycle): Escape=cancel
+  // (lifecycle-guarded), Enter=close a valid drawing contour, Backspace=undo.
+  useEffect(() => {
+    if (!inSketch) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      const live = store.getSnapshot()
+      if (live.mode !== 'sketch') return
+      if (e.key === 'Escape') {
+        cancelSketch(lifecycle, store, onClose)
+        e.preventDefault()
+      } else if (e.key === 'Enter' && live.phase === 'drawing' && live.tool.kind === 'contour'
+          && sketchDerived(live).problem === null) {
+        store.closeRing()
+        e.preventDefault()
+      } else if (e.key === 'Backspace' && live.phase === 'drawing' && live.tool.kind === 'contour') {
+        store.undoPoint()
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inSketch, lifecycle, store, onClose])
+
   if (st.mode !== 'sketch') return null
   const s = st
-  const busy = s.phase === 'busy'
-  const ct = s.tool.kind === 'contour' ? s.tool : null
-  const rt = s.tool.kind === 'rectangle' ? s.tool : null
-  const ci = s.tool.kind === 'circle' ? s.tool : null
+  const { ct, rt, ci, problem, done, busy } = sketchDerived(s)
   const chained = s.chainToExtrude
-  const problem = ct ? contourProblem(ct.points, ct.bulges) : null
-  const done = ct ? ct.closed : rt ? rt.rect !== null : (ci?.circle ?? null) !== null
 
   const tool = (
     label: string,
@@ -132,6 +172,32 @@ export function SketchRibbon({
           {roadmap('Dimension', 'Dimensions arrive with sketcher behaviors 2–3 (auto-dimension, then strong-dimension edit)')}
         </div>
         <div className="ribbon-group-title">Dimension</div>
+      </div>
+      {/* increment 2 (SR-03): the terminal commit/cancel — ONE lifecycle
+          owner; OK runs the verbatim stepwise commit or the chained
+          hand-back; Cancel is lifecycle-guarded (refused mid-terminal). */}
+      <div className="ribbon-group">
+        <div className="ribbon-btns">
+          <button
+            type="button"
+            className="rb-btn rb-ok"
+            disabled={busy || problem !== null || !done}
+            title={s.chainToExtrude ? 'OK — return the sketch to Extrude' : 'OK — commit the sketch'}
+            onClick={() => void runSketchOk(lifecycle, store, context, { onCommitted })}
+          >
+            <span className="rb-lbl">{busy ? '…' : 'OK'}</span>
+          </button>
+          <button
+            type="button"
+            className="rb-btn"
+            disabled={busy}
+            title="Cancel the sketch (Esc)"
+            onClick={() => cancelSketch(lifecycle, store, onClose)}
+          >
+            <span className="rb-lbl">Cancel</span>
+          </button>
+        </div>
+        <div className="ribbon-group-title">Close</div>
       </div>
     </div>
   )

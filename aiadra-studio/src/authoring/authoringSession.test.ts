@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createAuthoringSessionStore } from './authoringSession'
 import { supportFrame } from './backend'
 import { principalFrame } from '../sketch/planeFrame'
-import { routeSketchPlacement } from '../sketch/SketchChrome'
+import { routeSketchPlacement } from '../sketch/sketchPlacementRouter'
 
 const RING = [
   { x: 0, y: 0 },

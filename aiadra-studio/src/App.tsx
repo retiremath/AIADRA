@@ -56,8 +56,9 @@ import { createPendingDisplayCoordinator } from './authoring/pendingDisplay'
 import { buildTreeRows, eligibleExtrudeSketchIds, holeBaseRefusal, revolveSketchRefusal, unconsumedSketches } from './authoring/inspectDecode'
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
-import { routeSketchPlacement, SketchChrome } from './sketch/SketchChrome'
+import { routeSketchPlacement } from './sketch/sketchPlacementRouter'
 import { SketchRibbon } from './sketch/SketchRibbon'
+import { SketchStatusLine } from './sketch/SketchStatusLine'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
 import { IMPORT_HOME_REASON, IMPORT_MENU_LABEL, ReferencesList, useReferenceImport } from './import/referenceImport'
@@ -1273,7 +1274,7 @@ function Workbench({
           }
           return
         }
-        if (mode === 'sketch') return // SketchChrome owns sketch Escape
+        if (mode === 'sketch') return // the Sketch ribbon owns sketch Escape (the ONE keyboard owner)
         if (mode === 'placement') {
           // A3.6/B4: Escape cancels the pre-commit placement capture (a BUSY
           // session never cancels — the terminal is uninterruptible)
@@ -1483,8 +1484,26 @@ function Workbench({
       {authoringSession.mode === 'sketch' ? (
         // sketch-ribbon-1: the Sketch tab's ribbon REPLACES the Model ribbon
         // while the session is active (ADR/0040 D4 — one session, projected);
-        // the floating chrome keeps identity/prompt/OK-Cancel this increment.
-        <SketchRibbon store={authoringStore} onSketchView={sketchViewReturn} />
+        // increment 2: the ribbon owns the whole surface incl. the Close
+        // group's terminal lifecycle; the chrome is retired.
+        <SketchRibbon
+          store={authoringStore}
+          backend={featureBackend}
+          context={partContext}
+          onClose={() => {
+            // Codex5 B1.1: sketch Cancel has NO candidate display to
+            // discard — the canonical Part display stays installed.
+          }}
+          onCommitted={(info) => {
+            // S2 / Codex3 B2: ONE transition — a fresh dev-lane Part is
+            // ADOPTED (display + Truth together); features onto the context
+            // Part REFRESH it with the commit's display.
+            if (info.createdFresh) adoptPart(currentWs?.workspaceId ?? null, info.number, info.display)
+            else refreshPartContext(info.display)
+            setPartsRefresh((n) => n + 1)
+          }}
+          onSketchView={sketchViewReturn}
+        />
       ) : (
       <ModelRibbon
         inputs={{
@@ -1659,25 +1678,9 @@ function Workbench({
             </div>
           )}
           <PlacementPanel store={authoringStore} isReal={featureBackend.isReal} onAccept={acceptPlacement} />
-          <SketchChrome
-            store={authoringStore}
-            backend={featureBackend}
-            context={partContext}
-            onClose={() => {
-              // Codex5 B1.1: sketch Cancel has NO candidate display to
-              // discard — the canonical Part display stays installed; the
-              // interaction-mode exit already unghosts/restyles. restoreBase
-              // belongs to the AI-candidate preview lane only.
-            }}
-            onCommitted={(info) => {
-              // S2 / Codex3 B2: ONE transition — a fresh dev-lane Part is
-              // ADOPTED (display + Truth together); features onto the context
-              // Part REFRESH it with the commit's display.
-              if (info.createdFresh) adoptPart(currentWs?.workspaceId ?? null, info.number, info.display)
-              else refreshPartContext(info.display)
-              setPartsRefresh((n) => n + 1)
-            }}
-          />
+          {/* increment 2 (SR-08): the floating sketch chrome is RETIRED —
+              the Sketch ribbon owns the tools + terminal; the statusbar's
+              exclusive slot owns identity/prompt (the SketchStatusLine). */}
           {/* the mouse hint yields the bottom edge to a bottom-placed toolbar */}
           <div className={`hud muted small${gfxToolbarPos === 'bottom' ? ' hud-top' : ''}`}>middle = rotate · scroll = zoom · middle+shift = pan · middle+ctrl = zoom · left = select · right = menu</div>
         </main>
@@ -1702,12 +1705,16 @@ function Workbench({
       )}
       <div className="statusbar">
         <SessionPill store={operationStore} dockOpen={dockOpen} onShowDock={() => setDockOpen(true)} />
-        {shellNote && <span className="small err">{shellNote}</span>}
-        {authoringSession.mode === 'sketch' && contextHover && (
-          <span className="small muted context-hover" data-context-id={contextHover.id}>
-            context {contextHover.kind}: <span className="mono">{contextHover.id}</span>
-          </span>
-        )}
+        {/* B5 tenancy: the transient slot is EXCLUSIVE — shellNote replaces
+            the sketch status line (which itself MERGES the hover readout);
+            the slot owns truncation so the pill/chip never leave the screen. */}
+        <span className="status-slot">
+          {shellNote ? (
+            <span className="small err">{shellNote}</span>
+          ) : (
+            <SketchStatusLine store={authoringStore} isReal={featureBackend.isReal} hover={contextHover} />
+          )}
+        </span>
         <span className="grow" />
         <span className="chipbar byo" title="AIADRA Core ships no AI — MVP-1 uses a scripted configurator">
           ● BYO-AI: scripted (MVP-1)

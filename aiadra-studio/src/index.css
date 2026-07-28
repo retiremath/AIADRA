@@ -699,6 +699,15 @@ body { background: var(--bg); overflow: hidden; }
 /* status strip + session pill */
 .statusbar { display: flex; align-items: center; gap: 10px; padding: 4px 12px; background: var(--panel); border-top: 1px solid var(--border); font-size: 12px; min-height: 30px; }
 .statusbar .grow { flex: 1; }
+/* B5 tenancy: the EXCLUSIVE transient slot owns truncation — the fixed
+   tenants (SessionPill left, BYO-AI right) can never be pushed off-screen. */
+.status-slot { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+.sketch-status { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.sketch-status .ss-id { color: var(--text-h); font-weight: 600; white-space: nowrap; }
+.sketch-status .ss-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sketch-status .ss-hint.warn { color: var(--warn); }
+/* the ribbon's terminal OK (Close group) */
+.rb-btn.rb-ok:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .ai-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .ai-toggle:hover { background: var(--panel-2); }
 .ai-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
