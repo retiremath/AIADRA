@@ -1451,8 +1451,8 @@ function Workbench({
         {appSession === 'home' ? (
           <span className="rtab active">Home</span>
         ) : authoringSession.mode === 'sketch' ? (
-          // pass sketch-ribbon-1 (Creo grammar): entering a sketch ADDS the
-          // Sketch tab and activates it; Model stays visible but inactive.
+          // pass sketch-ribbon-1: entering a sketch ADDS the dedicated Sketch
+          // tab and activates it; Model stays visible but inactive.
           <>
             <span className="rtab">Model</span>
             <span className="rtab active">Sketch</span>
@@ -1482,8 +1482,8 @@ function Workbench({
         <>
       {authoringSession.mode === 'sketch' ? (
         // sketch-ribbon-1: the Sketch tab's ribbon REPLACES the Model ribbon
-        // while the session is active (the Creo Sketch-mode grammar); the
-        // floating chrome keeps identity/prompt/OK-Cancel this increment.
+        // while the session is active (ADR/0040 D4 — one session, projected);
+        // the floating chrome keeps identity/prompt/OK-Cancel this increment.
         <SketchRibbon store={authoringStore} onSketchView={sketchViewReturn} />
       ) : (
       <ModelRibbon

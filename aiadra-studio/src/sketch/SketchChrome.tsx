@@ -216,8 +216,8 @@ export function SketchChrome({
         </span>
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
       </div>
-      {/* sketch-ribbon-1: the TOOLS moved into the Sketch ribbon tab (Creo
-          grammar); the chrome is now identity + prompt + the terminal
+      {/* sketch-ribbon-1: the TOOLS moved into the Sketch ribbon tab; the
+          chrome is now identity + prompt + the terminal
           OK/Reopen/Cancel (the commit lifecycle lives here — the ribbon's
           Close group migrates with it in a later increment). */}
       <div className="sc-row">

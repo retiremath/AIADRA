@@ -1,25 +1,34 @@
 /**
- * The SKETCH ribbon (pass sketch-ribbon-1; Creo 10 Sketch-tab benchmark,
- * Petre's side-by-side 2026-07-28). When a sketch session is active the tab
- * strip activates a Sketch tab and THIS ribbon replaces the Model ribbon —
- * the tools move from the floating chrome into Creo's grouped grammar. Same
- * store, same actions: the ribbon is a PROJECTION of the one sketch session
- * (ADR/0040 D4 — never a second authority).
+ * The SKETCH ribbon (pass sketch-ribbon-1). While a sketch session is
+ * active, the tab strip activates a dedicated Sketch tab and THIS ribbon
+ * replaces the Model ribbon — the sketch tools in the ribbon's grouped
+ * grammar. Same store, same actions: the ribbon is a PROJECTION of the one
+ * sketch session (ADR/0040 D4 — never a second authority), and it exposes
+ * EXACTLY the state transitions the session already defines (Codex1 B2):
  *
- * Groups (Creo order, our honest capability set): Setup · Sketching ·
- * Editing · Constrain (roadmap) · Dimension (roadmap). Constrain/Dimension
- * name their strands per the three-state taxonomy — behavior 2+ (skb-b1)
- * brings them live. OK/Cancel stay in the sketch chrome for this increment
- * (the commit lifecycle owns them); the Close group migrates next.
+ *   open contour   → Undo (only with points) · Close ring (only when the
+ *                    ring is VALID — `contourProblem === null`)
+ *   closed contour → Reopen (Undo/Close are absent: a closed ring is edited
+ *                    by reopening, never mutated while marked closed)
+ *   rect/circle    → Restart while incomplete · Reopen once complete
+ *
+ * Constrain/Dimension are roadmap-disabled with their named strands per the
+ * three-state taxonomy — sketcher behavior 2+ (the skb-b1 solver-contract
+ * gate) brings them live. OK/Cancel stay in the sketch chrome for this
+ * increment (the commit lifecycle owns them); the Close group migrates with
+ * that lifecycle in increment 2 (ADR/0045 pass ledger SR-03/SR-08).
  */
 import { useAuthoringSession, type AuthoringSessionStore } from '../authoring/authoringSession'
+import { contourProblem } from './contour'
 
 export function SketchRibbon({
   store,
   onSketchView,
 }: {
   store: AuthoringSessionStore
-  /** Camera-only reorient to the sketch plane (SK-C1.0 Codex2 B5.4). */
+  /** Camera-only reorient to the sketch plane (SK-C1.0 Codex2 B5.4). Stays
+   *  available during a commit — a camera move mutates nothing (Codex1 N1:
+   *  the pre-ribbon surface allowed it; the projection preserves it). */
   onSketchView: () => void
 }) {
   const st = useAuthoringSession(store)
@@ -30,6 +39,8 @@ export function SketchRibbon({
   const rt = s.tool.kind === 'rectangle' ? s.tool : null
   const ci = s.tool.kind === 'circle' ? s.tool : null
   const chained = s.chainToExtrude
+  const problem = ct ? contourProblem(ct.points, ct.bulges) : null
+  const done = ct ? ct.closed : rt ? rt.rect !== null : (ci?.circle ?? null) !== null
 
   const tool = (
     label: string,
@@ -59,7 +70,14 @@ export function SketchRibbon({
     <div className="ribbon" role="toolbar" aria-label="Sketch ribbon">
       <div className="ribbon-group">
         <div className="ribbon-btns">
-          {tool('Sketch view', false, 'Orient the view normal to the sketch plane (camera only)', onSketchView)}
+          <button
+            type="button"
+            className="rb-btn"
+            title="Orient the view normal to the sketch plane (camera only)"
+            onClick={onSketchView}
+          >
+            <span className="rb-lbl">Sketch view</span>
+          </button>
         </div>
         <div className="ribbon-group-title">Setup</div>
       </div>
@@ -83,11 +101,19 @@ export function SketchRibbon({
       )}
       <div className="ribbon-group">
         <div className="ribbon-btns">
-          {ct ? (
+          {ct && !done ? (
             <>
               {tool('Undo', false, 'Remove the last placed point', () => store.undoPoint(), ct.points.length === 0)}
-              {tool('Close ring', false, 'Close the contour at the start point', () => store.closeRing(), ct.closed)}
+              {tool(
+                'Close ring',
+                false,
+                problem ?? 'Close the contour at the start point',
+                () => store.closeRing(),
+                problem !== null,
+              )}
             </>
+          ) : done ? (
+            tool('Reopen', false, 'Reopen the shape for editing', () => store.reopen())
           ) : (
             tool('Restart', false, 'Discard the shape and start again', () => store.reopen(), rt ? !rt.anchor : !ci?.center)
           )}
