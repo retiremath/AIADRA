@@ -1,8 +1,8 @@
 ---
 name: aiadra-architecture-overview
 status: draft
-version: 0.2
-last_updated: 2026-05-31
+version: 0.3
+last_updated: 2026-07-28
 ---
 
 # AIADRA Architecture Overview
@@ -186,6 +186,18 @@ Ring 1 (Truth Model Schema) inherits four explicit obligations from Ring 0:
 Plus one captured-for-Ring-2 question: **[OQ-0016](OpenQuestions.md)** — cross-project Object identity and reuse semantics — must be reopened before Ring 2's relationship taxonomy is enumerated, because the answer materially shapes it.
 
 Ring 2 specified Layer 3's contracts (ADR/0026 + Phases A-D, complete in arc 20260531-10). Ring 3 will specify Layer 5's **Native Engine Implementation contract + Data Adapter integration pattern** (per [ADR/0027](ADR/0027-aiad-positioning-and-native-engine-posture.md); working ADR/0028). Ring 4 (the Wedge series) round-trips a single mechanical part through all five layers — Wedge-001 and Wedge-002 ran clean in spike form; Wedge-003 takes the AIADRA-native authoring shape per ADR/0027 D17, gated on a Part authoring SCN (working ADR/0029). Ring 5 (roadmap) sequences the multi-domain expansion.
+
+### The integrator horizon (Manifesto: Strategic horizons)
+
+The Manifesto's Horizon 2 — assemblies and mechanisms from **multi-origin STEP parts made progressively less dumb** — maps onto the existing layers rather than adding a sixth:
+
+- **Layer 1** gains nothing new in kind: an imported STEP body is an Object with UUID identity, provenance ("imported, origin, digest"), and vault-anchored geometry — the reference-import lane already models the read-only form. **Interface facts** (mating surfaces, axes, thread specifications, kinematic pairs) are additional schema-governed namespaces on such Objects, exactly like `feature`/`geometry_ref` today.
+- **Layer 2** validates interface facts like any facts — closed schemas, refusal-first, provenance discipline (a recognized thread is `computed_result`/`ai_proposal` until a human approves it).
+- **Layer 3** needs no new verbs: proposing an interface fact, accepting a recognition, and binding two interfaces into an assembly relationship are ordinary transactions.
+- **Layer 5** gains the recognition duty: Native Engines analyze imported B-rep and *propose* interface facts — the AI-affordable answer to the annotation labor that has kept semantic layers from existing in mechanical engineering.
+- **Transport** is the exchange-package contract (arc 20260728-5's future ADR): geometry neutral in STEP, semantics as AIADRA facts riding with it.
+
+Every mechanism decision here (taxonomy, recognition contracts, package profile) awaits its own ADR; this subsection records only that the horizon lands inside the five-layer structure without bending it.
 
 ## References
 

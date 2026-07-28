@@ -1,8 +1,8 @@
 ---
 name: aiadra-manifesto
 status: draft
-version: 0.4
-last_updated: 2026-05-31
+version: 0.5
+last_updated: 2026-07-28
 ---
 
 # AIADRA Manifesto
@@ -23,6 +23,8 @@ The AI is treated as an engineering participant, not a chat panel. It inspects, 
 ## Audience
 
 Mechanical, electrical, and systems engineers; makers and small manufacturers; students; open-source hardware contributors; AI/design researchers; engineers who want scriptable, inspectable, transparent design tools. **Not** aimed at enterprise PLM replacement.
+
+The **deliberate first community** is the open-source / DIY / 3D-print maker community (see Strategic horizons below): many of its members are engineers and technicians in their professional lives, and open tools have historically entered industry bottom-up through exactly this door.
 
 ## Principles (load-bearing)
 
@@ -56,6 +58,20 @@ Scale-sensitive decisions fall into three buckets:
 - **Decide early, validate with scale probes.** Settled in Ring 0; stress-tested against synthetic Tier-M / Tier-L data before committing in production. Examples: canonical on-disk format, UUID encoding and shardability, schema-versioning discipline.
 - **Design with scale in mind; must not preclude.** The Ring 0–1 architecture must remain compatible with scale-time refinements. Examples: directory sharding by UUID prefix, event-log sharding strategy, acceleration cache structure, role-based change-order gating, Vault adapter pluggability.
 - **Defer with acknowledgement.** Real Tier-L concerns; not blockers for Ring 0–4. Examples: distributed validation, multi-agent conflict resolution at high contributor counts, advanced cross-100k-object search, cryptographic signing of releases, derivation-graph queries at scale.
+
+## Strategic horizons
+
+Two horizons, one strategy (Petre's frame, 2026-07-28).
+
+**Horizon 1 — geometry authoring for the maker beachhead (current phase).** AIADRA builds competent AIAD-native modeling — one feature at a time, benchmarked against the best interactive CAD — because users and AI agents both deserve real tools, and because nobody adopts an integration platform whose own modeling feels broken. The geometry breadth a maker needs (sketches, extrudes, revolves, holes, rounds; printable single parts and small assemblies) is reachable; the openness, the git-native substrate, and the AI participation are the draw no incumbent offers. This horizon imposes concrete obligations: painless install, honest STL/3MF/STEP export, and a print-minded workflow.
+
+**Horizon 2 — the integrator.** AIADRA does not bet on out-modeling geometry kernels built over decades at billion-dollar cost. The long-term differentiator is **assemblies and mechanisms built from parts of many origins, exchanged as STEP**. Today every CAD system imports a STEP file as a "dumb" solid — a frozen shape stripped of interfaces, function, and intent — and every engineer re-derives, by hand, knowledge the original author already had. AIADRA's job is to make imported models **progressively less dumb**: schema-governed **interface facts** layered onto neutral geometry (mating surfaces, axes, thread specifications, kinematic pairs, connection semantics — at many levels), with provenance, so that human and AI participants assemble *function* rather than click faces. The analogy is what IFC/BIM did for architecture and what footprints-plus-netlists did for electronics: the semantic layer mechanical engineering never got. AI participation is what makes the layer affordable — recognizing threads, seats, and mating candidates on imported geometry is exactly the annotation labor that has kept such layers from existing.
+
+**Claim discipline.** AIADRA does **not** promise parametric feature-tree interchange between CAD systems — a goal that has failed for forty years and is treated here as intractable. The claim is narrower and achievable: geometry travels neutral (STEP, as it already does); function, interfaces, and assembly semantics travel as AIADRA facts. A semantic envelope around neutral geometry — never a converter.
+
+**The flywheel.** The two horizons are one strategy: makers assemble bought components — steppers, bearings, extrusions, fasteners — whose downloaded STEP models are semantically dead today. A community library of interface-annotated components is simultaneously the maker community's killer feature and the bootstrap of the interchange language. The beachhead feeds the layer; the layer rewards the beachhead.
+
+Mechanism decisions for Horizon 2 (the interface-fact taxonomy, recognition contracts, the exchange-package profile) are **not** made in this document — each arrives through its own ADR when its ring is reached. The reference-import lane, the exchange-package design (arc 20260728-5), and cross-project identity (ADR/0008) are its first seeds.
 
 ## Non-goals
 
