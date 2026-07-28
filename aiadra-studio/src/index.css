@@ -255,6 +255,8 @@ body { background: var(--bg); overflow: hidden; }
 .rb-btn:active:not(:disabled) { background: var(--panel); }
 .rb-btn:disabled { color: var(--text-disabled); cursor: default; }
 .rb-btn.rb-roadmap:disabled { color: var(--text-roadmap); }
+/* sketch-ribbon-1: the ACTIVE tool state (Contour/Arc/Constr. selected) */
+.rb-btn.on { background: var(--panel); border: 1px solid var(--accent); color: var(--text-h); }
 .rb-ico { display: flex; align-items: center; color: var(--accent); }
 .rb-btn:disabled .rb-ico { color: var(--text-disabled); }
 /* image glyphs (FreeCAD set): disabled = grayscale, NEVER opacity (the gate) */

@@ -1,0 +1,98 @@
+/**
+ * The Sketch ribbon (pass sketch-ribbon-1): a PROJECTION of the one sketch
+ * session — tools dispatch the same store actions the chrome did; roadmap
+ * groups (Constrain/Dimension) are honestly disabled with their named
+ * strands; the ribbon renders nothing outside sketch mode.
+ */
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { SketchRibbon } from './SketchRibbon'
+import { createAuthoringSessionStore } from '../authoring/authoringSession'
+
+afterEach(cleanup)
+
+const enterSketch = () => {
+  const store = createAuthoringSessionStore()
+  store.startSketch({
+    tool: 'contour',
+    partName: null,
+    partNumber: null,
+    targetPart: null,
+    targetAuth: null,
+    plane: 'yz',
+    support: { kind: 'principal', orientation: 'yz' },
+    generation: 1,
+  })
+  return store
+}
+
+describe('the Sketch ribbon (Creo Sketch-tab grammar)', () => {
+  it('renders nothing outside sketch mode', () => {
+    const store = createAuthoringSessionStore()
+    const { container } = render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('groups render; tools dispatch the SAME store actions; the active tool is marked', () => {
+    const store = enterSketch()
+    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    expect(screen.getByRole('toolbar', { name: 'Sketch ribbon' })).toBeTruthy()
+    // 'Dimension' is both a group title and its roadmap button — count-safe
+    for (const g of ['Setup', 'Sketching', 'Editing', 'Constrain', 'Dimension']) {
+      expect(screen.getAllByText(g).length).toBeGreaterThan(0)
+    }
+    const contour = screen.getByRole('button', { name: 'Contour' })
+    expect(contour.className).toContain('on') // the entered tool
+    fireEvent.click(screen.getByRole('button', { name: 'Rectangle' }))
+    const st = store.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind).toBe('rectangle')
+    expect(screen.getByRole('button', { name: 'Rectangle' }).className).toContain('on')
+    // rectangle mode: the Editing group offers Restart, not Undo/Close ring
+    expect(screen.getByRole('button', { name: 'Restart' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Close ring' })).toBeNull()
+  })
+
+  it('construction toggles through the store and reflects back', () => {
+    const store = enterSketch()
+    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    const constr = screen.getByRole('button', { name: 'Constr.' })
+    expect(constr.className).not.toContain('on')
+    fireEvent.click(constr)
+    expect(screen.getByRole('button', { name: 'Constr.' }).className).toContain('on')
+  })
+
+  it('Sketch view dispatches the camera callback', () => {
+    const store = enterSketch()
+    const onView = vi.fn()
+    render(<SketchRibbon store={store} onSketchView={onView} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sketch view' }))
+    expect(onView).toHaveBeenCalledTimes(1)
+  })
+
+  it('Constrain/Dimension are roadmap-disabled with their NAMED strands', () => {
+    const store = enterSketch()
+    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    const vertical = screen.getByRole('button', { name: 'Vertical' }) as HTMLButtonElement
+    expect(vertical.disabled).toBe(true)
+    expect(vertical.title).toContain('skb-b1')
+    const dim = screen.getByRole('button', { name: 'Dimension' }) as HTMLButtonElement
+    expect(dim.disabled).toBe(true)
+    expect(dim.title).toContain('behavior')
+  })
+
+  it('Undo/Close ring drive the contour through the store', () => {
+    const store = enterSketch()
+    store.addPoint({ x: 0, y: 0 })
+    store.addPoint({ x: 20, y: 0 })
+    store.addPoint({ x: 20, y: 20 })
+    render(<SketchRibbon store={store} onSketchView={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    let st = store.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'contour' && st.tool.points.length).toBe(2)
+    store.addPoint({ x: 20, y: 20 })
+    fireEvent.click(screen.getByRole('button', { name: 'Close ring' }))
+    st = store.getSnapshot()
+    expect(st.mode === 'sketch' && st.tool.kind === 'contour' && st.tool.closed).toBe(true)
+  })
+})

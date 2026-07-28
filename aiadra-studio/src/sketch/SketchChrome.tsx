@@ -88,7 +88,6 @@ export function SketchChrome({
   context,
   onClose,
   onCommitted,
-  onSketchView,
 }: {
   store: AuthoringSessionStore
   backend: AuthoringBackend
@@ -102,8 +101,6 @@ export function SketchChrome({
     createdFresh: boolean
     display: DisplaySource
   }) => void
-  /** The `Sketch view` return command (Codex2 B5.4 — camera-only). */
-  onSketchView: () => void
 }) {
   const st = useAuthoringSession(store)
   const s = st.mode === 'sketch' ? st : null
@@ -217,46 +214,17 @@ export function SketchChrome({
           {s.targetPart && <span className="muted"> · {s.targetPart.number}</span>}
           {s.chainToExtrude && <span className="muted"> · for Extrude</span>}
         </span>
-        {!s.chainToExtrude && (
-          <span className="sc-tools">
-            <button type="button" className={`btn small${ct ? ' primary' : ''}`} disabled={busy}
-              title="Draw a closed contour (click points; close the ring)"
-              onClick={() => store.switchTool('contour')}>Contour</button>
-            <button type="button" className={`btn small${rt ? ' primary' : ''}`} disabled={busy}
-              title="Draw a rectangle (two clicks) — the native profile for Revolve/Hole"
-              onClick={() => store.switchTool('rectangle')}>Rectangle</button>
-            <button type="button" className={`btn small${ci ? ' primary' : ''}`} disabled={busy}
-              title="Draw a circle (center + rim)"
-              onClick={() => store.switchTool('circle')}>Circle</button>
-            {ct && (
-              <button type="button" className={`btn small${ct.awaitingVia ? ' primary' : ''}`}
-                disabled={busy || ct.closed || ct.points.length < 2 || (ct.bulges[ct.bulges.length - 1] ?? 0) !== 0}
-                title="Curve the LAST segment: click a via point the arc passes through (minor arcs)"
-                onClick={() => store.setAwaitingVia(!ct.awaitingVia)}>Arc</button>
-            )}
-            <button type="button" className={`btn small${s.construction ? ' primary' : ''}`} disabled={busy}
-              title="Construction guide: visible dashed, never part of the profile or the solid"
-              onClick={() => store.toggleConstruction()}>Constr.</button>
-          </span>
-        )}
-        <button type="button" className="btn small" title="Orient the view normal to the sketch plane (camera only)"
-          onClick={onSketchView}>Sketch view</button>
         <span className={`fd-lane ${backend.isReal ? 'real' : 'mock'}`}>{backend.isReal ? 'real engine' : 'dev mock'}</span>
       </div>
+      {/* sketch-ribbon-1: the TOOLS moved into the Sketch ribbon tab (Creo
+          grammar); the chrome is now identity + prompt + the terminal
+          OK/Reopen/Cancel (the commit lifecycle lives here — the ribbon's
+          Close group migrates with it in a later increment). */}
       <div className="sc-row">
         <span className={`sp-hint ${problem && ct && ct.points.length >= 3 ? 'warn' : ''}`}>{hint}</span>
         <span className="grow" />
         {s.phase === 'error' && <span className="sp-hint warn">{s.message}</span>}
-        {!done ? (
-          ct ? (
-            <>
-              <button type="button" className="btn small" onClick={() => store.undoPoint()} disabled={busy || ct.points.length === 0}>Undo</button>
-              <button type="button" className="btn small" onClick={() => store.closeRing()} disabled={busy || !!problem}>Close ring</button>
-            </>
-          ) : (
-            <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy || (rt ? !rt.anchor : !ci?.center)}>Restart</button>
-          )
-        ) : (
+        {done && (
           <>
             <button type="button" className="btn small" onClick={() => store.reopen()} disabled={busy}>Reopen</button>
             <button type="button" className="btn primary" onClick={ok} disabled={busy || !!problem || !done}>{busy ? '…' : 'OK'}</button>

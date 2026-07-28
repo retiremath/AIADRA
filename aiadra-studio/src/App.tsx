@@ -57,6 +57,7 @@ import { buildTreeRows, eligibleExtrudeSketchIds, holeBaseRefusal, revolveSketch
 import { runOneShotCommit } from './authoring/oneShotCommit'
 import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { routeSketchPlacement, SketchChrome } from './sketch/SketchChrome'
+import { SketchRibbon } from './sketch/SketchRibbon'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
 import { IMPORT_HOME_REASON, IMPORT_MENU_LABEL, ReferencesList, useReferenceImport } from './import/referenceImport'
@@ -1055,6 +1056,13 @@ function Workbench({
   // defeat single-flight).
   const referencesRunner = useMemo(() => createOneShotRunner(featureBackend), [featureBackend])
 
+  // sketch-ribbon-1: the ONE Sketch-view reorient (Codex10 B1 — the SUPPORT
+  // is the sole frame authority), shared by the Sketch ribbon and the chrome.
+  const sketchViewReturn = () => {
+    const st = authoringStore.getSnapshot()
+    if (st.mode === 'sketch') viewportApi.current?.sketchView(supportFrame(st.support))
+  }
+
   // A3.6 (pass sketch-place-1): the placement session's EXPLICIT accept —
   // builds the create (full placement) or redefine (the DIFF only —
   // omission-keeps is the engine contract) op and runs the persistent
@@ -1440,7 +1448,18 @@ function Workbench({
           ribbon's tab title, ABOVE the ribbon content row. */}
       <div className="ribbon-tabs">
         <FileMenu items={fileItems} />
-        <span className="rtab active">{appSession === 'home' ? 'Home' : 'Model'}</span>
+        {appSession === 'home' ? (
+          <span className="rtab active">Home</span>
+        ) : authoringSession.mode === 'sketch' ? (
+          // pass sketch-ribbon-1 (Creo grammar): entering a sketch ADDS the
+          // Sketch tab and activates it; Model stays visible but inactive.
+          <>
+            <span className="rtab">Model</span>
+            <span className="rtab active">Sketch</span>
+          </>
+        ) : (
+          <span className="rtab active">Model</span>
+        )}
       </div>
       {appSession === 'home' && (
         <>
@@ -1461,6 +1480,12 @@ function Workbench({
       )}
       {appSession === 'modeling' && (
         <>
+      {authoringSession.mode === 'sketch' ? (
+        // sketch-ribbon-1: the Sketch tab's ribbon REPLACES the Model ribbon
+        // while the session is active (the Creo Sketch-mode grammar); the
+        // floating chrome keeps identity/prompt/OK-Cancel this increment.
+        <SketchRibbon store={authoringStore} onSketchView={sketchViewReturn} />
+      ) : (
       <ModelRibbon
         inputs={{
           realLane: !!window.aiadra,
@@ -1472,6 +1497,7 @@ function Workbench({
         }}
         onStart={onStartFeature}
       />
+      )}
       {qatBelowRibbon === true && <div className="qat-row">{qatBar}</div>}
       {referenceImport.inputElement}
       <div className="workbench">
@@ -1642,13 +1668,6 @@ function Workbench({
               // discard — the canonical Part display stays installed; the
               // interaction-mode exit already unghosts/restyles. restoreBase
               // belongs to the AI-candidate preview lane only.
-            }}
-            onSketchView={() => {
-              // Codex10 B1: the SUPPORT is the sole frame authority — a
-              // face-bound session reorients to ITS face frame, never to the
-              // legacy principal `st.plane`.
-              const st = authoringStore.getSnapshot()
-              if (st.mode === 'sketch') viewportApi.current?.sketchView(supportFrame(st.support))
             }}
             onCommitted={(info) => {
               // S2 / Codex3 B2: ONE transition — a fresh dev-lane Part is
