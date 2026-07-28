@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - requirement_changed (Phase 4 F2 SCN arc 20260531-5; added-only per Codex1 B1)",
+  "allOf": [
+    {"$ref": "_base.schema.json"}
+  ],
+  "properties": {
+    "event_type": {"const": "requirement_changed"},
+    "payload": {
+      "type": "object",
+      "required": ["object_uuid", "acceptance_criterion_delta"],
+      "additionalProperties": false,
+      "properties": {
+        "object_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "acceptance_criterion_delta": {
+          "type": "object",
+          "required": ["added"],
+          "additionalProperties": false,
+          "properties": {
+            "added": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "../_shared/acceptance_criterion_item.schema.json"
+              },
+              "description": "Per Codex1 B1 absorption (arc 20260531-5): v0.23.0 is added-only. Each added item carries the FULL canonical acceptance_criterion item schema (Codex N2). Read-side fold + proposed-state fold reject duplicate criterion ids. updated/removed deltas are NOT admitted; future SCN venue if needed."
+            }
+          }
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

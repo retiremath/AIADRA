@@ -545,6 +545,17 @@ def fold_events_to_state(workspace: Path, bundle_dir: Path) -> dict[str, dict[st
         elif et == "release_staged":
             # Audit-oriented per B1 absorption; no working-state mutation.
             pass
+        elif et == "object_deleted":
+            # ADR/0004 SCN (arc 20260728-3 B3): deletion removes the uuid from
+            # working state. The uuid MUST exist — deleting an unknown Object
+            # is fold inconsistency, never a silent no-op.
+            uuid = event["payload"]["uuid"]
+            if uuid not in state:
+                raise FoldInconsistencyError(
+                    f"object_deleted: uuid {uuid} not present in folded working "
+                    f"state; nothing to delete"
+                )
+            state.pop(uuid)
         # <type>_released and <type>_retired events do not mutate working state.
     return state
 

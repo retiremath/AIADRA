@@ -75,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         return c.cmd_attach_file(rest)
     if cmd == "release":
         return c.cmd_release(rest)
+    if cmd == "delete-object":
+        return c.cmd_delete_object(rest)
     if cmd == "migrate":
         return c.cmd_migrate(rest)
     # Phase D commands (arc 20260531-10)
@@ -133,6 +135,7 @@ State-changing (Phase 1):
   link-executed-on <workspace> <test-exec> <part>
   link-produces <workspace> <test-exec> <evidence>
   attach-file <workspace> <obj-num> <file-path> --role <role>
+  delete-object <workspace> <obj-num> --reason <text>
   release <workspace> --objects <num1,num2,...> [--stage N] [--no-final]
   migrate <workspace> --to-bundle {{0.20.0|0.21.0|0.22.0|0.23.0|0.24.0|0.25.0|0.26.0|0.27.0|0.28.0|0.29.0}} [--dry-run]
   explain <workspace> <object-or-relationship-ref> [--depth N] [--json]

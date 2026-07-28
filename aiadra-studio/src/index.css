@@ -896,6 +896,38 @@ body { background: var(--bg); overflow: hidden; }
 .file-menu .dd-menu { min-width: 200px; }
 .dd-item.sep { border-top: 1px solid var(--border); border-radius: 0; margin-top: 3px; padding-top: 8px; }
 
+/* Workspace-tree RMB menu + delete confirm (pass workspace-tree-1) */
+.rmb-menu { top: auto; left: auto; }
+.ws-root { cursor: default; }
+.ws-root:hover { color: var(--text-h); }
+.delete-blocked ul { margin: 4px 0 6px; padding-left: 18px; }
+.dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.dialog {
+  width: min(440px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55);
+}
+.dialog input[type='text'] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  margin-top: 4px;
+}
+.btn.danger { border-color: var(--warn); color: var(--warn); }
+.btn.danger:hover:not(:disabled) { background: var(--warn); color: var(--accent-ink); }
+
 /* The New dialog (arc 20260714-1 — Creo's New pattern, benchmarked) */
 .nd-overlay {
   position: fixed;

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - part_changed (ADR/0029 Part authoring SCN arc 20260531-13)",
+  "description": "Records additions / updates / removals to a Part's feature + geometry_ref namespaces. Emitted by Native Engine operations (e.g., aiadra-mechanical via ADR/0028 D16 namespaced operation kinds). Codex1 B1 absorption: uses the standard _base.schema.json envelope (schema_version, event_id, event_type, timestamp, transaction_id, actor, payload).",
+  "allOf": [
+    {"$ref": "_base.schema.json"}
+  ],
+  "required": ["actor"],
+  "properties": {
+    "event_type": {"const": "part_changed"},
+    "actor": {
+      "enum": ["agent", "human"],
+      "description": "Codex1 B1 + Codex1 B4 + Codex2 B1 absorption: narrowed from the base schema's `string minLength=1` to the closed enum required by ADR/0028 D8 provenance discipline; ALSO required at the part_changed root (the base schema treats actor as optional). Fold cross-checks every feature_delta operation's record.fact_provenance.category against this actor (agent -> ai_proposal; human -> human_input). A missing actor is schema-rejected (Codex2 B1)."
+    },
+    "payload": {
+      "type": "object",
+      "required": ["object_uuid"],
+      "additionalProperties": false,
+      "anyOf": [
+        {"required": ["feature_delta"]},
+        {"required": ["geometry_ref_delta"]}
+      ],
+      "properties": {
+        "object_uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional human-readable rationale for the change. Mirrors parameter_changed.rationale pattern."
+        },
+        "feature_delta": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "added": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "../_shared/feature_record.schema.json"}
+            },
+            "updated": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["id", "new_record"],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^feat_[0-9]{4}$"
+                  },
+                  "new_record": {"$ref": "../_shared/feature_record.schema.json"}
+                }
+              }
+            },
+            "removed": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^feat_[0-9]{4}$"
+              }
+            }
+          },
+          "description": "Per ADR/0029 D3 + Codex1 B3 absorption: full add/update/remove delta semantics with atomic conflict rules enforced at fold time. Within ONE feature_delta: no duplicate ids in any single array; no id appears in more than one of added/updated/removed; added ids MUST NOT pre-exist; updated/removed ids MUST exist before the event; updated[].new_record.id MUST equal updated[].id. After applying the full delta atomically: no dangling depends_on_feature_ids or geometry_ref.derived_from_feature_ids references (cascade-rejects)."
+        },
+        "geometry_ref_delta": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "added": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "../_shared/geometry_ref_record.schema.json"}
+            },
+            "updated": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["id", "new_record"],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^geom_[0-9]{4}$"
+                  },
+                  "new_record": {"$ref": "../_shared/geometry_ref_record.schema.json"}
+                }
+              }
+            },
+            "removed": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^geom_[0-9]{4}$"
+              }
+            }
+          },
+          "description": "Per ADR/0029 D3 + Codex1 B3 absorption: same atomic conflict rules as feature_delta. After applying: no surviving geometry_ref's derived_from / derived_from_feature_ids may reference a removed id (cascade-rejects)."
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

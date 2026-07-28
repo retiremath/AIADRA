@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA shared - Part geometry_ref record (ADR/0005 D7 + D9 + ADR/0029 Part authoring SCN arc 20260531-13)",
+  "description": "Engine-computed geometric artifact reference carried in a Part's `geometry_ref` namespace + in `part_changed.geometry_ref_delta` operations. Reconciles with ADR/0005 D7 (role enum + vault_ref required) + D9 (adapter_ref shell preserved per ADR/0027 D18) per Codex1 B5 absorption.",
+  "type": "object",
+  "required": [
+    "id",
+    "role",
+    "vault_ref",
+    "fact_provenance"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^geom_[0-9]{4}$",
+      "description": "Stable list-addressable id per S0 commitment 7 (geom_NNNN; engine-allocated; immutable across the geometry record's lifetime within the Part)."
+    },
+    "role": {
+      "enum": ["authoring_geometry", "derived_export"],
+      "description": "Per ADR/0005 D7. authoring_geometry = canonical Part kernel geometry computed from features. derived_export = D7-derived (STEP / IGES / mesh / render) retained as a Part-bound reference (e.g., a release-signed export). Each derived_export record carries `derived_from` lineage citing the authoring_geometry id(s) it was generated from."
+    },
+    "vault_ref": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "REQUIRED Vault content-hash. Canonical anchor per ADR/0005 D7. Algorithm-qualified per ADR/0016 convention. Codex1 B5 absorption (arc 20260531-13): retained as REQUIRED canonical Vault anchor; adapter_ref.engine_artifact_ref remains the OPTIONAL adapter-shell field."
+    },
+    "kind": {
+      "enum": ["solid", "surface", "wireframe", "mesh", "point_cloud"],
+      "description": "Optional geometric kind discriminator. Engines may set or omit. Future MINOR SCN can extend the enum."
+    },
+    "derived_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^geom_[0-9]{4}$"
+      },
+      "description": "Geometry-to-geometry lineage per ADR/0005 D7 — derived_export records cite authoring_geometry id(s) they were generated from. REQUIRED when role=derived_export (enforced by conditional below)."
+    },
+    "derived_from_feature_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^feat_[0-9]{4}$"
+      },
+      "description": "Per ADR/0029 D5 + D6 + Codex1 B4 absorption: feature-to-geometry computation lineage for role=authoring_geometry records. Records which features were evaluated to produce this geometry. REQUIRED when role=authoring_geometry. The fold cross-checks each entry against fact_provenance.derived_from via the canonical `feature:<id>` address form per ADR/0029 D6."
+    },
+    "adapter_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "adapter_schema_version"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter_schema_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "engine_artifact_ref": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "stable_engine_object_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "OPTIONAL adapter shell per ADR/0005 §9 + ADR/0027 D18 wire-name preservation. When present: engine + adapter_schema_version REQUIRED; engine_artifact_ref + stable_engine_object_id OPTIONAL. Distinct from the required vault_ref above which carries the canonical Vault content-hash for the geometric artifact itself."
+    },
+    "bounding_box_mm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x_min_mm", "y_min_mm", "z_min_mm",
+        "x_max_mm", "y_max_mm", "z_max_mm"
+      ],
+      "properties": {
+        "x_min_mm": {"type": "number"},
+        "y_min_mm": {"type": "number"},
+        "z_min_mm": {"type": "number"},
+        "x_max_mm": {"type": "number"},
+        "y_max_mm": {"type": "number"},
+        "z_max_mm": {"type": "number"}
+      },
+      "description": "Optional cached axis-aligned bounding box in millimeters (canonical unit at field-name level per ADR/0029 D10). Engines responsible for keeping fresh; aiadra-core does not enforce recompute. Codex1 N2: a future validator MAY check min <= max on each axis if this becomes query-critical."
+    },
+    "fact_provenance": {
+      "type": "object",
+      "required": ["category"],
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": ["computed_result"],
+          "description": "Per ADR/0029 D6 + ADR/0028 D8: geometry_ref records are engine-computed derivatives. category MUST be 'computed_result'. Schema-rejects 'ai_proposal' / 'human_input' / 'measured' at the geometry_ref level (those belong on feature records or other namespaces)."
+        },
+        "ai_agent_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "derived_from": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Per ADR/0029 D6 + Codex1 B4 + Codex2 B2 R3 absorption: REQUIRED non-empty for computed_result records. Canonical intra-Part entry form for authoring_geometry records is `feature:<feat_id>` (e.g., `feature:feat_0001`); for derived_export records it is `geometry_ref:<geom_id>`. Cross-Object forms `<object_uuid>:feature:<feat_id>` and `<object_uuid>:geometry_ref:<geom_id>` are reserved for a future SCN when cross-Part geometry derivation lands; v0.28.0 fold REJECTS them. Fold enforces STRICT set-equality (NOT subset coverage) between this list (filtered to the role's canonical form) and the corresponding declared inputs (`derived_from_feature_ids` for authoring_geometry; `derived_from` for derived_export). Neither under-covering (missing) nor over-attesting (dangling extras) is allowed. See validation/fold.py `_enforce_authoring_geometry_provenance_consistency` + `_enforce_derived_export_provenance_consistency` for the runtime authority."
+        }
+      }
+    },
+    "fact_uncertainty": {
+      "enum": ["verified", "requires_validation", "computed", "estimated"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"role": {"const": "derived_export"}},
+        "required": ["role"]
+      },
+      "then": {"required": ["derived_from"]}
+    },
+    {
+      "if": {
+        "properties": {"role": {"const": "authoring_geometry"}},
+        "required": ["role"]
+      },
+      "then": {"required": ["derived_from_feature_ids"]}
+    },
+    {
+      "required": ["fact_provenance"],
+      "properties": {
+        "fact_provenance": {"required": ["derived_from"]}
+      }
+    }
+  ]
+}

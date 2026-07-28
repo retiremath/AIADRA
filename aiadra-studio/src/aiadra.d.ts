@@ -8,6 +8,18 @@ export {}
 
 type Envelope<T> = { ok: true; result: T } | { ok: false; error: { message: string } }
 
+/** One structured deletion blocker (ADR/0004 SCN arc 20260728-3 B2): a live
+ * relationship reference that refuses delete_object. Deterministically sorted
+ * by core; Studio renders the list without reinterpreting it. */
+export interface DeletionBlocker {
+  relationship_id: string
+  relationship_type: string
+  source_object: { uuid: string; number: string }
+  candidate_role: 'source' | 'endpoint'
+  state: 'working' | 'released'
+  revision_id?: string
+}
+
 /** A view request for displayHlr (contract v1.1; arc 20260609-2). `direction`
  * is the unit LOOK direction (eye → scene); `up` must not be parallel to it. */
 export interface HlrViewRequest {
@@ -30,6 +42,21 @@ declare global {
       listParts(
         workspaceId: string,
       ): Promise<Envelope<{ parts: { object_number: string; name: string; object_uuid: string }[] }>>
+      /** Delete a working Part (ADR/0004 SCN arc 20260728-3): the standalone
+       * Ring-2 deletion Transaction. A referential-integrity refusal comes
+       * back STRUCTURED (deleted:false + blockers) — Studio renders it,
+       * never reinterprets it. */
+      deleteObject(
+        workspaceId: string,
+        objectNumber: string,
+        reason: string,
+      ): Promise<
+        Envelope<{
+          deleted: boolean
+          commit?: unknown
+          refusal?: { message: string; blockers: DeletionBlocker[] }
+        }>
+      >
       displayRepresentation(
         workspaceId: string,
         objectRef: string,

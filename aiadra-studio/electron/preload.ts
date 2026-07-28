@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('aiadra', {
   inspect: (workspaceId: string, objectRef: string) =>
     ipcRenderer.invoke('aiadra:inspect', { workspaceId, objectRef }),
   listParts: (workspaceId: string) => ipcRenderer.invoke('aiadra:listParts', { workspaceId }),
+  deleteObject: (workspaceId: string, objectNumber: string, reason: string) =>
+    ipcRenderer.invoke('aiadra:deleteObject', { workspaceId, objectNumber, reason }),
   displayRepresentation: (workspaceId: string, objectRef: string) =>
     ipcRenderer.invoke('aiadra:displayRepresentation', { workspaceId, objectRef }),
   displayHlr: (

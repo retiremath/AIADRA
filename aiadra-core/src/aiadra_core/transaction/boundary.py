@@ -39,10 +39,27 @@ class TransactionKind(str, Enum):
     ATTACH_FILE = "attach_file"
     RELEASE = "release"
     ADD_ACCEPTANCE_CRITERION = "add_acceptance_criterion"
+    DELETE_OBJECT = "delete_object"  # ADR/0004 SCN arc 20260728-3: first shrinking kind
 
 
 class TransactionError(ValueError):
     """Generic Transaction failure."""
+
+
+class DeletionBlockedError(TransactionError):
+    """Deletion refused by the referential-integrity scan (arc 20260728-3 B2).
+
+    Carries `blockers`: the deterministic structured blocker list —
+    `{relationship_id, relationship_type, source_object{uuid, number},
+    candidate_role, state, revision_id?}` sorted by
+    (relationship_type, source number, relationship_id, state, revision_id)
+    per Codex2 N2. v1 is refusal-only; `relationship_retired` is a NAMED
+    future design, not a promised remediation path.
+    """
+
+    def __init__(self, message: str, blockers: list[dict[str, Any]]):
+        super().__init__(message)
+        self.blockers = blockers
 
 
 class CommitError(RuntimeError):
@@ -310,7 +327,29 @@ class TransactionDraft:
         )
 
     def stage_sidecar(self, obj_uuid: str | UUID, sidecar: dict[str, Any]) -> None:
-        self.sidecar_writes[str(obj_uuid)] = sidecar
+        key = str(obj_uuid)
+        if key in self.sidecar_deletes:
+            raise TransactionError(
+                f"Cannot stage a sidecar write for {key}: its deletion is already "
+                f"staged in this Transaction (arc 20260728-3 B3 mutual exclusion)."
+            )
+        self.sidecar_writes[key] = sidecar
+
+    def stage_sidecar_delete(self, obj_uuid: str | UUID) -> None:
+        """Stage the REMOVAL of a working sidecar (arc 20260728-3 B3).
+
+        Commit deletes the file and Git-stages the removal so the deletion is
+        part of the same atomic commit as the tombstone + event. Mutually
+        exclusive with a staged write for the same uuid, in both directions.
+        """
+        key = str(obj_uuid)
+        if key in self.sidecar_writes:
+            raise TransactionError(
+                f"Cannot stage sidecar deletion for {key}: a sidecar write is "
+                f"already staged in this Transaction (arc 20260728-3 B3 mutual "
+                f"exclusion)."
+            )
+        self.sidecar_deletes.add(key)
 
     def stage_event(self, event: dict[str, Any]) -> None:
         self.events.append(event)
@@ -577,7 +616,7 @@ class TransactionDraft:
         - For each staged sidecar, compare against the folded state.
         Raises FoldInconsistencyError on mismatch.
         """
-        if not self.events and not self.sidecar_writes:
+        if not self.events and not self.sidecar_writes and not self.sidecar_deletes:
             return  # nothing to fold
 
         from ..validation.fold import (
@@ -647,6 +686,18 @@ class TransactionDraft:
                 # fold in validation/fold.py. Mirrors the dual-fold discipline
                 # established by Phase 2 F1 / Phase 4 F2 SCNs.
                 _apply_part_changed(state, event["payload"], event["actor"])
+            elif et == "object_deleted":
+                # arc 20260728-3 B3: proposed-state fold MUST remove the uuid
+                # from working state, mirroring the read-side fold. Deleting an
+                # unknown uuid is fold inconsistency (the operation layer
+                # guarantees existence; disagreement here means drift).
+                uuid = event["payload"]["uuid"]
+                if uuid not in state:
+                    raise _FoldErr(
+                        f"object_deleted: uuid {uuid} not present in folded "
+                        f"working state; nothing to delete"
+                    )
+                state.pop(uuid)
             # release_staged + <type>_released are no-op on working state.
 
         # Compare each staged sidecar against the folded state.
@@ -661,6 +712,17 @@ class TransactionDraft:
                 raise FoldInconsistencyError(
                     f"Proposed sidecar for {uuid} disagrees with proposed event fold: "
                     f"staged sidecar and staged events would diverge post-commit"
+                )
+
+        # arc 20260728-3 B3: each staged sidecar DELETION must agree with the
+        # event fold — the uuid must be ABSENT from the folded state (the
+        # object_deleted event removed it) or the deletion and the events
+        # would diverge post-commit.
+        for uuid in self.sidecar_deletes:
+            if uuid in state:
+                raise FoldInconsistencyError(
+                    f"Staged sidecar deletion for {uuid} disagrees with proposed "
+                    f"event fold: no staged object_deleted event removes it"
                 )
         outcomes.append(ValidationOutcome("proposed_fold_invariant", "PASS"))
 
@@ -818,6 +880,18 @@ class TransactionDraft:
             atomic_write_bytes(p, text.encode("utf-8"))
             touched_paths.append(p)
 
+        # 2b. Sidecar deletions (arc 20260728-3 B3): remove the file AND
+        # remember the path so the Git step stages the REMOVAL. `git add` on
+        # a tracked-but-missing path stages its deletion; the `p.exists()`
+        # filter in step 7 would silently drop it, so removed paths are
+        # collected separately and added unconditionally.
+        removed_paths: list[Path] = []
+        for uuid in sorted(self.sidecar_deletes):
+            p = working_sidecar_path(self.workspace, uuid)
+            if p.exists():
+                p.unlink()
+            removed_paths.append(p)
+
         # 3. Reservation writes
         for prefix, res in self.reservation_writes.items():
             text = dump_yaml(res)
@@ -858,6 +932,11 @@ class TransactionDraft:
                 for p in touched_paths
                 if p.exists()
             ]
+            # arc 20260728-3 B3: staged sidecar removals join the same commit.
+            rel_paths.extend(
+                str(p.relative_to(self.workspace)).replace("\\", "/")
+                for p in removed_paths
+            )
             if rel_paths:
                 _git(self.workspace, "add", "--", *rel_paths)
                 msg = "\n".join(self.commit_message_lines) or f"aiadra: {self.kind} {self.transaction_id}"  # ADR/0028 D16

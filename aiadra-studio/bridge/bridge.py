@@ -93,6 +93,38 @@ def m_list_parts(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def m_delete_object(params: dict[str, Any]) -> dict[str, Any]:
+    """Delete a working Part (ADR/0004 SCN arc 20260728-3) — the standalone
+    Ring-2 deletion Transaction: object_deleted event + terminal Reservation
+    tombstone + working-sidecar removal in ONE Git commit.
+
+    A referential-integrity refusal is NOT a transport error — it returns
+    `{deleted: false, refusal: {message, blockers}}` so Studio renders the
+    STRUCTURED blocker list without reinterpreting it (Codex2 contract: Studio
+    renders, never reinterprets). Success returns `{deleted: true, commit}`.
+    """
+    from aiadra_core.protocol import DeletionBlockedError, commit, propose
+
+    workspace_path = params.get("workspace_path")
+    object_number = params.get("object_number")
+    reason = params.get("reason")
+    if not workspace_path or not object_number or not reason:
+        raise ValueError("delete_object requires 'workspace_path', 'object_number', 'reason'")
+    try:
+        draft = propose(
+            Path(workspace_path), kind="delete_object",
+            params={"obj_number": object_number, "reason": reason},
+            actor="human",  # Studio's RMB delete is operator-driven
+        )
+    except DeletionBlockedError as exc:
+        return {
+            "deleted": False,
+            "refusal": {"message": str(exc), "blockers": exc.blockers},
+        }
+    result = commit(draft)
+    return {"deleted": True, "commit": _to_jsonable(result)}
+
+
 def m_display_representation(params: dict[str, Any]) -> dict[str, Any]:
     """Engine-produced Display Representation for a canonical Object (ADR/0035;
     arc 20260609-1). Read-only Ring-2 primitive — writes nothing. `workspace_path`
@@ -277,6 +309,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "core_version": m_core_version,
     "inspect": m_inspect,
     "list_parts": m_list_parts,
+    "delete_object": m_delete_object,
     "display_representation": m_display_representation,
     "display_hlr": m_display_hlr,
     # authoring (write) lane — arc 20260711-11 slice 1

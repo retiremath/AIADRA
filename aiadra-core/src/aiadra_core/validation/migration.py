@@ -226,6 +226,26 @@ REGISTERED_STEPS: list[MigrationStep] = [
         ],
         apply=_noop_data_apply,
     ),
+    MigrationStep(
+        from_version="0.29.0",
+        to_version="0.30.0",
+        notes=[
+            "v0.29.0 → v0.30.0 is a MINOR additive bump (ADR/0004 SCN, arc "
+            "20260728-3: the deletion tombstone — the FIRST object-lifecycle-"
+            "shrinking contract). Reservation `status` gains the terminal "
+            "`deleted` (the lifecycle law becomes current → retired | deleted); "
+            "a deleted entry REQUIRES deleted_at + deleted_by_transaction + "
+            "deletion_reason, FORBIDS current_revision_id, and its Number/"
+            "object_uuid remain forever (never reallocated). NEW event "
+            "`object_deleted` (object_type/uuid/number/name/deletion_reason + "
+            "detached attachment/vault refs; actor in the canonical top-level "
+            "field). v1 gate: Part-only, released_revision_ids == [] — "
+            "obsolescence of released Objects is a distinct future lifecycle "
+            "operation. All existing v0.29.0 artifacts validate unchanged; "
+            "no data migration."
+        ],
+        apply=_noop_data_apply,
+    ),
 ]
 
 

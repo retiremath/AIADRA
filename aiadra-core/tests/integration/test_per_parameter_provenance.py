@@ -66,7 +66,10 @@ class TestBundleV0290:
         assert digest_file["bundle_digest"] == compute_bundle_digest(_bundle_dir("0.29.0"))
 
     def test_latest_is_v0290(self):
-        assert BundleRegistry().latest().bundle_version == "0.29.0"
+        # v0.30.0 superseded v0.29.0 as latest (delete_object, arc 20260728-3);
+        # v0.29.0 remains registered + migratable.
+        assert BundleRegistry().latest().bundle_version == "0.30.0"
+        assert "0.29.0" in BundleRegistry().versions()
 
     def test_migration_chain_reaches_v0290(self):
         step = next(

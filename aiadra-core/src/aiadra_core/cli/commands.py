@@ -232,6 +232,51 @@ def cmd_change_parameter(argv: list[str]) -> int:
     )
 
 
+def cmd_delete_object(argv: list[str]) -> int:
+    """aiadra delete-object <workspace> <obj-number> --reason <text>
+
+    ADR/0004 SCN (arc 20260728-3): standalone deletion Transaction — the
+    `object_deleted` event, the terminal Reservation tombstone, and the
+    working-sidecar removal in ONE Git commit. Refuses with the structured
+    blocker list when live relationship references (working or released)
+    involve the Object. CLI passes actor="human" (operator-driven binding).
+    """
+    import argparse
+    p = argparse.ArgumentParser(prog="aiadra delete-object")
+    p.add_argument("workspace")
+    p.add_argument("obj_number")
+    p.add_argument("--reason", required=True,
+                   help="Non-empty deletion reason recorded on the event and tombstone.")
+    args = p.parse_args(argv)
+    workspace = Path(args.workspace).resolve()
+    from ..protocol import propose, ProjectPinError, DeletionBlockedError
+    try:
+        draft = propose(
+            workspace, kind="delete_object",
+            params={"obj_number": args.obj_number, "reason": args.reason},
+            actor="human",
+        )
+    except DeletionBlockedError as e:
+        print(f"delete-object refused: {e}", file=sys.stderr)
+        for b in e.blockers:
+            rev = b.get("revision_id")
+            suffix = f", revision {rev}" if rev else ""
+            print(
+                f"  - {b['relationship_type']} {b['relationship_id']} "
+                f"on {b['source_object']['number'] or b['source_object']['uuid']} "
+                f"(candidate is {b['candidate_role']}; {b['state']}{suffix})",
+                file=sys.stderr,
+            )
+        return 2
+    except ProjectPinError as e:
+        print(f"project pin failure: {e}", file=sys.stderr)
+        return 3
+    except TransactionError as e:
+        print(f"delete-object failed: {e}", file=sys.stderr)
+        return 2
+    return _run_draft(draft)
+
+
 def cmd_add_acceptance_criterion(argv: list[str]) -> int:
     """aiadra add-acceptance-criterion <workspace> <req-number> <criterion-id> <text>
                                        [--language en] [--format freeform|ears]

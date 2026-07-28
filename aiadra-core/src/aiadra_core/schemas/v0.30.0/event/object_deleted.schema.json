@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIADRA event - object_deleted (ADR/0004 SCN, arc 20260728-3: the first object-lifecycle-shrinking operation; v1 accepts Part only)",
+  "allOf": [
+    {
+      "$ref": "_base.schema.json"
+    }
+  ],
+  "properties": {
+    "event_type": {
+      "const": "object_deleted"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "object_type",
+        "uuid",
+        "number",
+        "name",
+        "deletion_reason",
+        "detached_attachments",
+        "detached_vault_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "object_type": {
+          "enum": [
+            "Part"
+          ]
+        },
+        "uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "number": {
+          "type": "string",
+          "pattern": "^P-[0-9]{6}$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "deletion_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detached_attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "attachment_id",
+              "vault_ref"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "vault_ref": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Attachment records leaving with the sidecar; vault bytes are PRESERVED in v1 (no GC)."
+        },
+        "detached_vault_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Recipe/geometry vault refs detached by the deletion; bytes preserved (content-addressed, shared-by-hash)."
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

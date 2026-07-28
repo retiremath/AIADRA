@@ -71,6 +71,7 @@ def test_phase_c_propose_kinds_catalogue():
     assert kinds == tuple(sorted(kinds))
     assert "init" in kinds
     assert "release" in kinds
+    assert "delete_object" in kinds  # ADR/0004 SCN arc 20260728-3
     assert "change_parameter" in kinds
     assert "add_acceptance_criterion" in kinds
     assert "attach_file" in kinds
@@ -83,7 +84,8 @@ def test_phase_c_propose_kinds_catalogue():
     # mechanical_spike (or any other engine) is installed, the count exceeds
     # 17. Fix: count only built-in kinds (those without a dot prefix).
     builtin_kinds = [k for k in kinds if "." not in k]
-    assert len(builtin_kinds) == 17
+    # 18 since delete_object joined (ADR/0004 SCN arc 20260728-3).
+    assert len(builtin_kinds) == 18
 
 
 def test_phase_c_modify_kinds_excludes_init_and_release():
@@ -92,7 +94,10 @@ def test_phase_c_modify_kinds_excludes_init_and_release():
     mkinds = modify_kinds()
     assert "init" not in mkinds
     assert "release" not in mkinds
-    assert len(mkinds) == len(propose_kinds()) - 2
+    # delete_object joined the rejected set (Codex2 N1 arc 20260728-3:
+    # the destructive kind is standalone).
+    assert "delete_object" not in mkinds
+    assert len(mkinds) == len(propose_kinds()) - 3
     for k in mkinds:
         assert k in propose_kinds()
 

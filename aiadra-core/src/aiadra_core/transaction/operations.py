@@ -72,6 +72,7 @@ from ..validation.schema import (
 from .boundary import (
     CommitError,
     CommitResult,
+    DeletionBlockedError,
     TransactionDraft,
     TransactionError,
     TransactionKind,
@@ -1134,3 +1135,247 @@ def release(
 def serialize_manifest_inline(manifest: dict[str, Any]) -> bytes:
     """Local helper — same as truth_model.manifest.serialize_manifest."""
     return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+# -----------------------------------------------------------------------------
+# DELETE OBJECT (ADR/0004 SCN arc 20260728-3; Codex2 SIGNOFF build contract)
+# -----------------------------------------------------------------------------
+
+
+def _uuid_to_number_map(workspace: Path) -> dict[str, str]:
+    """Map object_uuid → its CURRENT Number (retired aliases only as fallback)."""
+    mapping: dict[str, str] = {}
+    fallback: dict[str, str] = {}
+    for prefix in list_reservation_prefixes(workspace):
+        reservation = load_reservation(workspace, prefix)
+        for number, entry in (reservation.get("reservations", {}) or {}).items():
+            uuid = entry.get("object_uuid")
+            if not uuid:
+                continue
+            if entry.get("status") == "current":
+                mapping[uuid] = number
+            else:
+                fallback.setdefault(uuid, number)
+    for uuid, number in fallback.items():
+        mapping.setdefault(uuid, number)
+    return mapping
+
+
+def _scan_deletion_blockers(workspace: Path, candidate_uuid: str) -> list[dict[str, Any]]:
+    """B2 two-graph referential-integrity scan (arc 20260728-3).
+
+    Checks the candidate as SOURCE and as ENDPOINT of every relationship, with
+    no typed allowlist, across:
+      1. ALL working sidecars (state="working"), and
+      2. the cumulative RELEASED Revision graph — every revision named by any
+         on-disk release manifest (state="released", permanently blocking).
+
+    Returns the deterministic structured blocker list per Codex2 N2: sorted by
+    (relationship_type, source number, relationship_id, state, revision_id),
+    deduplicated on the full identity key.
+    """
+    from ..truth_model.manifest import list_release_labels, load_manifest
+    from ..truth_model.revision import load_revision
+
+    numbers = _uuid_to_number_map(workspace)
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    blockers: list[dict[str, Any]] = []
+
+    def add(rel: dict[str, Any], source_uuid: str, role: str,
+            state: str, revision_id: str | None) -> None:
+        key = (
+            str(rel.get("type", "")), numbers.get(source_uuid, ""),
+            str(rel.get("id", "")), role, state, revision_id or "",
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        blocker: dict[str, Any] = {
+            "relationship_id": rel.get("id", ""),
+            "relationship_type": rel.get("type", ""),
+            "source_object": {
+                "uuid": source_uuid,
+                "number": numbers.get(source_uuid, ""),
+            },
+            "candidate_role": role,
+            "state": state,
+        }
+        if revision_id is not None:
+            blocker["revision_id"] = revision_id
+        blockers.append(blocker)
+
+    def scan_content(source_uuid: str, content: dict[str, Any],
+                     state: str, revision_id: str | None) -> None:
+        for rel in content.get("relationship", []) or []:
+            if not isinstance(rel, dict):
+                continue
+            if source_uuid == candidate_uuid:
+                add(rel, source_uuid, "source", state, revision_id)
+            for ep in rel.get("endpoints", []) or []:
+                if isinstance(ep, dict) and ep.get("object_uuid") == candidate_uuid:
+                    add(rel, source_uuid, "endpoint", state, revision_id)
+
+    # 1. Working sidecars.
+    for uuid in list_working_sidecar_uuids(workspace):
+        try:
+            sidecar = load_sidecar(workspace, uuid)
+        except FileNotFoundError:
+            continue
+        scan_content(uuid, sidecar, "working", None)
+
+    # 2. Cumulative released Revision graph (every manifest on disk).
+    for label in list_release_labels(workspace):
+        manifest = load_manifest(workspace, label)
+        for rev in manifest.get("revisions", []) or []:
+            obj_uuid = rev.get("object_uuid")
+            rev_id = rev.get("revision_id")
+            if not obj_uuid or not rev_id:
+                continue
+            try:
+                content = load_revision(workspace, obj_uuid, rev_id)
+            except FileNotFoundError:
+                continue
+            scan_content(obj_uuid, content, "released", rev_id)
+
+    blockers.sort(key=lambda b: (
+        b["relationship_type"], b["source_object"]["number"],
+        b["relationship_id"], b["state"], b.get("revision_id", ""),
+    ))
+    return blockers
+
+
+def delete_object(
+    workspace: Path,
+    bundle: BundleHandle,
+    obj_number: str,
+    *,
+    reason: str,
+    actor: str = "agent",
+) -> TransactionDraft:
+    """Delete a working Object (v1: Part with no released history).
+
+    Per the arc-20260728-3 converged contract (Codex2 SIGNOFF):
+      - STANDALONE Transaction (Codex1/Codex2 N1: no `existing_draft`
+        parameter; `modify(kind="delete_object")` and extending a
+        delete-rooted draft are rejected at the protocol layer).
+      - Stages, atomically: the `object_deleted` event, the terminal
+        Reservation tombstone (status=deleted, current_revision_id removed,
+        the three tombstone fields added), and the working-sidecar REMOVAL.
+      - B2 scan refuses on any live relationship reference (working or
+        released) with the structured blocker list on `DeletionBlockedError`.
+      - Vault bytes are PRESERVED; detached refs recorded on the event.
+    """
+    if actor not in ("agent", "human"):
+        raise ValueError(f"Invalid actor {actor!r}; expected 'agent' or 'human'.")
+    if not reason or not reason.strip():
+        raise TransactionError("delete_object requires a non-empty reason.")
+
+    found = find_reservation_entry_by_number(workspace, obj_number)
+    if found is None:
+        raise TransactionError(f"Object not found: {obj_number}")
+    prefix, entry = found
+    status = entry.get("status")
+    if status == "deleted":
+        raise TransactionError(
+            f"Object {obj_number} is already deleted "
+            f"(deleted_at {entry.get('deleted_at')!r}, "
+            f"transaction {entry.get('deleted_by_transaction')!r})."
+        )
+    if status != "current":
+        raise TransactionError(
+            f"Number {obj_number} is a {status!r} alias; deletion targets the "
+            f"Object's CURRENT Number."
+        )
+    obj_uuid = entry["object_uuid"]
+
+    try:
+        sidecar = load_sidecar(workspace, obj_uuid)
+    except FileNotFoundError:
+        raise TransactionError(
+            f"Object {obj_number} has no working sidecar on disk; workspace "
+            f"state is inconsistent — refusing to delete."
+        )
+    obj_type = sidecar.get("object", {}).get("type")
+    if obj_type != "Part":
+        raise TransactionError(
+            f"delete_object v1 accepts only Parts; {obj_number} is {obj_type!r} "
+            f"(arc 20260728-3 v1 gate)."
+        )
+    released = entry.get("released_revision_ids") or []
+    if released:
+        raise TransactionError(
+            f"Object {obj_number} has released revision(s) {released}; released "
+            f"Truth is permanent and its Objects cannot be deleted "
+            f"(arc 20260728-3 v1 gate)."
+        )
+
+    # B2 referential-integrity scan. The candidate's own OUTGOING relationships
+    # block too: deletion would silently destroy source-owned relationship
+    # records rather than retire them.
+    blockers = _scan_deletion_blockers(workspace, obj_uuid)
+    if blockers:
+        n = len(blockers)
+        raise DeletionBlockedError(
+            f"Deletion of {obj_number} refused: {n} live relationship "
+            f"reference(s) involve it. AIADRA v1 has no relationship-retirement "
+            f"operation; released references block permanently. "
+            f"(`relationship_retired` is a named future design.)",
+            blockers,
+        )
+
+    # Detached references (vault bytes preserved; recorded for the event).
+    detached_attachments = [
+        {"attachment_id": a.get("id", ""), "vault_ref": a.get("content_hash", "")}
+        for a in sidecar.get("attachment", []) or []
+        if isinstance(a, dict)
+    ]
+    detached_vault_refs = sorted({
+        g["vault_ref"]
+        for g in sidecar.get("geometry_ref", []) or []
+        if isinstance(g, dict) and g.get("vault_ref")
+    })
+
+    draft = _begin_or_extend_draft(workspace, bundle, TransactionKind.DELETE_OBJECT, None)
+    transaction_id = draft.transaction_id
+    ts = _now_iso()  # ONE timestamp — event and tombstone must agree (Codex2 N2)
+
+    # Terminal Reservation tombstone.
+    reservation = load_reservation(workspace, prefix)
+    new_reservation = deepcopy(reservation)
+    tomb = new_reservation["reservations"][obj_number]
+    tomb["status"] = "deleted"
+    tomb.pop("current_revision_id", None)
+    tomb["deleted_at"] = ts
+    tomb["deleted_by_transaction"] = transaction_id
+    tomb["deletion_reason"] = reason
+
+    event_id = _next_event_id_in_draft(workspace, draft, bundle.bundle_dir)
+    event = {
+        "schema_version": bundle.bundle_version,
+        "event_id": event_id,
+        "event_type": "object_deleted",
+        "timestamp": ts,
+        "transaction_id": transaction_id,
+        "actor": actor,
+        "payload": {
+            "object_type": "Part",
+            "uuid": obj_uuid,
+            "number": obj_number,
+            "name": sidecar.get("object", {}).get("name", ""),
+            "deletion_reason": reason,
+            "detached_attachments": detached_attachments,
+            "detached_vault_refs": detached_vault_refs,
+        },
+    }
+
+    draft.stage_reservation(prefix, new_reservation)
+    draft.stage_event(event)
+    draft.stage_sidecar_delete(obj_uuid)
+    draft.commit_message_lines = [
+        f"aiadra: delete-object {obj_number}",
+        "",
+        f"Transaction {transaction_id} deleted {obj_number} ({obj_uuid}). "
+        f"Reason: {reason}. Number and UUID remain permanently reserved; "
+        f"vault bytes preserved.",
+    ]
+    return draft

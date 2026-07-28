@@ -359,6 +359,31 @@ function registerIpc(): void {
     return callBridge('list_parts', { workspace_path: wsPath })
   })
 
+  // Delete a working Part (ADR/0004 SCN arc 20260728-3) — the standalone
+  // Ring-2 deletion Transaction. Same capability discipline: only the opaque
+  // workspaceId + Number + reason cross the wire; main validates structurally
+  // BEFORE the bridge (the closed wire envelope — main adds no semantics).
+  ipcMain.handle('aiadra:deleteObject', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as { workspaceId?: unknown; objectNumber?: unknown; reason?: unknown } | null
+    if (!a || typeof a.workspaceId !== 'string' || typeof a.objectNumber !== 'string') {
+      return err('deleteObject requires { workspaceId, objectNumber, reason }')
+    }
+    if (!/^P-[0-9]{6}$/.test(a.objectNumber)) {
+      return err('deleteObject accepts Part Numbers only (P-NNNNNN) in v1')
+    }
+    if (typeof a.reason !== 'string' || a.reason.trim() === '') {
+      return err('deleteObject requires a non-empty reason')
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    return callBridge('delete_object', {
+      workspace_path: wsPath,
+      object_number: a.objectNumber,
+      reason: a.reason,
+    })
+  })
+
   // Read-only Display Representation for a canonical Part (ADR/0035; arc
   // 20260609-1). Same capability discipline as inspect: only the opaque
   // workspaceId + object ref cross the wire; main resolves the path.

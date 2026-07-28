@@ -334,3 +334,41 @@ Queries against this file:
 - [ADR/0008](0008-cross-project-object-identity.md) — Cross-project Object identity. Reservation files stay within-project; cross-project bindings live in Component / SoftwareModule per-Type ADRs.
 - [OpenQuestions.md](../OpenQuestions.md) — OQ-0015 (resolved by this ADR), OQ-0014 (resolved earlier, related — no live coordination), OQ-0012 (scale-sensitive structural commitments; Tier-L escape hatch for block allocation flagged but deferred).
 - Discussion trail (git-ignored, local only): `Docs/Discussions/20260518-8/Claude1.md` → `Codex1.md` → `Claude2.md` → `Codex2.md` — full working-out across one substantive Codex round (two hard blockers caught and absorbed) plus a green-light second round with two non-blocking polish notes absorbed.
+
+---
+
+## SCN 2026-07-28 — terminal `deleted` lifecycle status (arc 20260728-3; bundle v0.29.0 → v0.30.0)
+
+The Reservation entry lifecycle grows one terminal state:
+
+```
+current → retired          (renumbering; unchanged)
+current → deleted          (NEW: Object deletion — TERMINAL)
+```
+
+Rules (all pinned by the arc-20260728-3 converged design; Codex2 SIGNOFF):
+
+1. **`deleted` is terminal.** No transition leaves it. The Number and `object_uuid`
+   remain permanently reserved and historically resolvable — deletion never frees a
+   Number for reuse (S2.5 commitment: Numbers are forever).
+2. **Tombstone shape.** When `status: deleted`, the entry REQUIRES `deleted_at`
+   (UTC ISO), `deleted_by_transaction` (`tx_NNNN`), and `deletion_reason`
+   (non-empty), and FORBIDS `current_revision_id` (a deleted Object has no current
+   revision by rule). Under the v1 delete gate, `released_revision_ids` must
+   already be `[]` — an Object with released history cannot be deleted.
+3. **Atomic identity transition.** The Reservation tombstone, the `object_deleted`
+   event, and the working-sidecar REMOVAL are one Transaction and one Git commit.
+   Mechanical equality (Codex2 N2): the event payload and the tombstone MUST agree
+   on UUID, Number, transaction id, deletion reason, and deletion time, with the
+   working sidecar absent post-commit. Tests hard-fail on any disagreement.
+4. **Lookup distinguishes deleted from unknown.** Resolving a deleted Number/UUID
+   raises the typed `ObjectDeletedError` (carrying the tombstone metadata), never
+   `ObjectNotFoundError`. Queries over working state exclude deleted Objects
+   naturally (no sidecar exists).
+5. **Schema consequence.** Bundle v0.30.0: all five reservation schemas gain
+   `deleted` in the status enum + the three tombstone fields + the conditional
+   requirement/forbid branch; new `event/object_deleted.schema.json`. Additive
+   MINOR per ADR/0003 §11.
+
+Discussion trail (git-ignored, local only): `Docs/Discussions/20260728/20260728-3/`
+(Claude1 → Codex1 → Claude2 → Codex2 SIGNOFF).

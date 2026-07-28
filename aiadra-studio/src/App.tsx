@@ -11,6 +11,15 @@ import { HomeRibbon } from './home/HomeRibbon'
 import { FileMenu, type FileMenuItem } from './home/FileMenu'
 import { QuickAccessBar, type QatCommand } from './ui/QuickAccessBar'
 import { NavigatorTabs, type NavTabKey } from './ui/NavigatorTabs'
+import { ContextMenu } from './ui/ContextMenu'
+import type { MenuItem } from './ui/DropdownMenu'
+import type { DeletionBlocker } from './aiadra'
+import {
+  DEFAULT_DELETE_REASON,
+  deletePreflight,
+  describeBlocker,
+  shellTitle,
+} from './workspace/partActions'
 import { NewDialog, type NewObjectChoice } from './home/NewDialog'
 import { WorkspaceStart, type OpenedWorkspace } from './home/HomeShared'
 import {
@@ -92,6 +101,9 @@ function EnginePanel({
   refresh = 0,
   loadedPart,
   onPartLoaded,
+  onParts,
+  onRequestNew,
+  onActivePartMissing,
 }: {
   /** The ONE Workbench-owned current workspace (Codex1 B1) — this panel is a
    *  projection of it, never a second owner. */
@@ -108,10 +120,32 @@ function EnginePanel({
   loadedPart: string | null
   /** Route a Part-row load through the Workbench's ONE canonical transition. */
   onPartLoaded?: (partNumber: string) => void
+  /** WT-05: surface the listed identities so the shell can project the
+   *  active-part title (class-4 derived; the list stays owned here). */
+  onParts?: (parts: PartRow[]) => void
+  /** WT-06: the workspace-header New Part… entry — the EXISTING commit-at-New
+   *  flow with this workspace pre-bound (no second creation path). */
+  onRequestNew?: () => void
+  /** Two-sided session rule (arc 20260728-3): the active Part vanished from
+   *  the workspace listing (deleted outside this session) — the shell must
+   *  exit the stale context fail-closed. */
+  onActivePartMissing?: () => void
 }) {
   const [version, setVersion] = useState<string | null>(null)
   const [parts, setParts] = useState<PartRow[]>([])
   const [note, setNote] = useState('')
+  // WT-06/07: ONE context menu at a time — either the workspace header or a
+  // Part row, at the pointer.
+  const [ctx, setCtx] = useState<
+    | { kind: 'workspace'; x: number; y: number }
+    | { kind: 'part'; part: PartRow; x: number; y: number }
+    | null
+  >(null)
+  // WT-07: the Delete… confirmation (reason editable; core requires non-empty).
+  const [confirmDelete, setConfirmDelete] = useState<{ part: PartRow; reason: string } | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  // The last structured refusal — rendered verbatim under the tree.
+  const [blocked, setBlocked] = useState<{ number: string; message: string; blockers: DeletionBlocker[] } | null>(null)
 
   useEffect(() => {
     if (!window.aiadra) {
@@ -152,6 +186,16 @@ function EnginePanel({
           return
         }
         setParts(list.result.parts)
+        onParts?.(list.result.parts)
+        // Two-sided session rule (arc 20260728-3): the loaded Part is gone
+        // from Truth (deleted outside this session) — fail-closed exit.
+        if (
+          loadedPart !== null &&
+          !list.result.parts.some((p) => p.object_number === loadedPart)
+        ) {
+          onActivePartMissing?.()
+          return
+        }
         if (list.result.parts.length === 1) {
           // Exactly one Part — load it without a pointless extra click.
           loadPart(list.result.parts[0])
@@ -176,6 +220,82 @@ function EnginePanel({
     if (reason !== null) setNote(reason)
   }
 
+  // WT-07: Delete… — Studio's class-4 preflight first (active part / gate),
+  // then the confirm dialog; the durable rules stay core's alone.
+  const requestDelete = (part: PartRow) => {
+    const refusal = deletePreflight(part.object_number, loadedPart, gate)
+    if (refusal) {
+      setNote(refusal)
+      return
+    }
+    setBlocked(null)
+    setConfirmDelete({ part, reason: DEFAULT_DELETE_REASON })
+  }
+
+  const runDelete = async () => {
+    if (!confirmDelete || !ws || !window.aiadra) return
+    const { part, reason } = confirmDelete
+    if (!reason.trim()) {
+      setNote('a deletion reason is required')
+      return
+    }
+    setDeleteBusy(true)
+    try {
+      const r = await window.aiadra.deleteObject(ws.workspaceId, part.object_number, reason.trim())
+      if (!r.ok) {
+        setNote(r.error.message)
+        return
+      }
+      if (!r.result.deleted) {
+        // The structured refusal — rendered verbatim (core sorted it).
+        setBlocked({
+          number: part.object_number,
+          message: r.result.refusal?.message ?? 'deletion refused',
+          blockers: r.result.refusal?.blockers ?? [],
+        })
+        return
+      }
+      setNote(`${part.object_number} deleted — its Number stays permanently reserved`)
+      setParts((prev) => {
+        const next = prev.filter((p) => p.object_number !== part.object_number)
+        onParts?.(next)
+        return next
+      })
+    } finally {
+      setDeleteBusy(false)
+      setConfirmDelete(null)
+    }
+  }
+
+  // WT-06: the workspace-header menu. Assembly/Drawing are honest roadmap
+  // entries — canonically designed, not yet materialized in the runtime.
+  const workspaceMenuItems: MenuItem[] = [
+    { key: 'new-part', label: 'New Part…', disabledReason: gate },
+    {
+      key: 'new-assembly',
+      label: 'New Assembly',
+      disabledReason:
+        'Assembly is canonically designed but not yet materialized in the runtime (ADR/0042)',
+      sepBefore: true,
+    },
+    {
+      key: 'new-drawing',
+      label: 'New Drawing',
+      disabledReason:
+        'Drawing is canonically designed but not yet materialized in the runtime',
+    },
+  ]
+
+  const partMenuItems = (part: PartRow): MenuItem[] => [
+    { key: 'open', label: 'Open', disabledReason: gate },
+    {
+      key: 'delete',
+      label: 'Delete…',
+      disabledReason: deletePreflight(part.object_number, loadedPart, gate),
+      sepBefore: true,
+    },
+  ]
+
   return (
     <div className="engine">
       <div className="panel-title">Engine</div>
@@ -197,7 +317,20 @@ function EnginePanel({
           >
             Open Workspace…
           </button>
-          {ws && <div className="small pad muted">workspace: {ws.name}</div>}
+          {ws && (
+            /* WT-06: the workspace ROOT row (Creo's tree-root grammar) — RMB
+               offers creation with THIS workspace pre-bound. */
+            <div
+              className="small pad ws-root"
+              title="Right-click: New Part / Assembly / Drawing"
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setCtx({ kind: 'workspace', x: e.clientX, y: e.clientY })
+              }}
+            >
+              <b>{ws.name}</b> <span className="muted">workspace</span>
+            </div>
+          )}
           {ws && version && note && <div className="small pad err">{note}</div>}
           {parts.length > 0 && (
             <ul className="tree">
@@ -210,14 +343,107 @@ function EnginePanel({
                   className={`part-row ${loadedPart === p.object_number ? 'on' : ''}${gate ? ' disabled' : ''}`}
                   title={gate ?? undefined}
                   onClick={() => !gate && loadPart(p)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setCtx({ kind: 'part', part: p, x: e.clientX, y: e.clientY })
+                  }}
                   style={gate ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
                 >
                   {p.name || p.object_number} <span className="muted small">{p.object_number}</span>
+                  {loadedPart === p.object_number && <span className="muted small"> (Active)</span>}
                 </li>
               ))}
             </ul>
           )}
           {ws && parts.length === 0 && <div className="small pad muted">no Parts in this workspace</div>}
+          {blocked && (
+            /* The structured B2 refusal — core's deterministic list, rendered
+               verbatim. Honest copy: released refs are permanent; the working
+               remediation is a NAMED future design, not a promise. */
+            <div className="small pad err delete-blocked">
+              <div>
+                <b>{blocked.number}</b> cannot be deleted — {blocked.blockers.length} live
+                relationship reference{blocked.blockers.length === 1 ? '' : 's'}:
+              </div>
+              <ul>
+                {blocked.blockers.map((b, i) => (
+                  <li key={`${b.relationship_id}-${b.state}-${b.revision_id ?? ''}-${i}`}>
+                    {describeBlocker(b)}
+                  </li>
+                ))}
+              </ul>
+              <button className="btn" type="button" onClick={() => setBlocked(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {ctx?.kind === 'workspace' && (
+            <ContextMenu
+              x={ctx.x}
+              y={ctx.y}
+              label="Workspace actions"
+              items={workspaceMenuItems}
+              onClose={() => setCtx(null)}
+              onSelect={(key) => {
+                if (key === 'new-part') onRequestNew?.()
+              }}
+            />
+          )}
+          {ctx?.kind === 'part' && (
+            <ContextMenu
+              x={ctx.x}
+              y={ctx.y}
+              label={`${ctx.part.object_number} actions`}
+              items={partMenuItems(ctx.part)}
+              onClose={() => setCtx(null)}
+              onSelect={(key) => {
+                if (key === 'open') loadPart(ctx.part)
+                if (key === 'delete') requestDelete(ctx.part)
+              }}
+            />
+          )}
+          {confirmDelete && (
+            <div className="dialog-scrim" role="presentation">
+              <div className="dialog" role="dialog" aria-modal="true" aria-label="Delete Part">
+                <div className="panel-title">Delete {confirmDelete.part.object_number}</div>
+                <div className="small pad">
+                  Delete <b>{confirmDelete.part.name || confirmDelete.part.object_number}</b> (
+                  {confirmDelete.part.object_number}) from this workspace?
+                  <br />
+                  Its Number and history stay permanently reserved; vault bytes are preserved.
+                </div>
+                <label className="small pad" style={{ display: 'block' }}>
+                  Reason
+                  <input
+                    type="text"
+                    value={confirmDelete.reason}
+                    style={{ width: '100%' }}
+                    onChange={(e) =>
+                      setConfirmDelete((c) => (c ? { ...c, reason: e.target.value } : c))
+                    }
+                  />
+                </label>
+                <div className="pad" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn"
+                    type="button"
+                    disabled={deleteBusy}
+                    onClick={() => setConfirmDelete(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn danger"
+                    type="button"
+                    disabled={deleteBusy || !confirmDelete.reason.trim()}
+                    onClick={() => void runDelete()}
+                  >
+                    {deleteBusy ? 'Deleting…' : 'Delete'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -504,6 +730,9 @@ function Workbench({
   // + the AI entry). `modeling` once a Part/workspace/sample is opened; File →
   // Close returns Home. One state at a time.
   const [appSession, setAppSession] = useState<'home' | 'modeling'>('home')
+  // WT-05: the listed workspace identities (number → name) — the shell's
+  // class-4 title projection reads the active Part's display name from here.
+  const [wsParts, setWsParts] = useState<PartRow[]>([])
   const opActive = useOperation(operationStore).phase !== 'idle'
   // The dev-lane sample part (D-H5): loaded only on the explicit Home entry —
   // never an ambush at boot. `sampleRef` remembers it for restoreBase.
@@ -915,12 +1144,12 @@ function Workbench({
     return reason
   }
 
-  const closeToHome = async () => {
+  const closeToHome = async (): Promise<boolean> => {
     setShellNote(null)
     const reason = await switcher.close()
     if (reason !== null) {
       setShellNote(reason)
-      return
+      return false
     }
     // Codex2 B2: references are MODELING-SCOPED — clear every import (ready
     // AND in-flight, tombstoned through the session) BEFORE the viewport
@@ -928,6 +1157,20 @@ function Workbench({
     // owns, and a late parse completion lands on a tombstone.
     referenceImport.clearAll()
     setAppSession('home')
+    return true
+  }
+
+  // Two-sided session rule (arc 20260728-3): the active Part vanished from
+  // the workspace listing — deleted outside this session (CLI, another
+  // client). The stale context exits FAIL-CLOSED; if an operation gate holds
+  // the close, its refusal reason surfaces instead and the next refresh
+  // retries.
+  const failClosedExit = async () => {
+    const missing = pc.partNumber
+    if (appSession !== 'modeling' || !missing) return
+    if (await closeToHome()) {
+      setShellNote(`${missing} was deleted outside this session — the model was closed (fail-closed)`)
+    }
   }
 
   // ONE generic "New" (Creo's New pattern) → COMMIT-AT-NEW (EP1, Petre's pin):
@@ -1389,6 +1632,17 @@ function Workbench({
     },
   ]
   const qatBar = <QuickAccessBar commands={qatCommands} />
+
+  // WT-05: the active-part title (class-4 DERIVED projection, never stored):
+  // `name (Active) — number`, number-only fallback, Home clears.
+  const activePartNumber = appSession === 'modeling' ? pc.partNumber : null
+  const activePartName = activePartNumber
+    ? (wsParts.find((p) => p.object_number === activePartNumber)?.name ?? null)
+    : null
+  const titlebarText = shellTitle(activePartNumber, activePartName)
+  useEffect(() => {
+    document.title = titlebarText
+  }, [titlebarText])
   const fileItems: FileMenuItem[] = [
     {
       label: 'New…',
@@ -1439,7 +1693,7 @@ function Workbench({
           QAT never collides with the title), the OS overlay window controls
           on the right. Draggable except its controls. */}
       <header className="titlebar">
-        <span className="titlebar-title">AIADRA&nbsp;Studio</span>
+        <span className="titlebar-title">{titlebarText}</span>
         {qatBelowRibbon !== true && qatBar}
         {appSession === 'modeling' && fixtureBadge && (
           <span className="ref-badge small">{fixtureBadge}</span>
@@ -1556,6 +1810,9 @@ function Workbench({
                 refresh={partsRefresh}
                 loadedPart={pc.partNumber}
                 onPartLoaded={(n) => adoptPart(currentWs?.workspaceId ?? null, n)}
+                onParts={setWsParts}
+                onRequestNew={requestNew}
+                onActivePartMissing={() => void failClosedExit()}
               />
               <div className="panel-title">Properties</div>
               <div className="muted small pad">

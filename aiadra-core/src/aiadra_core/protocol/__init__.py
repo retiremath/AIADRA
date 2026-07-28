@@ -56,6 +56,7 @@ from typing import Any, Callable
 
 from ..transaction.boundary import (
     CommitResult,
+    DeletionBlockedError,
     RollbackResult,
     TransactionDraft,
     TransactionError,
@@ -67,13 +68,14 @@ from ..transaction.operations import (
     attach_file as _attach_file_op,
     change_parameter as _change_param_op,
     create_object as _create_object_op,
+    delete_object as _delete_object_op,
     init_workspace as _init_op,
     link_relationship as _link_op,
     release as _release_op,
 )
 from ..truth_model.manifest import list_release_labels
-from ..truth_model.reservation import list_reservation_prefixes
-from ..truth_model.sidecar import list_working_sidecar_uuids
+from ..truth_model.reservation import list_reservation_prefixes, load_reservation
+from ..truth_model.sidecar import list_working_sidecar_uuids, working_sidecar_path
 from ..validation.bundle_registry import (
     BundleDigestMismatchError,
     BundleHandle,
@@ -233,6 +235,31 @@ class ObjectNotFoundError(KeyError):
     on-disk Object (neither as a Number nor as a UUID)."""
 
 
+class ObjectDeletedError(KeyError):
+    """Raised by `inspect()` when `object_ref` resolves to a DELETED Object
+    (ADR/0004 SCN arc 20260728-3): the Number/UUID is permanently reserved
+    and historically resolvable, but the Object was deleted. Deleted is NOT
+    unknown — carries the tombstone metadata.
+    """
+
+    def __init__(self, object_ref: str, *, number: str, uuid: str,
+                 deleted_at: str, deleted_by_transaction: str,
+                 deletion_reason: str):
+        super().__init__(object_ref)
+        self.number = number
+        self.uuid = uuid
+        self.deleted_at = deleted_at
+        self.deleted_by_transaction = deleted_by_transaction
+        self.deletion_reason = deletion_reason
+
+    def __str__(self) -> str:
+        return (
+            f"Object {self.number} ({self.uuid}) was deleted at "
+            f"{self.deleted_at} by {self.deleted_by_transaction}: "
+            f"{self.deletion_reason}"
+        )
+
+
 class ProjectPinError(ValueError):
     """Raised by `inspect()` / `query()` / `validate()` when the project pin
     (`.aiadra/schemas.yaml`) is missing, unknown, or digest-mismatched.
@@ -322,6 +349,26 @@ def _resolve_ref_to_uuid(workspace: Path, bundle_dir: Path, object_ref: str) -> 
     return entry.get("object_uuid")
 
 
+def _find_deleted_tombstone(
+    workspace: Path, object_ref: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """ADR/0004 SCN (arc 20260728-3): resolve `object_ref` (Number or UUID)
+    against DELETED Reservation entries. Returns (number, entry) or None.
+    Deleted is distinguishable from unknown forever."""
+    is_uuid = _looks_like_uuid(object_ref)
+    for prefix in list_reservation_prefixes(workspace):
+        try:
+            reservation = load_reservation(workspace, prefix)
+        except FileNotFoundError:
+            continue
+        for number, entry in (reservation.get("reservations", {}) or {}).items():
+            if entry.get("status") != "deleted":
+                continue
+            if number == object_ref or (is_uuid and entry.get("object_uuid") == object_ref):
+                return number, entry
+    return None
+
+
 def _object_view_from_sidecar(
     sidecar: dict[str, Any],
     bundle_version: str,
@@ -386,7 +433,21 @@ def inspect(
 
     bundle_dir = bundle.bundle_dir
     uuid_or_none = _resolve_ref_to_uuid(workspace, bundle_dir, object_ref)
-    if uuid_or_none is None:
+    if uuid_or_none is None or not working_sidecar_path(workspace, uuid_or_none).exists():
+        # ADR/0004 SCN (arc 20260728-3): deleted ≠ unknown. A deleted Number
+        # still resolves in the Reservation file (tombstone) but has no
+        # sidecar; a deleted UUID no longer appears among working sidecars.
+        tomb = _find_deleted_tombstone(workspace, object_ref)
+        if tomb is not None:
+            number, entry = tomb
+            raise ObjectDeletedError(
+                object_ref,
+                number=number,
+                uuid=entry.get("object_uuid", ""),
+                deleted_at=entry.get("deleted_at", ""),
+                deleted_by_transaction=entry.get("deleted_by_transaction", ""),
+                deletion_reason=entry.get("deletion_reason", ""),
+            )
         raise ObjectNotFoundError(object_ref)
     uuid = uuid_or_none
 
@@ -880,6 +941,22 @@ def _propose_release(workspace, bundle, params, actor, existing_draft):
     )
 
 
+def _propose_delete_object(workspace, bundle, params, actor, existing_draft):
+    if existing_draft is not None:
+        raise TransactionError(
+            "delete_object cannot be composed (Codex2 N1 absorption arc "
+            "20260728-3): the first lifecycle-shrinking operation is "
+            "STANDALONE — one deletion, one Transaction, one commit. Call "
+            "protocol.propose(kind='delete_object') on its own."
+        )
+    return _delete_object_op(
+        workspace, bundle,
+        params["obj_number"],
+        reason=params["reason"],
+        actor=actor,
+    )
+
+
 # Dispatch table — keys ARE the public propose-kind catalogue.
 _PROPOSE_DISPATCH: dict[str, Callable[..., TransactionDraft]] = {
     "init": _propose_init,
@@ -899,10 +976,12 @@ _PROPOSE_DISPATCH: dict[str, Callable[..., TransactionDraft]] = {
     "link_produces":       _propose_link_relationship_factory("produces"),
     "attach_file": _propose_attach_file,
     "release": _propose_release,
+    "delete_object": _propose_delete_object,
 }
 
-# Kinds REJECTED from modify per Codex1 B2 absorption.
-_MODIFY_REJECTED_KINDS: frozenset[str] = frozenset({"init", "release"})
+# Kinds REJECTED from modify per Codex1 B2 absorption (+ delete_object per
+# Codex2 N1 absorption arc 20260728-3: destructive kind is standalone).
+_MODIFY_REJECTED_KINDS: frozenset[str] = frozenset({"init", "release", "delete_object"})
 
 
 def propose_kinds() -> tuple[str, ...]:
@@ -1471,12 +1550,28 @@ def modify(
                 "workspace and must start a fresh Transaction (Codex1 B2 "
                 "absorption arc 20260531-9)."
             )
+        if kind == "delete_object":
+            raise TransactionError(
+                "modify(kind='delete_object') not allowed: the destructive "
+                "kind is STANDALONE (Codex2 N1 absorption arc 20260728-3) — "
+                "one deletion, one Transaction, one commit. Use "
+                "propose(kind='delete_object') on its own."
+            )
         raise TransactionError(
             "modify(kind='release') not allowed: release allocates fresh "
             "current_revision_ids and validates the entire post-release "
             "graph; composing with in-flight mutations would conflate "
             "authorship and publication (Codex1 B2 absorption arc 20260531-9). "
             "Use propose(kind='release') as a standalone Transaction."
+        )
+    # Codex2 N1 absorption (arc 20260728-3): a delete-rooted draft cannot be
+    # extended with ANY further operation — the deletion Transaction stays
+    # exactly one deletion.
+    if draft.kind == TransactionKind.DELETE_OBJECT.value:
+        raise TransactionError(
+            "Cannot extend a delete_object Transaction (Codex2 N1 absorption "
+            "arc 20260728-3): the deletion draft is standalone; commit or "
+            "roll it back, then start a fresh Transaction."
         )
     # Resolve handler — built-in OR Native Engine per ADR/0028 D5 (arc 20260601-1).
     handler = _resolve_propose_handler(kind)
@@ -1857,6 +1952,8 @@ __all__ = [
     "ExplanationTree",
     # Exceptions
     "ObjectNotFoundError",
+    "ObjectDeletedError",
+    "DeletionBlockedError",
     "ProjectPinError",
     "NetworkUnreachableError",
     # Native Engine API (arc 20260601-1; ADR/0028 D2 + D3 + D5 + D9 + D16)
