@@ -37,6 +37,15 @@ affiliation with or endorsement by the FreeCAD project.
 | `Sketcher_ViewSketch.svg` | `…/general/` | Sketch ribbon: Sketch view |
 | `Sketcher_LeaveSketch.svg` | `…/general/` | Sketch ribbon: OK (commit) |
 
+**The Model-ribbon suite (pass icons-1, 2026-07-28)** — 31 further glyphs
+from `Mod/PartDesign/…/icons/`, `Mod/Part/…/icons/{booleans,tools}/`,
+`Mod/Surface/…/icons/`, `Mod/Sketcher/…/icons/`, and `Gui/Icons/`, mapped
+over the `IconKey` taxonomy in `src/commands/icons.tsx` (the mapping table
+lives there; coverage law: faithful counterparts only — rib/trim/extend/
+project/style/freestyle/component-interface and the small graphics-toolbar
+chrome keep the monoline set). `Part_ProjectionOnSurface.svg` was DROPPED
+at fetch for lacking embedded rights (rule 3).
+
 Every file's embedded `dc:rights` was verified LGPL2+ at fetch (2026-07-28,
 tag 1.1.1); a rights-lacking file is dropped per rule 3.
 

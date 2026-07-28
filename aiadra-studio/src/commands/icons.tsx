@@ -309,3 +309,84 @@ export const ICONS = {
   ),
   overflow: svg(<path d="M4.5 4.5 8 8l-3.5 3.5M8.5 4.5 12 8l-3.5 3.5" />),
 } satisfies Record<IconKey, ReactNode> as Record<string, ReactNode>
+
+// ---------------------------------------------------------------------------
+// Pass icons-1 (2026-07-28, Petre's ruling): the FreeCAD glyph suite over the
+// SAME IconKey taxonomy — exactly the "swappable without touching any
+// taxonomy" seam this file promised. Coverage law: a glyph replaces the
+// monoline ONLY where a semantically FAITHFUL counterpart exists (rib, trim,
+// extend, project, style, freestyle, component-interface and the small
+// graphics-toolbar chrome keep the monoline set — no invented mismatches).
+// Provenance: LGPL2+ per-file-verified, pinned tag 1.1.1 — see
+// src/assets/freecad-icons/README.md (a rights-lacking file is dropped:
+// Part_ProjectionOnSurface was).
+// ---------------------------------------------------------------------------
+import icoRefresh from '../assets/freecad-icons/view-refresh.svg'
+import icoImport from '../assets/freecad-icons/Std_Import.svg'
+import icoBooleans from '../assets/freecad-icons/Part_Booleans.svg'
+import icoSliceApart from '../assets/freecad-icons/Part_SliceApart.svg'
+import icoBody from '../assets/freecad-icons/PartDesign_Body.svg'
+import icoDatumPlane from '../assets/freecad-icons/PartDesign_Plane.svg'
+import icoDatumLine from '../assets/freecad-icons/PartDesign_Line.svg'
+import icoDatumPoint from '../assets/freecad-icons/PartDesign_Point.svg'
+import icoDatumCsys from '../assets/freecad-icons/PartDesign_CoordinateSystem.svg'
+import icoSketch from '../assets/freecad-icons/Sketcher_Sketch.svg'
+import icoPad from '../assets/freecad-icons/PartDesign_Pad.svg'
+import icoRevolution from '../assets/freecad-icons/PartDesign_Revolution.svg'
+import icoSweep from '../assets/freecad-icons/Part_Sweep.svg'
+import icoLoft from '../assets/freecad-icons/PartDesign_AdditiveLoft.svg'
+import icoHole from '../assets/freecad-icons/PartDesign_Hole.svg'
+import icoFillet from '../assets/freecad-icons/PartDesign_Fillet.svg'
+import icoChamfer from '../assets/freecad-icons/PartDesign_Chamfer.svg'
+import icoShell from '../assets/freecad-icons/PartDesign_Thickness.svg'
+import icoDraft from '../assets/freecad-icons/PartDesign_Draft.svg'
+import icoPattern from '../assets/freecad-icons/PartDesign_LinearPattern.svg'
+import icoMirror from '../assets/freecad-icons/PartDesign_Mirrored.svg'
+import icoOffset from '../assets/freecad-icons/Part_Offset.svg'
+import icoThicken from '../assets/freecad-icons/Part_Thickness.svg'
+import icoSolid from '../assets/freecad-icons/Part_MakeSolid.svg'
+import icoFuse from '../assets/freecad-icons/Part_Fuse.svg'
+import icoCommon from '../assets/freecad-icons/Part_Common.svg'
+import icoSlice from '../assets/freecad-icons/Part_Slice.svg'
+import icoCut from '../assets/freecad-icons/Part_Cut.svg'
+import icoRefine from '../assets/freecad-icons/Part_Refine_Shape.svg'
+import icoSections from '../assets/freecad-icons/Surface_Sections.svg'
+import icoFilling from '../assets/freecad-icons/Surface_Filling.svg'
+
+const glyph = (src: string): ReactNode => (
+  <img src={src} width={20} height={20} alt="" draggable={false} />
+)
+
+Object.assign(ICONS, {
+  regenerate: glyph(icoRefresh),
+  'get-data': glyph(icoImport),
+  'boolean-ops': glyph(icoBooleans),
+  'split-trim-body': glyph(icoSliceApart),
+  'new-body': glyph(icoBody),
+  'datum-plane': glyph(icoDatumPlane),
+  'datum-axis': glyph(icoDatumLine),
+  'datum-point': glyph(icoDatumPoint),
+  'datum-csys': glyph(icoDatumCsys),
+  sketch: glyph(icoSketch),
+  extrude: glyph(icoPad),
+  revolve: glyph(icoRevolution),
+  sweep: glyph(icoSweep),
+  'swept-blend': glyph(icoLoft),
+  hole: glyph(icoHole),
+  round: glyph(icoFillet),
+  chamfer: glyph(icoChamfer),
+  shell: glyph(icoShell),
+  draft: glyph(icoDraft),
+  pattern: glyph(icoPattern),
+  mirror: glyph(icoMirror),
+  offset: glyph(icoOffset),
+  thicken: glyph(icoThicken),
+  solidify: glyph(icoSolid),
+  merge: glyph(icoFuse),
+  intersect: glyph(icoCommon),
+  split: glyph(icoSlice),
+  remove: glyph(icoCut),
+  unify: glyph(icoRefine),
+  'boundary-blend': glyph(icoSections),
+  fill: glyph(icoFilling),
+} satisfies Partial<Record<IconKey, ReactNode>>)
