@@ -21,10 +21,24 @@ affiliation with or endorsement by the FreeCAD project.
 
 ## Files
 
-| File | FreeCAD id | Author (embedded) | Used for |
-|---|---|---|---|
-| `document-new.svg` | `document-new` | [maxwxyz] | Quick Access: New… |
-| `document-open.svg` | `document-open` | [maxwxyz] | Quick Access: Open Workspace… |
+| File | Source path (tag 1.1.1) | Used for |
+|---|---|---|
+| `document-new.svg` | `src/Gui/Icons/` | Quick Access + Home ribbon: New… |
+| `document-open.svg` | `src/Gui/Icons/` | Quick Access + Home ribbon: Open Workspace… |
+| `edit-undo.svg` | `src/Gui/Icons/` | Sketch ribbon: Undo |
+| `Sketcher_CreatePolyline.svg` | `src/Mod/Sketcher/Gui/Resources/icons/geometry/` | Sketch ribbon: Contour |
+| `Sketcher_CreateRectangle.svg` | `…/geometry/` | Sketch ribbon: Rectangle |
+| `Sketcher_CreateCircle.svg` | `…/geometry/` | Sketch ribbon: Circle |
+| `Sketcher_Create3PointArc.svg` | `…/geometry/` | Sketch ribbon: Arc (3-point via) |
+| `Sketcher_ToggleConstruction.svg` | `…/geometry/` | Sketch ribbon: Constr. |
+| `Constraint_Vertical.svg` | `…/constraints/` | Sketch ribbon: Vertical (roadmap) |
+| `Constraint_Horizontal.svg` | `…/constraints/` | Sketch ribbon: Horizontal (roadmap) |
+| `Constraint_Dimension.svg` | `…/constraints/` | Sketch ribbon: Dimension (roadmap) |
+| `Sketcher_ViewSketch.svg` | `…/general/` | Sketch ribbon: Sketch view |
+| `Sketcher_LeaveSketch.svg` | `…/general/` | Sketch ribbon: OK (commit) |
+
+Every file's embedded `dc:rights` was verified LGPL2+ at fetch (2026-07-28,
+tag 1.1.1); a rights-lacking file is dropped per rule 3.
 
 ## Rules for growing this folder
 

@@ -24,6 +24,40 @@ import { createSessionLifecycle } from '../authoring/sessionLifecycle'
 import type { AuthoringBackend } from '../authoring/backend'
 import type { PartContextStore } from '../authoring/partContext'
 import { cancelSketch, runSketchOk, sketchDerived, type SketchCommitHooks } from './sketchCommit'
+// SR-09: the sketcher glyph suite (LGPL2+, pinned tag, per-file rights
+// verified — src/assets/freecad-icons/README.md); one visual language.
+import icoView from '../assets/freecad-icons/Sketcher_ViewSketch.svg'
+import icoPolyline from '../assets/freecad-icons/Sketcher_CreatePolyline.svg'
+import icoRect from '../assets/freecad-icons/Sketcher_CreateRectangle.svg'
+import icoCircle from '../assets/freecad-icons/Sketcher_CreateCircle.svg'
+import icoArc from '../assets/freecad-icons/Sketcher_Create3PointArc.svg'
+import icoConstr from '../assets/freecad-icons/Sketcher_ToggleConstruction.svg'
+import icoUndo from '../assets/freecad-icons/edit-undo.svg'
+import icoVertical from '../assets/freecad-icons/Constraint_Vertical.svg'
+import icoHorizontal from '../assets/freecad-icons/Constraint_Horizontal.svg'
+import icoDimension from '../assets/freecad-icons/Constraint_Dimension.svg'
+import icoLeave from '../assets/freecad-icons/Sketcher_LeaveSketch.svg'
+
+const GLYPHS: Record<string, string> = {
+  'Sketch view': icoView,
+  Contour: icoPolyline,
+  Rectangle: icoRect,
+  Circle: icoCircle,
+  Arc: icoArc,
+  'Constr.': icoConstr,
+  Undo: icoUndo,
+  Vertical: icoVertical,
+  Horizontal: icoHorizontal,
+  Dimension: icoDimension,
+  OK: icoLeave,
+}
+
+const glyph = (label: string) =>
+  GLYPHS[label] ? (
+    <span className="rb-ico">
+      <img src={GLYPHS[label]} width={20} height={20} alt="" draggable={false} />
+    </span>
+  ) : null
 
 export function SketchRibbon({
   store,
@@ -96,12 +130,14 @@ export function SketchRibbon({
       title={title}
       onClick={onClick}
     >
+      {glyph(label)}
       <span className="rb-lbl">{label}</span>
     </button>
   )
 
   const roadmap = (label: string, reason: string) => (
     <button type="button" className="rb-btn rb-roadmap" disabled title={reason}>
+      {glyph(label)}
       <span className="rb-lbl">{label}</span>
     </button>
   )
@@ -116,6 +152,7 @@ export function SketchRibbon({
             title="Orient the view normal to the sketch plane (camera only)"
             onClick={onSketchView}
           >
+            {glyph('Sketch view')}
             <span className="rb-lbl">Sketch view</span>
           </button>
         </div>
@@ -185,6 +222,7 @@ export function SketchRibbon({
             title={s.chainToExtrude ? 'OK — return the sketch to Extrude' : 'OK — commit the sketch'}
             onClick={() => void runSketchOk(lifecycle, store, context, { onCommitted })}
           >
+            {glyph('OK')}
             <span className="rb-lbl">{busy ? '…' : 'OK'}</span>
           </button>
           <button

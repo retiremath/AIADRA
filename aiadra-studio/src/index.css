@@ -242,6 +242,7 @@ body { background: var(--bg); overflow: hidden; }
   text-align: center;
 }
 .rb-btn.rb-anchor .rb-ico svg { width: 22px; height: 22px; }
+.rb-btn .rb-ico img { display: block; }
 /* small: compact icon+label row, up to three per column */
 .rb-btn.rb-small,
 .rb-family .dd-trigger {
