@@ -121,6 +121,10 @@ def m_delete_object(params: dict[str, Any]) -> dict[str, Any]:
             "deleted": False,
             "refusal": {"message": str(exc), "blockers": exc.blockers},
         }
+    # The AIADRAWork poisoning lesson (2026-07-28): `protocol.commit` does
+    # NOT self-validate — the CLI validates explicitly before committing and
+    # this lane MUST too, or an invalid artifact reaches the immutable log.
+    draft.validate()
     result = commit(draft)
     return {"deleted": True, "commit": _to_jsonable(result)}
 

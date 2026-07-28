@@ -1270,6 +1270,18 @@ def delete_object(
     if not reason or not reason.strip():
         raise TransactionError("delete_object requires a non-empty reason.")
 
+    # Bundle-capability gate (the AIADRAWork poisoning lesson, 2026-07-28):
+    # object_deleted + the deleted-tombstone shape exist only from v0.30.0.
+    # Under an older pin the transaction would stamp artifacts with a
+    # schema_version whose bundle cannot validate them — poisoning every
+    # subsequent event-log read. Refuse HERE, at propose, with the remedy.
+    if tuple(int(x) for x in bundle.bundle_version.split(".")) < (0, 30, 0):
+        raise TransactionError(
+            f"delete_object requires schema bundle >= 0.30.0; this workspace "
+            f"is pinned to {bundle.bundle_version}. Run "
+            f"`aiadra migrate {workspace} --to-bundle 0.30.0` first."
+        )
+
     found = find_reservation_entry_by_number(workspace, obj_number)
     if found is None:
         raise TransactionError(f"Object not found: {obj_number}")

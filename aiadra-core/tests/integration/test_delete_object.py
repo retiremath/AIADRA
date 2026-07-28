@@ -498,6 +498,28 @@ def test_bundle_0_30_0_tombstone_schema_floors(tmp_path: Path):
         }), "reservation", "P")
 
 
+def test_delete_refused_under_pre_0_30_0_pin(tmp_path: Path):
+    """The AIADRAWork poisoning regression (2026-07-28): a workspace pinned to
+    a bundle that predates object_deleted must refuse at PROPOSE with the
+    migrate remedy — never stamp artifacts its own bundle cannot validate
+    (which poisons every subsequent event-log read)."""
+    ws = _init_workspace(tmp_path)
+    _create_part(ws)
+    digest = json.loads(
+        (BundleRegistry().bundle("0.29.0").bundle_dir / "_digest.json").read_text(encoding="utf-8")
+    )["bundle_digest"]
+    pin = ws / ".aiadra" / "schemas.yaml"
+    pin.write_text(
+        f'"bundle_version": "0.29.0"\n"bundle_digest": "{digest}"\n', encoding="utf-8",
+    )
+    with pytest.raises(TransactionError, match="0.30.0"):
+        propose(ws, kind="delete_object", params={
+            "obj_number": "P-000001", "reason": "x",
+        })
+    # Nothing was stamped: the log still reads clean end-to-end.
+    validate_fold(ws, BundleRegistry().bundle("0.29.0").bundle_dir)
+
+
 def test_migration_chain_reaches_0_30_0(tmp_path: Path):
     from aiadra_core.validation.migration import REGISTERED_STEPS
     versions = [(s.from_version, s.to_version) for s in REGISTERED_STEPS]
