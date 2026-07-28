@@ -1,12 +1,13 @@
 /**
- * THE inline SVG icon map (arc 20260619-2 / 6b; grown + MERGED in arc
- * 20260716-1 V-2 per Codex1 B4 — `ModelRibbon`'s private second icon table
- * died into this one; the drift Codex flagged dies with it). No icon
- * dependency — the dependency-policy posture (ADR/0034) matters and the app
- * carries none. Keyed by `IconKey` (the ribbon taxonomy's typed union, which
- * also carries the toolbar keys); a test asserts every declared key resolves
- * here. 16 px monoline, `currentColor`, swappable for a library later WITHOUT
- * touching any taxonomy. Accessible labels/tooltips come from command labels.
+ * THE icon map (arc 20260619-2 / 6b → pass icons-1, 2026-07-28): a MIXED
+ * inline-monoline + vendored-asset map keyed by `IconKey` (the taxonomy's
+ * typed union; a test asserts every key resolves). Two languages, one law:
+ * FreeCAD glyphs (LGPL2+, vendored + attributed under
+ * `src/assets/freecad-icons/` — the ADR/0034 compliance seam) replace the
+ * monoline ONLY where a semantically FAITHFUL counterpart exists
+ * (`FREECAD_GLYPH_KEYS` is the exact approved set, regression-pinned);
+ * everything else stays 15px monoline `currentColor`. No icon npm
+ * dependency. Accessible labels/tooltips come from command labels.
  */
 import type { ReactNode } from 'react'
 import type { IconKey } from '../authoring/ribbon'
@@ -334,13 +335,11 @@ import icoSketch from '../assets/freecad-icons/Sketcher_Sketch.svg'
 import icoPad from '../assets/freecad-icons/PartDesign_Pad.svg'
 import icoRevolution from '../assets/freecad-icons/PartDesign_Revolution.svg'
 import icoSweep from '../assets/freecad-icons/Part_Sweep.svg'
-import icoLoft from '../assets/freecad-icons/PartDesign_AdditiveLoft.svg'
 import icoHole from '../assets/freecad-icons/PartDesign_Hole.svg'
 import icoFillet from '../assets/freecad-icons/PartDesign_Fillet.svg'
 import icoChamfer from '../assets/freecad-icons/PartDesign_Chamfer.svg'
 import icoShell from '../assets/freecad-icons/PartDesign_Thickness.svg'
 import icoDraft from '../assets/freecad-icons/PartDesign_Draft.svg'
-import icoPattern from '../assets/freecad-icons/PartDesign_LinearPattern.svg'
 import icoMirror from '../assets/freecad-icons/PartDesign_Mirrored.svg'
 import icoOffset from '../assets/freecad-icons/Part_Offset.svg'
 import icoThicken from '../assets/freecad-icons/Part_Thickness.svg'
@@ -348,16 +347,13 @@ import icoSolid from '../assets/freecad-icons/Part_MakeSolid.svg'
 import icoFuse from '../assets/freecad-icons/Part_Fuse.svg'
 import icoCommon from '../assets/freecad-icons/Part_Common.svg'
 import icoSlice from '../assets/freecad-icons/Part_Slice.svg'
-import icoCut from '../assets/freecad-icons/Part_Cut.svg'
-import icoRefine from '../assets/freecad-icons/Part_Refine_Shape.svg'
-import icoSections from '../assets/freecad-icons/Surface_Sections.svg'
 import icoFilling from '../assets/freecad-icons/Surface_Filling.svg'
 
 const glyph = (src: string): ReactNode => (
   <img src={src} width={20} height={20} alt="" draggable={false} />
 )
 
-Object.assign(ICONS, {
+const FREECAD_GLYPHS = {
   regenerate: glyph(icoRefresh),
   'get-data': glyph(icoImport),
   'boolean-ops': glyph(icoBooleans),
@@ -371,13 +367,11 @@ Object.assign(ICONS, {
   extrude: glyph(icoPad),
   revolve: glyph(icoRevolution),
   sweep: glyph(icoSweep),
-  'swept-blend': glyph(icoLoft),
   hole: glyph(icoHole),
   round: glyph(icoFillet),
   chamfer: glyph(icoChamfer),
   shell: glyph(icoShell),
   draft: glyph(icoDraft),
-  pattern: glyph(icoPattern),
   mirror: glyph(icoMirror),
   offset: glyph(icoOffset),
   thicken: glyph(icoThicken),
@@ -385,8 +379,12 @@ Object.assign(ICONS, {
   merge: glyph(icoFuse),
   intersect: glyph(icoCommon),
   split: glyph(icoSlice),
-  remove: glyph(icoCut),
-  unify: glyph(icoRefine),
-  'boundary-blend': glyph(icoSections),
   fill: glyph(icoFilling),
-} satisfies Partial<Record<IconKey, ReactNode>>)
+} satisfies Partial<Record<IconKey, ReactNode>>
+
+/** The EXACT approved glyph key set (Codex1 N1 — the coverage law's
+ *  regression anchor; an accidental future override of a deliberately
+ *  monoline key fails the icons test, not a reviewer's eye). */
+export const FREECAD_GLYPH_KEYS = Object.keys(FREECAD_GLYPHS).sort() as readonly string[]
+
+Object.assign(ICONS, FREECAD_GLYPHS)
