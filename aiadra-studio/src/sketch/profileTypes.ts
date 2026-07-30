@@ -34,6 +34,13 @@ export type ProfileFact = Identity & {
   target: Ref
 }
 
+/** The KEYED variants — what a drawing tool builds before anything is
+ *  committed. Every record is new, so `key` is always present. */
+export type NewPoint = { key: string } & { x: number; y: number }
+export type NewSegment = { key: string } & { start: Ref; end: Ref }
+export type NewCircle = { key: string } & { center: Ref; radius_mm: number }
+export type NewFact = { key: string } & { kind: 'horizontal' | 'vertical'; target: Ref }
+
 export interface ProfilePayload {
   points?: ProfilePoint[]
   segments?: ProfileSegment[]

@@ -24,6 +24,10 @@ export interface SettingDescriptor {
   group: 'Theme' | 'Behavior'
   min?: number
   max?: number
+  /** A STRICT upper bound (v < exclusiveMax). Distinct from `max`, which is
+   *  inclusive — the snap tolerance needs `< 45°` exactly, because at 45° a
+   *  line would satisfy the horizontal AND the vertical proposal at once. */
+  exclusiveMax?: number
   step?: number
   options?: { value: string; label: string }[]
   unit?: string
@@ -139,6 +143,40 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     label: 'Quick Access: Close',
     group: 'Behavior',
   },
+  // ---- Sketcher (ADR/0044 A4; arc 20260730-1) --------------------------
+  // Class-3 LOCAL preference (ADR/0045): how close to level a drawn segment
+  // must be before Studio PROPOSES a horizontal/vertical fact. Studio only
+  // ever proposes the FACT — the engine's solve is what moves the geometry
+  // (ADR/0045 D6), so this number can never make Studio and the engine
+  // disagree about where a line is.
+  {
+    key: 'sketch.snapAngleToleranceDeg',
+    type: 'number',
+    default: 3,
+    label: 'Snap angle tolerance',
+    group: 'Behavior',
+    min: 0,
+    exclusiveMax: 45,
+    step: 0.5,
+    unit: '°',
+    help: 'Within this angle of level or plumb, a drawn segment gets a horizontal/vertical constraint. 0 disables snapping.',
+  },
+  // Studio-owned input threshold: the pointer travel below which a drag is a
+  // click, not a segment. DELIBERATELY NOT the engine's `L_min_mm` — that is
+  // a model-space non-collapse guard in a frozen solver contract, and reusing
+  // it would let a UI preference leak into branch admission.
+  {
+    key: 'sketch.minDragPx',
+    type: 'number',
+    default: 4,
+    label: 'Minimum drag',
+    group: 'Behavior',
+    min: 1,
+    max: 40,
+    step: 1,
+    unit: 'px',
+    help: 'Pointer travel below this is treated as a click rather than a drawn segment.',
+  },
   {
     key: 'qatBelowRibbon',
     type: 'boolean',
@@ -209,6 +247,9 @@ export function validateSettingValue(d: SettingDescriptor, value: unknown): Valu
       }
       if (d.min !== undefined && value < d.min) return { ok: false, error: `${d.key}: below min ${d.min}` }
       if (d.max !== undefined && value > d.max) return { ok: false, error: `${d.key}: above max ${d.max}` }
+      if (d.exclusiveMax !== undefined && !(value < d.exclusiveMax)) {
+        return { ok: false, error: `${d.key}: must be strictly below ${d.exclusiveMax}` }
+      }
       return { ok: true }
     case 'boolean':
       if (typeof value !== 'boolean') return { ok: false, error: `${d.key}: must be a boolean` }
