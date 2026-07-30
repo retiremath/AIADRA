@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useStat
 import Viewport, { type SketchInteractionMode, type ViewportApi } from './Viewport'
 import { useProfileSketch } from './sketch/useProfileSketch'
 import { runProfileClose } from './sketch/profileCloseRunner'
+import { invalidationAction, profileActivity, sketchRibbonActive } from './authoring/authoringActivity'
 import { deriveFrame as derivePlacementFrame } from './authoring/placementFrame'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
@@ -719,11 +720,69 @@ function Workbench({
   // Authoring dispatch (arc 20260711-11): the Model ribbon starts either the
   // sketch pad (draw a contour) or the extrude feature session. One at a time.
   const authoringSession = useAuthoringSession(authoringStore)
-  // Codex7 B2: profile pick/session/terminal activity participates in the
-  // SAME global gate as every other lifecycle — declared here (before the
-  // gate composes) and maintained by the profile lane's effect below.
-  const [profileBusy, setProfileBusy] = useState(false)
-  const authoringBusy = authoringSession.mode !== 'idle' || profileBusy
+  // ADR/0044 A4 (arc 20260730-1): the v2 PROFILE lane. It owns its own
+  // session, preview round trip and interaction mode, so integrating it here
+  // is three lines rather than another six pieces of coupled state.
+  const [snapAngleToleranceDeg] = useSetting('sketch.snapAngleToleranceDeg')
+  const [minDragPx] = useSetting('sketch.minDragPx')
+  // Codex6 B2: the profile session OWNS its frame (captured at open), and its
+  // terminal is the ONE close runner — a failed commit rolls back and leaves
+  // the drawing recoverable; a generation change never installs stale success.
+  const profileLaneRef = useRef<ReturnType<typeof useProfileSketch> | null>(null)
+  const profileLane = useProfileSketch({
+    snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
+    minDragPx: Number(minDragPx),
+    // Codex7 B2: terminal-start revalidation of the tuple CAPTURED at open.
+    validateTarget: (t) => {
+      const live = partContext.getSnapshot()
+      if ((currentWs?.workspaceId ?? null) !== t.workspaceId) {
+        return 'the workspace changed under this sketch — the session is stale (nothing was written); Cancel and reopen the sketch'
+      }
+      if (live.partNumber !== t.partNumber || live.generation !== t.generation) {
+        return 'the Part context changed under this sketch — the session is stale (nothing was written); Cancel and reopen the sketch'
+      }
+      return null
+    },
+    onCommit: (intent, target) => {
+      const lane = profileLaneRef.current
+      if (!lane) return
+      void runProfileClose(intent, {
+        backend: {
+          begin: (ops) => featureBackend.begin(ops as never).then((r) => ({ sessionId: r.sessionId })),
+          commit: (sid, ref) => featureBackend.commit(sid, ref),
+          rollback: (sid) => featureBackend.rollback(sid),
+        },
+        lane,
+        // the CAPTURED Part, never the current one (Codex7 B2)
+        partNumber: target.partNumber,
+        generation: () => partContext.getSnapshot().generation,
+        adopt: (display) => adoptPart(target.workspaceId, target.partNumber, display),
+      })
+    },
+  })
+  profileLaneRef.current = profileLane
+  // The temporary Profile Sketch CREATE entry (ADR/0044 A4): plane pick →
+  // profile session, with the v1 authoring store IDLE throughout — the two
+  // lifecycles are never nested (Codex6 B2).
+  const [profilePick, setProfilePick] = useState(false)
+  useEffect(() => {
+    if (!profilePick) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setProfilePick(false)
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [profilePick])
+
+  // Codex8 B1: profile activity is a RENDER derivation — "active now", the
+  // same invariant the legacy store gives the gate. The previous effect
+  // projection published one render late, and most gate consumers read
+  // render-captured values, so a second operation could start in that frame.
+  const profileActive = profileActivity(profilePick, profileLane)
+  const authoringBusy = authoringSession.mode !== 'idle' || profileActive
   // The live canonical selection (transient UI state — enablement only; the
   // capture happens at session start, D-R8).
   const selectionSnap = useSyncExternalStore(selectionStore.subscribe, selectionStore.getSnapshot)
@@ -815,6 +874,28 @@ function Workbench({
   // B1 → Codex4 B1.2): active work, an in-flight workspace transition, OR an
   // unresolved canonical Part transition — no manual/AI operation may start
   // while a Part adoption is in flight.
+  // Codex8 B1: generation invalidation through the ONE pure decision — a
+  // pick and an open draft unwind WITHOUT writing; a session whose Close is
+  // in flight RETAINS busy ownership until the runner settles (its own
+  // generation check refuses stale display adoption; commitFailed reopens
+  // the drawing with the refusal surfaced).
+  useEffect(() => {
+    const action = invalidationAction(
+      profilePick,
+      profileLane.session === null
+        ? null
+        : {
+            closing: profileLane.closing,
+            targetGeneration: profileLane.session.target.generation,
+          },
+      pc.generation,
+    )
+    if (action === 'cancel-pick') setProfilePick(false)
+    else if (action === 'cancel-session') void profileLane.cancel()
+    // 'retain-terminal' | 'none': deliberately nothing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pc.generation])
+
   const uiGate =
     switchGate ??
     (wsTransition ? 'A workspace transition is in flight' : null) ??
@@ -1500,83 +1581,6 @@ function Workbench({
     return eligibleExtrudeSketchIds(part)
   }, [authoringSession, partFacts.readyPart])
 
-  // ADR/0044 A4 (arc 20260730-1): the v2 PROFILE lane. It owns its own
-  // session, preview round trip and interaction mode, so integrating it here
-  // is three lines rather than another six pieces of coupled state.
-  const [snapAngleToleranceDeg] = useSetting('sketch.snapAngleToleranceDeg')
-  const [minDragPx] = useSetting('sketch.minDragPx')
-  // Codex6 B2: the profile session OWNS its frame (captured at open), and its
-  // terminal is the ONE close runner — a failed commit rolls back and leaves
-  // the drawing recoverable; a generation change never installs stale success.
-  const profileLaneRef = useRef<ReturnType<typeof useProfileSketch> | null>(null)
-  const profileLane = useProfileSketch({
-    snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
-    minDragPx: Number(minDragPx),
-    // Codex7 B2: terminal-start revalidation of the tuple CAPTURED at open.
-    validateTarget: (t) => {
-      const live = partContext.getSnapshot()
-      if ((currentWs?.workspaceId ?? null) !== t.workspaceId) {
-        return 'the workspace changed under this sketch — the session is stale (nothing was written)'
-      }
-      if (live.partNumber !== t.partNumber || live.generation !== t.generation) {
-        return 'the Part context changed under this sketch — the session is stale (nothing was written)'
-      }
-      return null
-    },
-    onCommit: (intent, target) => {
-      const lane = profileLaneRef.current
-      if (!lane) return
-      void runProfileClose(intent, {
-        backend: {
-          begin: (ops) => featureBackend.begin(ops as never).then((r) => ({ sessionId: r.sessionId })),
-          commit: (sid, ref) => featureBackend.commit(sid, ref),
-          rollback: (sid) => featureBackend.rollback(sid),
-        },
-        lane,
-        // the CAPTURED Part, never the current one (Codex7 B2)
-        partNumber: target.partNumber,
-        generation: () => partContext.getSnapshot().generation,
-        adopt: (display) => adoptPart(target.workspaceId, target.partNumber, display),
-      })
-    },
-  })
-  profileLaneRef.current = profileLane
-  // The temporary Profile Sketch CREATE entry (ADR/0044 A4): plane pick →
-  // profile session, with the v1 authoring store IDLE throughout — the two
-  // lifecycles are never nested (Codex6 B2).
-  const [profilePick, setProfilePick] = useState(false)
-  // Codex7 B2 — the gate: pick, live session and in-flight terminal all
-  // count as authoring activity (one render behind, which the action-time
-  // gateRef read absorbs; the tuple revalidation below is the semantic lock).
-  useEffect(() => {
-    setProfileBusy(profilePick || profileLane.active || profileLane.closing)
-  }, [profilePick, profileLane.active, profileLane.closing])
-  // Codex7 B2 — generation invalidation unwinds the profile lane WITHOUT
-  // writing, exactly like the legacy planePick/sketch effect: the pick dies
-  // with any generation change; an open session dies when the generation it
-  // captured is gone.
-  useEffect(() => {
-    if (profilePick) setProfilePick(false)
-    if (
-      profileLane.session !== null &&
-      profileLane.session.target.generation !== pc.generation
-    ) {
-      void profileLane.cancel()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pc.generation])
-  useEffect(() => {
-    if (!profilePick) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setProfilePick(false)
-        e.preventDefault()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [profilePick])
-
   const interactionMode = useMemo<SketchInteractionMode | null>(() => {
     // The profile session takes the surface while it is open — it is the one
     // mode that owns both the drawing plane and what is rendered on it.
@@ -1830,7 +1834,7 @@ function Workbench({
         <FileMenu items={fileItems} />
         {appSession === 'home' ? (
           <span className="rtab active">Home</span>
-        ) : authoringSession.mode === 'sketch' || profileBusy ? (
+        ) : sketchRibbonActive(authoringSession.mode, profileLane) ? (
           // pass sketch-ribbon-1: entering a sketch ADDS the dedicated Sketch
           // tab and activates it; Model stays visible but inactive. Codex7
           // B1: the PROFILE session selects the same tab — with the v1 store
@@ -1863,7 +1867,7 @@ function Workbench({
       )}
       {appSession === 'modeling' && (
         <>
-      {authoringSession.mode === 'sketch' || profileLane.active ? (
+      {sketchRibbonActive(authoringSession.mode, profileLane) ? (
         // sketch-ribbon-1: the Sketch tab's ribbon REPLACES the Model ribbon
         // while the session is active (ADR/0040 D4 — one session, projected);
         // increment 2: the ribbon owns the whole surface incl. the Close

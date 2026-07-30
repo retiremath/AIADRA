@@ -311,8 +311,19 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
   }, [])
 
   const cancel = useCallback(() => {
+    // Codex8 B1 (defense in depth): a session whose Close is writing OWNS
+    // the busy state — cancelling locally cannot cancel the transaction, it
+    // can only orphan it. The terminal resolves through confirmClosed()/
+    // commitFailed(); if the bridge wedges, its 15s timeout reaches
+    // commitFailed and Cancel works again.
+    if (closingRef.current) {
+      return {
+        wrote: false as const,
+        preservedFeatureId:
+          session?.owner.kind === 'edit' ? session.owner.sketchFeatureId : null,
+      }
+    }
     const outcome = session === null ? { wrote: false as const, preservedFeatureId: null } : cancelSession(session)
-    closingRef.current = false
     setClosing(false)
     setSession(null)
     requester.cancel()

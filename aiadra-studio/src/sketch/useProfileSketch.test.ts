@@ -330,3 +330,28 @@ describe('the authority tuple (Codex7 B2)', () => {
     expect(onCommit.mock.calls[0][0].params.part_number).toBe('P-000001')
   })
 })
+
+describe('the terminal owns busy until it settles (Codex8 B1)', () => {
+  it('Cancel during an in-flight Close is REFUSED — the session and closing survive', async () => {
+    const { hook, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    drawLine(hook)
+    await act(async () => {})
+    act(() => hook.result.current.close())
+    expect(hook.result.current.closing).toBe(true)
+
+    // an invalidation (or any caller) trying to cancel mid-terminal
+    act(() => void hook.result.current.cancel())
+    expect(hook.result.current.active).toBe(true)
+    expect(hook.result.current.closing).toBe(true)
+    expect(onCommit).toHaveBeenCalledOnce()
+
+    // the terminal settles as a failure → the drawing is recoverable...
+    act(() => hook.result.current.commitFailed('validation failed'))
+    expect(hook.result.current.active).toBe(true)
+    expect(hook.result.current.refusal).toBe('validation failed')
+    // ...and Cancel works again now that no terminal is in flight
+    act(() => void hook.result.current.cancel())
+    expect(hook.result.current.active).toBe(false)
+  })
+})
