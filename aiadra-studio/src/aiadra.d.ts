@@ -83,6 +83,9 @@ declare global {
       previewSketchGraph?(
         workspaceId: string,
         objectRef: string,
+        /** The engine that owns this sketch — carried explicitly all the way
+         *  to Ring 2 (Codex6 B3). No layer below supplies a default. */
+        engineId: string,
         profile: ProfilePayload,
         owner: { sketchFeatureId: string } | { placement: SketchPlacementInput; candidateKey: string },
       ): Promise<Envelope<{ preview: ProfileGraphPreview | null; refusal: { message: string } | null }>>

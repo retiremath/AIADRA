@@ -169,8 +169,15 @@ def m_preview_sketch_graph(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("preview_sketch_graph requires 'workspace_path' and 'object_ref'")
     if not isinstance(profile, dict):
         raise ValueError("preview_sketch_graph requires a 'profile' object")
+    engine_id = params.get("engine_id")
+    if not isinstance(engine_id, str) or not engine_id:
+        # Codex6 B3: the generic bridge REQUIRES the owner. Defaulting it here
+        # would reinstate the exact hidden domain guess the explicit Ring-2
+        # parameter exists to prevent — the domain-specific Studio command is
+        # the layer that knows the value, so it must say it.
+        raise ValueError("preview_sketch_graph requires an explicit 'engine_id'")
     kwargs: dict[str, Any] = {
-        "engine_id": params.get("engine_id", "mechanical"),
+        "engine_id": engine_id,
         "profile": profile,
     }
     for name in ("sketch_feature_id", "placement", "candidate_key"):

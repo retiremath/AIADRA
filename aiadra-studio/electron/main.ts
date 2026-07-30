@@ -410,13 +410,20 @@ function registerIpc(): void {
     const a = args as {
       workspaceId?: unknown
       objectRef?: unknown
+      engineId?: unknown
       profile?: unknown
       sketchFeatureId?: unknown
       placement?: unknown
       candidateKey?: unknown
     } | null
     if (!a || typeof a.workspaceId !== 'string' || typeof a.objectRef !== 'string') {
-      return err('previewSketchGraph requires { workspaceId, objectRef, profile }')
+      return err('previewSketchGraph requires { workspaceId, objectRef, engineId, profile }')
+    }
+    // Codex6 B3: the engine owner is carried EXPLICITLY from the
+    // domain-specific caller. Omission is a typed boundary refusal — main
+    // never supplies a domain of its own, and neither does the bridge.
+    if (typeof a.engineId !== 'string' || a.engineId === '') {
+      return err('previewSketchGraph requires an explicit engineId')
     }
     const profileErr = profileError('previewSketchGraph', a.profile)
     if (profileErr !== null) return err(profileErr)
@@ -443,6 +450,7 @@ function registerIpc(): void {
     return callBridge('preview_sketch_graph', {
       workspace_path: wsPath,
       object_ref: a.objectRef,
+      engine_id: a.engineId,
       profile: a.profile,
       ...(hasFeature ? { sketch_feature_id: a.sketchFeatureId } : {}),
       ...(hasCandidate ? { placement: a.placement, candidate_key: a.candidateKey } : {}),

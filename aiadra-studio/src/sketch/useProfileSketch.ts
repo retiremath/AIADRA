@@ -47,10 +47,16 @@ export interface ProfileSketchDeps {
   frame: PlaneFrameTS | null
   snapAngleToleranceDeg: number
   minDragPx: number
+  /** The engine that owns this sketch. Codex6 B3: carried EXPLICITLY from
+   *  here — the domain-specific layer — all the way to Ring 2; no layer below
+   *  supplies a default, because a hidden domain guess is exactly what the
+   *  explicit Ring-2 parameter exists to prevent. */
+  engineId?: string
   /** Injected for tests; defaults to the preload bridge. */
   preview?: (
     workspaceId: string,
     objectRef: string,
+    engineId: string,
     profile: ProfilePayload,
     owner: { sketchFeatureId: string } | { placement: SketchPlacementInput; candidateKey: string },
   ) => Promise<PreviewResult>
@@ -83,6 +89,7 @@ export interface ProfileSketchLane {
 const bridgePreview: NonNullable<ProfileSketchDeps['preview']> = async (
   workspaceId,
   objectRef,
+  engineId,
   profile,
   owner,
 ) => {
@@ -92,7 +99,7 @@ const bridgePreview: NonNullable<ProfileSketchDeps['preview']> = async (
     // mock the commit lane would never reproduce.
     return { preview: null, refusal: { message: 'the engine bridge is unavailable' } }
   }
-  const res = await api.previewSketchGraph(workspaceId, objectRef, profile, owner)
+  const res = await api.previewSketchGraph(workspaceId, objectRef, engineId, profile, owner)
   if (!res.ok) return { preview: null, refusal: { message: res.error.message } }
   return { preview: res.result.preview, refusal: res.result.refusal }
 }
@@ -110,6 +117,10 @@ export function previewGeometry(
     constraint_glyphs: preview.constraint_glyphs,
   }
 }
+
+/** The engine this lane authors into. Named here, at the domain-specific
+ *  layer, rather than defaulted in a generic one. */
+const MECHANICAL = 'mechanical'
 
 let candidateSeq = 0
 /** A caller-scoped key for a create preview — never an engine id, and never
@@ -141,7 +152,13 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
               refusal: { message: 'no open workspace or active Part' },
             })
           }
-          return run(workspaceId, partNumber, req.profile, req.owner)
+          return run(
+            workspaceId,
+            partNumber,
+            depsRef.current.engineId ?? MECHANICAL,
+            req.profile,
+            req.owner,
+          )
         },
         apply: (result) => setSession((s) => (s === null ? s : applyPreview(s, result))),
         onError: (e) =>

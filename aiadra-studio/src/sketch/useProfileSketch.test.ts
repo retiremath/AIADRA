@@ -76,10 +76,12 @@ describe('drawing drives the engine preview', () => {
     await act(async () => {})
 
     expect(preview).toHaveBeenCalledOnce()
-    const [, objectRef, profile, owner] = preview.mock.calls[0] as unknown as [
-      string, string, ProfilePayload, Record<string, unknown>,
+    const [, objectRef, engineId, profile, owner] = preview.mock.calls[0] as unknown as [
+      string, string, string, ProfilePayload, Record<string, unknown>,
     ]
     expect(objectRef).toBe('P-000001')
+    // Codex6 B3: the engine owner is carried explicitly, never defaulted below
+    expect(engineId).toBe('mechanical')
     expect(profile.segments).toHaveLength(1)
     expect(owner).toMatchObject({ placement: PLACEMENT })
 
@@ -119,7 +121,7 @@ describe('drawing drives the engine preview', () => {
     act(() => hook.result.current.openEditSession('feat_0001', baseline))
     drawLine(hook)
     await act(async () => {})
-    expect((preview.mock.calls[0] as unknown as unknown[])[3]).toEqual({ sketchFeatureId: 'feat_0001' })
+    expect((preview.mock.calls[0] as unknown as unknown[])[4]).toEqual({ sketchFeatureId: 'feat_0001' })
   })
 })
 

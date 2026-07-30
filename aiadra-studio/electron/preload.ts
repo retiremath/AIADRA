@@ -29,11 +29,19 @@ contextBridge.exposeInMainWorld('aiadra', {
   previewSketchGraph: (
     workspaceId: string,
     objectRef: string,
+    engineId: string,
     profile: unknown,
     owner:
       | { sketchFeatureId: string }
       | { placement: unknown; candidateKey: string },
-  ) => ipcRenderer.invoke('aiadra:previewSketchGraph', { workspaceId, objectRef, profile, ...owner }),
+  ) =>
+    ipcRenderer.invoke('aiadra:previewSketchGraph', {
+      workspaceId,
+      objectRef,
+      engineId,
+      profile,
+      ...owner,
+    }),
   // Authoring session — the Ring-2 WRITE lane (arc 20260711-11; ADR/0043).
   // The renderer holds an opaque operationSessionId minted by main; it never
   // supplies paths or touches the engine draft directly.
