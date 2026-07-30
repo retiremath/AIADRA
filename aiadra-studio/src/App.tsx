@@ -1471,6 +1471,25 @@ function Workbench({
     frame: authoringSession.mode === 'sketch' ? supportFrame(authoringSession.support) : null,
     snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
     minDragPx: Number(minDragPx),
+    onCommit: (intent) => {
+      // ONE authoring transaction through the existing ADR/0043 verbs: the
+      // lane decides WHAT to send, the shell owns the session lifecycle.
+      const partNumber = pc.partNumber
+      if (!partNumber) return
+      void (async () => {
+        // Codex6 B1: the ONE shared lifecycle owns begin→commit, so a
+        // half-open draft can never be orphaned by a failure here.
+        const begun = await featureBackend.begin([
+          { kind: intent.kind, params: intent.params } as never,
+        ])
+        try {
+          const done = await featureBackend.commit(begun.sessionId, partNumber)
+          adoptPart(currentWs?.workspaceId ?? null, partNumber, done.display)
+        } catch {
+          await featureBackend.rollback(begun.sessionId)
+        }
+      })()
+    },
   })
 
   const interactionMode = useMemo<SketchInteractionMode | null>(() => {
@@ -1761,6 +1780,27 @@ function Workbench({
           store={authoringStore}
           backend={featureBackend}
           context={partContext}
+          profile={{
+            active: profileLane.active,
+            refusal: profileLane.refusal,
+            toolKind: profileLane.session?.tool.kind ?? null,
+            open: () =>
+              profileLane.openCreateSession({
+                support: {
+                  kind: 'principal',
+                  orientation:
+                    authoringSession.mode === 'sketch'
+                    && authoringSession.support.kind === 'principal'
+                      ? authoringSession.support.orientation
+                      : 'xy',
+                },
+              }),
+            close: () => profileLane.close(),
+            cancel: () => void profileLane.cancel(),
+            setTool: (k) => profileLane.setTool(k),
+            finishTool: (o) => profileLane.finishTool(o),
+            undo: () => profileLane.undo(),
+          }}
           onClose={() => {
             // Codex5 B1.1: sketch Cancel has NO candidate display to
             // discard — the canonical Part display stays installed.

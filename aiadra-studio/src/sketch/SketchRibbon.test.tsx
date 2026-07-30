@@ -89,14 +89,19 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
   })
 
   it('Constrain/Dimension are roadmap-disabled with their NAMED strands', () => {
+    // The skb-b1 gate CLOSED with ADR/0044 A4 (arc 20260730-1): in the
+    // Profile lane these are automatic, so the honest strand for asserting
+    // one BY HAND is now BS-3, not "behavior 2+". The buttons stay disabled
+    // because HAND-asserting is still not a thing you can do.
     const store = enterSketch()
     render(<SketchRibbon {...harness(store)} onSketchView={() => {}} />)
     const vertical = screen.getByRole('button', { name: 'Vertical' }) as HTMLButtonElement
     expect(vertical.disabled).toBe(true)
-    expect(vertical.title).toContain('skb-b1')
+    expect(vertical.title).toContain('BS-3')
+    expect(vertical.title).toContain('Profile lane')
     const dim = screen.getByRole('button', { name: 'Dimension' }) as HTMLButtonElement
     expect(dim.disabled).toBe(true)
-    expect(dim.title).toContain('behavior')
+    expect(dim.title).toContain('BS-3')
   })
 
   it('Undo/Close ring drive the contour through the store', () => {

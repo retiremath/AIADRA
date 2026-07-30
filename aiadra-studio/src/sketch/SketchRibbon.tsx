@@ -66,6 +66,7 @@ export function SketchRibbon({
   onClose,
   onCommitted,
   onSketchView,
+  profile,
 }: {
   store: AuthoringSessionStore
   backend: AuthoringBackend
@@ -78,6 +79,20 @@ export function SketchRibbon({
    *  available during a commit — a camera move mutates nothing (Codex1 N1:
    *  the pre-ribbon surface allowed it; the projection preserves it). */
   onSketchView: () => void
+  /** ADR/0044 A4 (arc 20260730-1): the v2 PROFILE lane, when the shell
+   *  provides it. Optional so the v1 pad keeps working untouched — the two
+   *  lanes share this ribbon but never each other's state. */
+  profile?: {
+    active: boolean
+    refusal: string | null
+    open(): void
+    close(): void
+    cancel(): void
+    setTool(kind: 'line' | 'polyline' | 'rectangle' | 'circle'): void
+    finishTool(opts?: { closed?: boolean }): void
+    undo(): void
+    toolKind: 'line' | 'polyline' | 'rectangle' | 'circle' | null
+  }
 }) {
   const st = useAuthoringSession(store)
   // Codex1 B4: ONE SessionLifecycle per mount × backend identity — NEVER
@@ -199,17 +214,74 @@ export function SketchRibbon({
       </div>
       <div className="ribbon-group">
         <div className="ribbon-btns">
-          {roadmap('Vertical', 'Constraints arrive with sketcher behavior 2+ (the skb-b1 solver-contract gate)')}
-          {roadmap('Horizontal', 'Constraints arrive with sketcher behavior 2+ (the skb-b1 solver-contract gate)')}
+          {roadmap('Vertical', 'In the Profile lane, vertical is PROPOSED automatically from what you draw (ADR/0044 A4); asserting one by hand arrives with BS-3')}
+          {roadmap('Horizontal', 'In the Profile lane, horizontal is PROPOSED automatically from what you draw (ADR/0044 A4); asserting one by hand arrives with BS-3')}
         </div>
         <div className="ribbon-group-title">Constrain</div>
       </div>
       <div className="ribbon-group">
         <div className="ribbon-btns">
-          {roadmap('Dimension', 'Dimensions arrive with sketcher behaviors 2–3 (auto-dimension, then strong-dimension edit)')}
+          {roadmap('Dimension', 'In the Profile lane, dimensions are DERIVED and shown grey (ADR/0044 A4); editing one as a strong fact arrives with BS-3')}
         </div>
         <div className="ribbon-group-title">Dimension</div>
       </div>
+      {profile && (
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            {!profile.active ? (
+              tool(
+                'Profile',
+                false,
+                'Draw a CONSTRAINED profile: the engine solves, snaps and auto-dimensions it (ADR/0044 A4)',
+                () => profile.open(),
+              )
+            ) : (
+              <>
+                {tool('Line', profile.toolKind === 'line', 'Draw a line (two clicks)', () => profile.setTool('line'))}
+                {tool('Contour', profile.toolKind === 'polyline', 'Draw a chain of lines; Enter ends it', () => profile.setTool('polyline'))}
+                {tool('Rectangle', profile.toolKind === 'rectangle', 'Draw a rectangle (two clicks) — four segments with asserted right angles', () => profile.setTool('rectangle'))}
+                {tool('Circle', profile.toolKind === 'circle', 'Draw a circle (center + rim)', () => profile.setTool('circle'))}
+                {tool('Undo', false, 'Remove the last drawn shape', () => profile.undo())}
+              </>
+            )}
+          </div>
+          <div className="ribbon-group-title">Profile</div>
+        </div>
+      )}
+      {profile?.active && (
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            <button
+              type="button"
+              className="rb-btn rb-ok"
+              title="OK — commit the constrained profile"
+              onClick={() => profile.close()}
+            >
+              {glyph('OK')}
+              <span className="rb-lbl">OK</span>
+            </button>
+            <button
+              type="button"
+              className="rb-btn"
+              title="Cancel — nothing is written"
+              onClick={() => profile.cancel()}
+            >
+              <span className="rb-lbl">Cancel</span>
+            </button>
+          </div>
+          <div className="ribbon-group-title">Close</div>
+        </div>
+      )}
+      {profile?.refusal && (
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            <span className="rb-lbl" title={profile.refusal} style={{ maxWidth: 260, color: '#b0453a' }}>
+              {profile.refusal}
+            </span>
+          </div>
+          <div className="ribbon-group-title">Engine</div>
+        </div>
+      )}
       {/* increment 2 (SR-03): the terminal commit/cancel — ONE lifecycle
           owner; OK runs the verbatim stepwise commit or the chained
           hand-back; Cancel is lifecycle-guarded (refused mid-terminal). */}
