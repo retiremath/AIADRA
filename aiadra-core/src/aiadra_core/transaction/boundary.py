@@ -849,14 +849,79 @@ class TransactionDraft:
 
     # -------------------------------------------------------------------------
 
+    def _assert_event_log_unmoved(self) -> None:
+        """The log-advance guard (W-3, arc 20260730-1).
+
+        Event and transaction ids are allocated at STAGING time against the
+        event log as it then stood. If the log has advanced since — a
+        concurrent draft on the same workspace, a double-dispatched terminal —
+        appending this draft's events would write DUPLICATE event ids, and
+        every later fold replay refuses them: the workspace stops accepting
+        commits entirely (observed: tx_0050 committed twice, evt_0051
+        duplicated, every subsequent transaction refused). Refuse BEFORE the
+        first byte is written: the draft stays open, disk state untouched,
+        and the caller re-stages against current state.
+
+        The scan is raw (no schema pass): a collision check needs only the
+        ids, and a line that cannot parse is a corrupt log — failing loudly
+        on it here is correct, not incidental.
+        """
+        if not self.events:
+            return
+        staged_ns = [
+            int(ev["event_id"][len("evt_"):])
+            for ev in self.events
+            if str(ev.get("event_id", "")).startswith("evt_")
+        ]
+        if not staged_ns:
+            return
+        first_staged = min(staged_ns)
+        max_committed = 0
+        elog = event_log_path(self.workspace)
+        if elog.exists():
+            with elog.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    eid = str(json.loads(line).get("event_id", ""))
+                    if eid.startswith("evt_"):
+                        try:
+                            n = int(eid[len("evt_"):])
+                        except ValueError:
+                            continue
+                        if n > max_committed:
+                            max_committed = n
+        if first_staged <= max_committed:
+            err = CommitError(
+                f"event log advanced under this draft: it staged evt_{first_staged:04d} "
+                f"but the log already holds evt_{max_committed:04d} — another commit landed "
+                f"after this draft staged its operations (concurrent draft or double "
+                f"dispatch). Nothing was written; roll back and re-stage against "
+                f"current state."
+            )
+            self._emit_audit_once(
+                reason_text=f"commit refused: {err}",
+                reason_classification="other",
+                agent_ref=None,
+                validation_error_trees=[],
+            )
+            raise err
+
     def commit(self) -> CommitResult:
         """Write all staged changes + git add + git commit. Atomic boundary.
 
         Phase C (arc 20260531-9) Codex1 B3 absorption: terminal-state guard.
         Raises if the draft is already in a terminal state (committed or
         rolled_back); marks lifecycle state as "committed" on success.
+
+        W-3 (arc 20260730-1): the log-advance guard runs FIRST — before the
+        sidecar writes, not just before the event append — because a stale
+        draft's sidecar writes would clobber the newer commit's state even
+        if the event append were the only thing refused.
         """
         self._assert_open("commit")
+        self._assert_event_log_unmoved()
         touched_paths: list[Path] = []
         vault = LocalFSVaultAdapter(self.workspace)
 

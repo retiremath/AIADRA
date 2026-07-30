@@ -287,36 +287,47 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
   const close = useCallback(() => {
     const d = depsRef.current
     if (closingRef.current) return // single-flight: one terminal in motion
-    setSession((s) => {
-      if (s === null) return s
-      // W-2: Close SETTLES an endable open chain run first — OK straight
-      // after click·click (no end gesture) commits the drawn line rather
-      // than silently discarding it. endTool's own rule still drops a lone
-      // stray click, so an empty create still coincides with Cancel.
-      const settled = s.tool.pending.length > 0 ? endTool(s) : s
-      // Codex7 B2: terminal-start revalidation of the CAPTURED tuple — the
-      // mid-flight check in the runner cannot see a retarget that happened
-      // BEFORE Close was pressed.
-      const staleness = d.validateTarget?.(settled.target) ?? null
-      if (staleness !== null) {
-        return applyPreview(settled, { preview: null, refusal: { message: staleness } })
-      }
-      const intent = commitIntent(settled, settled.target.partNumber)
-      if (intent === null) {
-        // A create session with nothing drawn has no transaction at all —
-        // Close and Cancel coincide, which is the correct behaviour.
-        requester.cancel()
-        return null
-      }
-      // The session SURVIVES the round trip: only confirmClosed()/
-      // commitFailed() resolve it (Codex6 B2 — a failed commit must leave a
-      // recoverable drawing, and a cleared session cannot be recovered).
-      closingRef.current = true
-      setClosing(true)
-      d.onCommit?.(intent, settled.target)
-      return settled
-    })
-  }, [requester])
+    // W-3a (arc 20260730-1, walk-found): this logic previously lived INSIDE
+    // a setSession updater, onCommit dispatch included. React may re-run an
+    // updater when another queued update (a cursor move, a preview reply)
+    // forces a rebase — and the single-flight flag was set inside the same
+    // updater, so the re-run dispatched a SECOND full begin→add→commit chain
+    // for one Close (the tx_0050 double commit that poisoned the walk
+    // workspace). Terminal logic now runs HERE, in the event handler, over
+    // the render-captured session: every session member the intent depends
+    // on (pending, parts, owner, target) changes only through user actions
+    // that re-render before another click can land, and the flag flips
+    // synchronously before any dispatch. Updaters stay pure.
+    if (session === null) return
+    // W-2: Close SETTLES an endable open chain run first — OK straight
+    // after click·click (no end gesture) commits the drawn line rather
+    // than silently discarding it. endTool's own rule still drops a lone
+    // stray click, so an empty create still coincides with Cancel.
+    const settled = session.tool.pending.length > 0 ? endTool(session) : session
+    // Codex7 B2: terminal-start revalidation of the CAPTURED tuple — the
+    // mid-flight check in the runner cannot see a retarget that happened
+    // BEFORE Close was pressed.
+    const staleness = d.validateTarget?.(settled.target) ?? null
+    if (staleness !== null) {
+      setSession(applyPreview(settled, { preview: null, refusal: { message: staleness } }))
+      return
+    }
+    const intent = commitIntent(settled, settled.target.partNumber)
+    if (intent === null) {
+      // A create session with nothing drawn has no transaction at all —
+      // Close and Cancel coincide, which is the correct behaviour.
+      requester.cancel()
+      setSession(null)
+      return
+    }
+    // The session SURVIVES the round trip: only confirmClosed()/
+    // commitFailed() resolve it (Codex6 B2 — a failed commit must leave a
+    // recoverable drawing, and a cleared session cannot be recovered).
+    closingRef.current = true
+    setClosing(true)
+    setSession(settled)
+    d.onCommit?.(intent, settled.target)
+  }, [session, requester])
 
   const confirmClosed = useCallback(() => {
     closingRef.current = false

@@ -297,6 +297,26 @@ describe('Close and Cancel', () => {
     expect(profile.segments).toHaveLength(1)
   })
 
+  it('W-3a: two Close dispatches in ONE batch commit ONCE — the flag flips synchronously', async () => {
+    // The wild defect: the terminal logic lived inside a setSession updater
+    // and the single-flight flag was set there too, so two dispatches queued
+    // before a flush (an updater re-run, a double click in one batch) each
+    // ran the full chain — tx_0050 committed twice and poisoned the
+    // workspace. With the logic in the event handler the second call must
+    // see the flag already set, WITHOUT any render flush in between.
+    const { hook, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    await act(async () => {})
+    act(() => {
+      const close = hook.result.current.close
+      close()
+      close() // same batch: no state flush between the two calls
+    })
+    expect(onCommit).toHaveBeenCalledOnce()
+  })
+
   it('Close over a lone stray click still coincides with Cancel (the click is an accident)', () => {
     const { hook, onCommit } = setup()
     act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
