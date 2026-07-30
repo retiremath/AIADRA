@@ -266,7 +266,11 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   { key: 'datum-axis', label: 'Axis', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-axis', 'small', 1, 1) },
   { key: 'datum-point', label: 'Point', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-point', 'small', 1, 2) },
   { key: 'datum-csys', label: 'Coordinate System', group: 'Datum', derive: ROADMAP('user-created datums arrive with the EP3 datum arc'), presentation: P('datum-csys', 'small', 2, 0) },
-  { key: 'sketch', label: 'Sketch', group: 'Datum', derive: sketchDerive, presentation: P('sketch', 'anchor', 0) },
+  // W-2 (the honest steer, until I3): the v1 pad is the LEGACY lane and says
+  // so — small cell, "(legacy)" label — while Profile Sketch holds the Datum
+  // anchor, so the natural click lands in the I1 drawing lane. I3 migrates
+  // ordinary Sketch onto the profile session and retires this pair.
+  { key: 'sketch', label: 'Sketch (legacy)', group: 'Datum', derive: sketchDerive, presentation: P('sketch', 'small', 2, 2) },
   // Gate F2b (ADR/0044 A2): the slice-1 REFERENCES sketch — the first v2
   // (adapter 0.2.0) writer. One-shot op; needs a READY Part like sketch.
   { key: 'references-sketch', label: 'References', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 1) },
@@ -274,7 +278,7 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // CREATE entry — plane pick → the v2 profile drawing session, with the v1
   // authoring store idle throughout (the lifecycles never nest). I3 routes
   // ordinary Sketch here and retires this command.
-  { key: 'profile-sketch', label: 'Profile Sketch', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 2) },
+  { key: 'profile-sketch', label: 'Profile Sketch', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'anchor', 0) },
   // Shapes
   { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
   { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },

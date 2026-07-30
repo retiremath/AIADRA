@@ -3,7 +3,7 @@
  *
  * These mirror what `mechanical.author_profile_sketch`,
  * `mechanical.replace_sketch_graph` and `mechanical.preview_sketch_graph`
- * accept — one fact graph behind every drawing tool. Line, polyline,
+ * accept — one fact graph behind every drawing tool. The line chain,
  * rectangle and circle are UI SUGAR that all build THIS payload; there are
  * deliberately no per-tool operations, which is what keeps the G-AI gate
  * true (an agent authors the identical graph with no renderer in the loop).

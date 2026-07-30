@@ -20,15 +20,18 @@ import type { SketchInteractionMode } from '../Viewport'
 import type { PlaneFrameTS } from './planeFrame'
 import type { ProfileGeometry } from './profileOverlay'
 import {
+  abandonRun as abandonSessionRun,
   applyPreview,
   type SessionTarget,
   cancel as cancelSession,
   commitIntent,
   commitPoint,
   endTool,
+  hasRun as sessionHasRun,
   moveCursor,
   openCreate,
   openEdit,
+  type PlaceOptions,
   previewRequest,
   setTool as setSessionTool,
   undoLastPart,
@@ -84,10 +87,14 @@ export interface ProfileSketchLane {
     target: SessionTarget,
   ): void
   setTool(kind: ProfileToolKind): void
-  place(uv: { u: number; v: number }): void
+  place(uv: { u: number; v: number }, opts?: PlaceOptions): void
   cursor(uv: { u: number; v: number } | null): void
-  /** End an open-ended tool (the polyline's Enter / double-click). */
+  /** End the open-ended line chain (the viewport's middle-click / Enter). */
   finishTool(opts?: { closed?: boolean }): void
+  /** True while confirmed chain vertices are down (the Escape target). */
+  hasRun: boolean
+  /** Abandon the in-progress run (Escape); completed shapes stay. */
+  abandonRun(): void
   undo(): void
   /** Close: hands the commit intent to the shell. The session STAYS OPEN
    *  until the shell reports the outcome — a failed commit must leave a
@@ -245,8 +252,8 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     [],
   )
 
-  const place = useCallback((uv: DrawnPoint) => {
-    setSession((s) => (s === null ? s : commitPoint(s, uv)))
+  const place = useCallback((uv: DrawnPoint, opts?: PlaceOptions) => {
+    setSession((s) => (s === null ? s : commitPoint(s, uv, opts)))
   }, [])
 
   const cursor = useCallback((uv: DrawnPoint | null) => {
@@ -261,6 +268,10 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     setSession((s) => (s === null ? s : endTool(s, opts)))
   }, [])
 
+  const abandonRun = useCallback(() => {
+    setSession((s) => (s === null ? s : abandonSessionRun(s)))
+  }, [])
+
   const undo = useCallback(() => {
     setSession((s) => (s === null ? s : undoLastPart(s)))
   }, [])
@@ -271,14 +282,19 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     if (closingRef.current) return // single-flight: one terminal in motion
     setSession((s) => {
       if (s === null) return s
+      // W-2: Close SETTLES an endable open chain run first — OK straight
+      // after click·click (no end gesture) commits the drawn line rather
+      // than silently discarding it. endTool's own rule still drops a lone
+      // stray click, so an empty create still coincides with Cancel.
+      const settled = s.tool.pending.length > 0 ? endTool(s) : s
       // Codex7 B2: terminal-start revalidation of the CAPTURED tuple — the
       // mid-flight check in the runner cannot see a retarget that happened
       // BEFORE Close was pressed.
-      const staleness = d.validateTarget?.(s.target) ?? null
+      const staleness = d.validateTarget?.(settled.target) ?? null
       if (staleness !== null) {
-        return applyPreview(s, { preview: null, refusal: { message: staleness } })
+        return applyPreview(settled, { preview: null, refusal: { message: staleness } })
       }
-      const intent = commitIntent(s, s.target.partNumber)
+      const intent = commitIntent(settled, settled.target.partNumber)
       if (intent === null) {
         // A create session with nothing drawn has no transaction at all —
         // Close and Cancel coincide, which is the correct behaviour.
@@ -290,8 +306,8 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
       // recoverable drawing, and a cleared session cannot be recovered).
       closingRef.current = true
       setClosing(true)
-      d.onCommit?.(intent, s.target)
-      return s
+      d.onCommit?.(intent, settled.target)
+      return settled
     })
   }, [requester])
 
@@ -330,18 +346,32 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     return outcome
   }, [session, requester])
 
+  // Reference-stable per PREVIEW, not per session change: cursor motion and
+  // chain clicks re-derive the mode every time, and the viewport uses this
+  // reference to skip rebuilding the (sprite-heavy) solved overlay when only
+  // the live chain moved.
+  const preview = session?.preview ?? null
+  const geometry = useMemo(() => previewGeometry(preview), [preview])
+
   const mode = useMemo<SketchInteractionMode | null>(() => {
     if (session === null) return null
     return {
       kind: 'profile',
       frame: session.frame,
-      geometry: previewGeometry(session.preview),
+      geometry,
       // An EDIT session owns its committed feature: the viewport suppresses
       // that feature's committed overlay while the live preview replaces it,
       // and restores it the moment the session ends (Codex6 B1).
       ownedFeatureId: session.owner.kind === 'edit' ? session.owner.sketchFeatureId : null,
+      // W-2: the in-progress chain — DRAWN nominals, display-only. The engine
+      // preview still updates per completed shape and stays the solve
+      // authority; this echo only makes the run visible while it is drawn.
+      chain:
+        session.tool.kind === 'line' && session.tool.pending.length > 0
+          ? { pending: session.tool.pending, cursor: session.tool.cursor }
+          : null,
     }
-  }, [session])
+  }, [session, geometry])
 
   return {
     active: session !== null,
@@ -355,6 +385,8 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     place,
     cursor,
     finishTool,
+    hasRun: session !== null && sessionHasRun(session),
+    abandonRun,
     undo,
     close,
     confirmClosed,

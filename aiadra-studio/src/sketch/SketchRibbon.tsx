@@ -18,7 +18,7 @@
  * increment (the commit lifecycle owns them); the Close group migrates with
  * that lifecycle in increment 2 (ADR/0045 pass ledger SR-03/SR-08).
  */
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useAuthoringSession, type AuthoringSessionStore } from '../authoring/authoringSession'
 import { createSessionLifecycle } from '../authoring/sessionLifecycle'
 import type { AuthoringBackend } from '../authoring/backend'
@@ -40,6 +40,7 @@ import icoLeave from '../assets/freecad-icons/Sketcher_LeaveSketch.svg'
 
 const GLYPHS: Record<string, string> = {
   'Sketch view': icoView,
+  Line: icoPolyline,
   Contour: icoPolyline,
   Rectangle: icoRect,
   Circle: icoCircle,
@@ -89,10 +90,15 @@ export function SketchRibbon({
     refusal: string | null
     close(): void
     cancel(): void
-    setTool(kind: 'line' | 'polyline' | 'rectangle' | 'circle'): void
+    setTool(kind: 'line' | 'rectangle' | 'circle'): void
+    /** End the open line chain (Enter here; middle-click in the viewport). */
     finishTool(opts?: { closed?: boolean }): void
+    /** W-2: a chain run is in progress — the Escape target. */
+    hasRun: boolean
+    /** Abandon the in-progress run; completed shapes stay. */
+    abandonRun(): void
     undo(): void
-    toolKind: 'line' | 'polyline' | 'rectangle' | 'circle' | null
+    toolKind: 'line' | 'rectangle' | 'circle' | null
   }
 }) {
   const st = useAuthoringSession(store)
@@ -102,6 +108,36 @@ export function SketchRibbon({
   const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
   const inSketch = st.mode === 'sketch'
   const inProfile = profile?.active === true
+  // The profile prop is an inline literal at the call site; handlers read the
+  // ref so the keyboard owner below subscribes once per session, not per
+  // render (the sketchCbRef idiom).
+  const profileRef = useRef(profile)
+  useEffect(() => {
+    profileRef.current = profile
+  })
+
+  // The ONE profile keyboard owner (W-2): Escape abandons the in-progress
+  // chain run (completed shapes stay — session cancel remains the explicit
+  // Cancel button); Enter ends the open chain, the keyboard twin of the
+  // viewport's middle-click.
+  useEffect(() => {
+    if (!inProfile) return
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
+      const p = profileRef.current
+      if (!p || !p.active || p.closing) return
+      if (e.key === 'Escape' && p.hasRun) {
+        p.abandonRun()
+        e.preventDefault()
+      } else if (e.key === 'Enter' && p.hasRun) {
+        p.finishTool()
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inProfile])
 
   // The ONE sketch keyboard owner (moved with the lifecycle): Escape=cancel
   // (lifecycle-guarded), Enter=close a valid drawing contour, Backspace=undo.
@@ -149,8 +185,7 @@ export function SketchRibbon({
       <div className="ribbon-groups">
         <div className="ribbon-group">
           <div className="ribbon-btns">
-            {ptool('Line', profile.toolKind === 'line', 'Draw a line (two clicks)', () => profile.setTool('line'))}
-            {ptool('Contour', profile.toolKind === 'polyline', 'Draw a chain of lines; Enter ends it', () => profile.setTool('polyline'))}
+            {ptool('Line', profile.toolKind === 'line', 'Line chain — each click chains a segment; middle-click ends it; click the first point to close; Esc abandons the run', () => profile.setTool('line'))}
             {ptool('Rectangle', profile.toolKind === 'rectangle', 'Draw a rectangle (two clicks) — four segments with asserted right angles', () => profile.setTool('rectangle'))}
             {ptool('Circle', profile.toolKind === 'circle', 'Draw a circle (center + rim)', () => profile.setTool('circle'))}
             {ptool('Undo', false, 'Remove the last drawn shape', () => profile.undo())}

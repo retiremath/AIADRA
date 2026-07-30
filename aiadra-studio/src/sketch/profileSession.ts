@@ -28,7 +28,11 @@ import type { SketchPlacementInput } from './profileTypes'
 import { isDrag, type DrawnPoint } from './snapProposal'
 import type { PlaneFrameTS } from './planeFrame'
 
-export type ProfileToolKind = 'line' | 'polyline' | 'rectangle' | 'circle'
+/** W-2 (Petre's step-2 walk): `line` is the Creo-style LINE CHAIN — each
+ *  click chains a segment off the previous endpoint (shared vertex), a
+ *  middle-click ends the chain OPEN, clicking the first point CLOSES it.
+ *  There is no separate line-vs-polyline pair; the chain IS the tool. */
+export type ProfileToolKind = 'line' | 'rectangle' | 'circle'
 
 /** The authority tuple captured at session OPEN (Codex7 B2): every preview
  *  and the terminal use THIS, never the shell's current values — a session
@@ -140,20 +144,47 @@ export function moveCursor(s: ProfileSessionState, at: DrawnPoint | null): Profi
   return { ...s, tool: { ...s.tool, cursor: at } }
 }
 
-/** How many confirmed points this tool needs before it completes itself. */
+/** How many confirmed points this tool needs before it completes itself.
+ *  `line` is the open-ended chain: only the user ends it (middle-click /
+ *  Enter for open, clicking the first point for closed). */
 const CLICKS_TO_COMPLETE: Record<ProfileToolKind, number | null> = {
-  line: 2,
+  line: null,
   rectangle: 2,
   circle: 2,
-  polyline: null, // open-ended: the user ends it explicitly
+}
+
+const dist = (a: DrawnPoint, b: DrawnPoint) => Math.hypot(b.u - a.u, b.v - a.v)
+
+export interface PlaceOptions {
+  /** The close-hit radius in sketch mm — the viewport derives it from the
+   *  CURRENT view scale (a fixed pixel radius), so "clicking the first
+   *  point" means the same gesture at every zoom. Absent ⇒ exact hits only. */
+  closeToleranceMm?: number
 }
 
 /**
  * Confirm a point. Returns the next state; a tool that has all the points it
- * needs completes itself and starts fresh, so drawing several lines in a row
+ * needs completes itself and starts fresh, so drawing several shapes in a row
  * needs no extra ceremony.
+ *
+ * The line CHAIN (W-2) interprets clicks rather than counting them:
+ *   * a click on the previous point is an input accident and is ignored — it
+ *     can never mint a zero-length segment;
+ *   * a click on the FIRST point with three or more vertices down closes the
+ *     ring and completes the run (the Creo close gesture);
+ *   * any other click chains one more vertex.
  */
-export function commitPoint(s: ProfileSessionState, at: DrawnPoint): ProfileSessionState {
+export function commitPoint(s: ProfileSessionState, at: DrawnPoint, opts?: PlaceOptions): ProfileSessionState {
+  if (s.tool.kind === 'line') {
+    const tol = Math.max(opts?.closeToleranceMm ?? 0, 0)
+    const pending = s.tool.pending
+    const last = pending[pending.length - 1]
+    if (last !== undefined && dist(at, last) <= tol) return s
+    if (pending.length >= 3 && dist(at, pending[0]) <= tol) {
+      return completeWith({ ...s, tool: { ...s.tool, cursor: null } }, true)
+    }
+    return { ...s, tool: { ...s.tool, pending: [...pending, at], cursor: null } }
+  }
   const pending = [...s.tool.pending, at]
   const needed = CLICKS_TO_COMPLETE[s.tool.kind]
   if (needed !== null && pending.length >= needed) {
@@ -163,13 +194,26 @@ export function commitPoint(s: ProfileSessionState, at: DrawnPoint): ProfileSess
 }
 
 /**
- * End an open-ended tool (the polyline's double-click / Enter), or force the
- * current one to complete. A run too short to be a shape is simply dropped —
- * an accidental click never becomes a degenerate entity.
+ * End the open-ended chain (the viewport's middle-click, the keyboard's
+ * Enter), or force the current tool to complete. A run too short to be a
+ * shape is simply dropped — an accidental click never becomes a degenerate
+ * entity.
  */
 export function endTool(s: ProfileSessionState, opts?: { closed?: boolean }): ProfileSessionState {
   if (s.tool.pending.length < 2) return { ...s, tool: freshTool(s.tool.kind) }
   return completeWith(s, opts?.closed === true)
+}
+
+/** Is a chain run in progress? (Confirmed vertices down, shape not ended.) */
+export function hasRun(s: ProfileSessionState): boolean {
+  return s.tool.pending.length > 0
+}
+
+/** Abandon the in-progress run (Escape). Completed shapes stay; the tool
+ *  re-arms empty. Distinct from `setTool` in intent, identical in effect —
+ *  named so the Escape path states what it does. */
+export function abandonRun(s: ProfileSessionState): ProfileSessionState {
+  return { ...s, tool: freshTool(s.tool.kind) }
 }
 
 function completeWith(s: ProfileSessionState, closed = false): ProfileSessionState {

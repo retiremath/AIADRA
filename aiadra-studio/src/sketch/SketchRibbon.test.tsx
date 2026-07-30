@@ -174,6 +174,8 @@ describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
     cancel: () => {},
     setTool: () => {},
     finishTool: () => {},
+    hasRun: false,
+    abandonRun: () => {},
     undo: () => {},
     toolKind: 'line' as const,
     ...over,
@@ -189,9 +191,11 @@ describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
     render(
       <SketchRibbon {...harness(store)} onSketchView={() => {}} profile={profileProp()} />,
     )
-    for (const label of ['Line', 'Contour', 'Rectangle', 'Circle', 'Undo']) {
+    // W-2: ONE Creo-style Line chain — the line/polyline pair is gone.
+    for (const label of ['Line', 'Rectangle', 'Circle', 'Undo']) {
       expect(screen.getByRole('button', { name: label })).toBeTruthy()
     }
+    expect(screen.queryByRole('button', { name: 'Contour' })).toBeNull()
     expect(screen.getAllByRole('button', { name: /OK/ })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(1)
     // the legacy grammar is ABSENT — one terminal owner
@@ -233,5 +237,59 @@ describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
       />,
     )
     expect(screen.getByText('segment collapsed')).toBeTruthy()
+  })
+
+  it('the profile keyboard owner (W-2): Escape abandons the run; Enter ends the chain', () => {
+    const store = createAuthoringSessionStore()
+    const abandonRun = vi.fn()
+    const finishTool = vi.fn()
+    render(
+      <SketchRibbon
+        {...harness(store)}
+        onSketchView={() => {}}
+        profile={profileProp({ hasRun: true, abandonRun, finishTool })}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(abandonRun).toHaveBeenCalledTimes(1)
+    expect(finishTool).not.toHaveBeenCalled()
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(finishTool).toHaveBeenCalledTimes(1)
+  })
+
+  it('with no run in progress the keys are inert — session Cancel stays the explicit button', () => {
+    const store = createAuthoringSessionStore()
+    const abandonRun = vi.fn()
+    const finishTool = vi.fn()
+    const cancel = vi.fn()
+    render(
+      <SketchRibbon
+        {...harness(store)}
+        onSketchView={() => {}}
+        profile={profileProp({ hasRun: false, abandonRun, finishTool, cancel })}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(abandonRun).not.toHaveBeenCalled()
+    expect(finishTool).not.toHaveBeenCalled()
+    expect(cancel).not.toHaveBeenCalled()
+  })
+
+  it('a BUSY terminal ignores the keyboard (single-flight covers keys too)', () => {
+    const store = createAuthoringSessionStore()
+    const abandonRun = vi.fn()
+    const finishTool = vi.fn()
+    render(
+      <SketchRibbon
+        {...harness(store)}
+        onSketchView={() => {}}
+        profile={profileProp({ closing: true, hasRun: true, abandonRun, finishTool })}
+      />,
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+    expect(abandonRun).not.toHaveBeenCalled()
+    expect(finishTool).not.toHaveBeenCalled()
   })
 })

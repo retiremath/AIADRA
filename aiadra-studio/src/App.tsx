@@ -72,6 +72,7 @@ import { createWorkspaceSwitcher, isCloseAcked } from './workspace/switcher'
 import { routeSketchPlacement } from './sketch/sketchPlacementRouter'
 import { SketchRibbon } from './sketch/SketchRibbon'
 import { SketchStatusLine } from './sketch/SketchStatusLine'
+import { ProfileStatusLine } from './sketch/ProfileStatusLine'
 import { PlanePicker } from './sketch/PlanePicker'
 import type { DisplaySource } from './display/displaySource'
 import { IMPORT_HOME_REASON, IMPORT_MENU_LABEL, ReferencesList, useReferenceImport } from './import/referenceImport'
@@ -1647,6 +1648,9 @@ function Workbench({
           return
         }
         if (mode === 'sketch') return // the Sketch ribbon owns sketch Escape (the ONE keyboard owner)
+        // W-2: the profile session's Escape (abandon the chain run) is owned
+        // by the Sketch ribbon's profile keyboard owner — same deferral rule.
+        if (profileLaneRef.current?.active) return
         if (mode === 'placement') {
           // A3.6/B4: Escape cancels the pre-commit placement capture (a BUSY
           // session never cancels — the terminal is uninterruptible)
@@ -1885,6 +1889,8 @@ function Workbench({
             cancel: () => void profileLane.cancel(),
             setTool: (k) => profileLane.setTool(k),
             finishTool: (o) => profileLane.finishTool(o),
+            hasRun: profileLane.hasRun,
+            abandonRun: () => profileLane.abandonRun(),
             undo: () => profileLane.undo(),
           }}
           onClose={() => {
@@ -2025,15 +2031,20 @@ function Workbench({
                   if (!eligibleExtrudeSketchIds(partSnap.inspection.part).has(sketchId)) return
                   authoringStore.chooseCommittedSketch(sketchId)
                 }}
-                onSketchPlace={(uv) => {
+                onSketchPlace={(uv, opts) => {
                   // ONE surface, two lanes: the open profile session wins;
                   // otherwise the v1 pad keeps its behaviour verbatim.
-                  if (profileLane.active) profileLane.place(uv)
+                  if (profileLane.active) profileLane.place(uv, opts)
                   else routeSketchPlacement(authoringStore, uv, partContext.getSnapshot().generation)
                 }}
                 onSketchCursor={(uv) => {
                   if (profileLane.active) profileLane.cursor(uv)
                   else authoringStore.setCursor(uv ? { x: uv.u, y: uv.v } : null)
+                }}
+                onSketchChainEnd={() => {
+                  // W-2: the viewport's slop-guarded middle-click — ends the
+                  // open line chain (profile lane only; MMB-drag stays orbit).
+                  if (profileLane.active) profileLane.finishTool()
                 }}
                 onContextHover={setContextHover}
               />
@@ -2139,6 +2150,11 @@ function Workbench({
         <span className="status-slot">
           {shellNote ? (
             <span className="small err">{shellNote}</span>
+          ) : profileLane.session !== null ? (
+            // W-2: the profile session's turn in the EXCLUSIVE slot — the v1
+            // line renders null here (its store is idle; the lanes never
+            // nest), and the chain grammar is taught by this hint.
+            <ProfileStatusLine session={profileLane.session} isReal={featureBackend.isReal} />
           ) : (
             <SketchStatusLine store={authoringStore} isReal={featureBackend.isReal} hover={contextHover} />
           )}

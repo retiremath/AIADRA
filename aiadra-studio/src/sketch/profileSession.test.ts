@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
+  abandonRun,
   applyPreview,
   cancel,
   commitIntent,
   commitPoint,
   currentProfile,
   endTool,
+  hasRun,
   hasWork,
   moveCursor,
   openCreate,
@@ -39,8 +41,10 @@ const BASELINE: ProfilePayload = {
   facts: [{ id: 'c04', kind: 'horizontal', target: { id: 'skp_0008' } }],
 }
 
+// The chain grammar (W-2): a single line is click·click·end — the end is the
+// viewport's middle-click / the keyboard's Enter, both of which call endTool.
 const drawLine = (s: ProfileSessionState, a = { u: 0, v: 0 }, b = { u: 20, v: 0.4 }) =>
-  commitPoint(commitPoint(s, a), b)
+  endTool(commitPoint(commitPoint(s, a), b))
 
 describe('the two entry states (Codex3 B1)', () => {
   it('a create session with nothing drawn has no transaction at all', () => {
@@ -96,14 +100,70 @@ describe('the two entry states (Codex3 B1)', () => {
   })
 })
 
-describe('drawing', () => {
-  it('a two-click line completes itself and re-arms the tool', () => {
+describe('drawing — the line CHAIN (W-2)', () => {
+  it('clicks accumulate as one chain; the end gesture completes and re-arms it', () => {
     let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
     s = commitPoint(s, { u: 0, v: 0 })
-    expect(s.parts).toHaveLength(0)
     s = commitPoint(s, { u: 20, v: 0.4 })
+    // two clicks are NOT a finished line — the chain is open until ended
+    expect(s.parts).toHaveLength(0)
+    expect(hasRun(s)).toBe(true)
+    s = endTool(s)
     expect(s.parts).toHaveLength(1)
-    expect(s.tool.pending).toEqual([]) // ready for the next line
+    expect(hasRun(s)).toBe(false)
+    expect(s.tool.pending).toEqual([]) // ready for the next run
+  })
+
+  it('a longer chain shares vertices: N clicks → N−1 segments off shared points', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0.2 }, { u: 25, v: 15 }]) s = commitPoint(s, p)
+    expect(s.parts).toHaveLength(0)
+    s = endTool(s)
+    const profile = currentProfile(s)
+    expect(profile?.points).toHaveLength(3)
+    expect(profile?.segments).toHaveLength(2)
+    // the shared vertex: segment 1 ends where segment 2 starts
+    expect(profile?.segments?.[0].end).toEqual(profile?.segments?.[1].start)
+  })
+
+  it('clicking the FIRST point closes the ring (three or more vertices down)', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0 }, { u: 10, v: 15 }]) s = commitPoint(s, p)
+    s = commitPoint(s, { u: 0.4, v: -0.3 }, { closeToleranceMm: 1 })
+    expect(s.parts).toHaveLength(1)
+    const profile = currentProfile(s)
+    expect(profile?.points).toHaveLength(3) // the close click mints NO vertex
+    expect(profile?.segments).toHaveLength(3) // …but the ring closes
+  })
+
+  it('a first-point click with only two vertices down chains — it cannot close a 2-ring', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    s = commitPoint(s, { u: 0, v: 0 })
+    s = commitPoint(s, { u: 20, v: 0 })
+    s = commitPoint(s, { u: 0.4, v: 0.3 }, { closeToleranceMm: 1 })
+    expect(s.parts).toHaveLength(0)
+    expect(s.tool.pending).toHaveLength(3)
+  })
+
+  it('a click on the previous point is ignored — never a zero-length segment', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    s = commitPoint(s, { u: 0, v: 0 })
+    s = commitPoint(s, { u: 0.2, v: 0.1 }, { closeToleranceMm: 1 })
+    expect(s.tool.pending).toHaveLength(1)
+    // …and an EXACT duplicate is ignored even with no tolerance supplied
+    s = commitPoint(s, { u: 0, v: 0 })
+    expect(s.tool.pending).toHaveLength(1)
+  })
+
+  it('Escape abandons the run; completed shapes stay', () => {
+    let s = drawLine(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS))
+    s = commitPoint(s, { u: 40, v: 0 })
+    s = commitPoint(s, { u: 60, v: 5 })
+    expect(hasRun(s)).toBe(true)
+    s = abandonRun(s)
+    expect(hasRun(s)).toBe(false)
+    expect(s.parts).toHaveLength(1) // the finished line survives
+    expect(s.tool.kind).toBe('line') // the tool stays armed
   })
 
   it('drawing several shapes accumulates ONE graph', () => {
@@ -116,26 +176,8 @@ describe('drawing', () => {
     expect(profileError('test', profile)).toBeNull()
   })
 
-  it('a polyline waits for an explicit end', () => {
-    let s = setTool(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS), 'polyline')
-    s = commitPoint(s, { u: 0, v: 0 })
-    s = commitPoint(s, { u: 20, v: 0.2 })
-    s = commitPoint(s, { u: 25, v: 15 })
-    expect(s.parts).toHaveLength(0)
-    s = endTool(s)
-    expect(s.parts).toHaveLength(1)
-    expect(currentProfile(s)?.segments).toHaveLength(2)
-  })
-
-  it('a polyline can close its run', () => {
-    let s = setTool(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS), 'polyline')
-    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0 }, { u: 10, v: 15 }]) s = commitPoint(s, p)
-    s = endTool(s, { closed: true })
-    expect(currentProfile(s)?.segments).toHaveLength(3)
-  })
-
   it('a single stray click is dropped, never a degenerate entity', () => {
-    let s = setTool(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS), 'polyline')
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
     s = commitPoint(s, { u: 5, v: 5 })
     s = endTool(s)
     expect(s.parts).toHaveLength(0)
@@ -150,7 +192,7 @@ describe('drawing', () => {
   })
 
   it('switching tools abandons the in-progress run without half-committing', () => {
-    let s = setTool(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS), 'polyline')
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
     s = commitPoint(s, { u: 0, v: 0 })
     s = commitPoint(s, { u: 20, v: 0 })
     s = setTool(s, 'circle')

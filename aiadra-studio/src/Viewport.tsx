@@ -19,7 +19,7 @@ import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
 import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
-import { createProfileOverlay, type ProfileGeometry, type ProfileOverlay } from './sketch/profileOverlay'
+import { createChainEcho, createProfileOverlay, type ChainEchoState, type ProfileGeometry, type ProfileOverlay } from './sketch/profileOverlay'
 import { committedProfiles } from './sketch/committedProfiles'
 import {
   arbitratePlanePick,
@@ -112,6 +112,10 @@ export type SketchInteractionMode =
       /** The committed feature an EDIT session owns — its committed overlay is
        *  suppressed while the live preview replaces it. Null for Create. */
       ownedFeatureId: string | null
+      /** W-2: the in-progress line chain (DRAWN nominals, plane-local mm) —
+       *  rendered as a display-only echo; the engine preview stays the solve
+       *  authority. Null when no run is in progress. */
+      chain: ChainEchoState | null
     }
 
 /** S3: the resolved pick — a datum enum, or an ENGINE-PLANAR face enriched
@@ -146,6 +150,7 @@ export default function Viewport({
   onSketchSolicit,
   onSketchPlace,
   onSketchCursor,
+  onSketchChainEnd,
   onContextHover,
 }: {
   apiRef?: MutableRefObject<ViewportApi | null>
@@ -163,8 +168,14 @@ export default function Viewport({
   /** P (arc 20260717-2): the sketchSolicit click — an ELIGIBLE unconsumed
    *  sketch wire picked on screen (the App revalidates before consuming). */
   onSketchSolicit?: (sketchFeatureId: string) => void
-  onSketchPlace?: (uv: { u: number; v: number }) => void
+  /** W-2: `opts.closeToleranceMm` rides profile-mode clicks — the fixed
+   *  close-hit pixel radius converted to sketch mm at the CURRENT view scale,
+   *  so the session's "clicked the first point?" test is zoom-honest. */
+  onSketchPlace?: (uv: { u: number; v: number }, opts?: { closeToleranceMm?: number }) => void
   onSketchCursor?: (uv: { u: number; v: number } | null) => void
+  /** W-2: a slop-guarded middle-CLICK in profile mode — ends the open line
+   *  chain (an MMB drag stays orbit and never fires this). */
+  onSketchChainEnd?: () => void
   /** SK-C1.0 Codex4 B1.3: sketch-mode canonical-topology hover — the actual
    *  engine-owned/display-package id, surfaced (hover-only; the SK-E seam). */
   onContextHover?: (hit: { kind: 'face' | 'edge'; id: string } | null) => void
@@ -175,8 +186,8 @@ export default function Viewport({
 
   const [menu, setMenu] = useState<Menu>(null)
   // Callback + mode refs: the mount effect runs ONCE; handlers read these live.
-  const sketchCbRef = useRef({ onPlanePick, onSketchPlace, onSketchCursor, onContextHover, onSketchSolicit })
-  sketchCbRef.current = { onPlanePick, onSketchPlace, onSketchCursor, onContextHover, onSketchSolicit }
+  const sketchCbRef = useRef({ onPlanePick, onSketchPlace, onSketchCursor, onSketchChainEnd, onContextHover, onSketchSolicit })
+  sketchCbRef.current = { onPlanePick, onSketchPlace, onSketchCursor, onSketchChainEnd, onContextHover, onSketchSolicit }
   const planarFaceIdsRef = useRef<ReadonlySet<string>>(new Set())
   planarFaceIdsRef.current = planarFaceIds ?? new Set()
   const interactionModeRef = useRef(interactionMode)
@@ -816,6 +827,13 @@ export default function Viewport({
     const ndc = new THREE.Vector2()
     let downX = 0
     let downY = 0
+    // W-2: middle-button travel — a slop-guarded MMB CLICK ends the line
+    // chain in profile mode; an MMB drag is orbit and must stay orbit.
+    // `midDownLive` pairs each up with ITS down: the nav-cube island swallows
+    // downs at capture, and an unpaired up must not consult stale coordinates.
+    let midDownX = 0
+    let midDownY = 0
+    let midDownLive = false
     let selId: SelId = null
     let hovId: SelId = null
     const sameId = (a: SelId, b: SelId) =>
@@ -866,6 +884,14 @@ export default function Viewport({
     const profileOverlay = createProfileOverlay()
     profileOverlay.group.visible = false
     scene.add(profileOverlay.group)
+    // W-2: the in-progress chain echo (drawn nominals; display-only). Rebuilt
+    // per interaction update — it is a handful of line vertices, where the
+    // solved overlay below carries sprite canvases and only rebuilds when the
+    // ENGINE result actually changed.
+    const chainEcho = createChainEcho()
+    chainEcho.group.visible = false
+    scene.add(chainEcho.group)
+    let lastProfileGeometry: ProfileGeometry | null = null
     // Codex6 B1: the COMMITTED profile lane. One overlay per committed 0.2.2
     // sketch, fed from the installed Display package's v2_profiles[] joined
     // to sketch_frames[] — the SAME ProfileGeometry vocabulary the live
@@ -1093,12 +1119,16 @@ export default function Viewport({
       if (kind === 'profile' && modeKind !== 'profile' && m?.kind === 'profile') {
         ghostPart(true)
         profileOverlay.group.visible = true
+        chainEcho.group.visible = true
         applySketchFraming(m.frame)
       }
       if (kind !== 'profile' && modeKind === 'profile') {
         ghostPart(false)
         profileOverlay.group.visible = false
         profileOverlay.update(null, [0, 0, 1])
+        lastProfileGeometry = null
+        chainEcho.group.visible = false
+        chainEcho.update(null, null)
         sketchFrame = null
         suppressedProfileId = null
         applyCommittedSuppression()
@@ -1113,7 +1143,14 @@ export default function Viewport({
         sketchFrame = m.frame
         // The engine's world points arrive already mapped; the frame normal
         // is passed only so a circle is tessellated IN the sketch plane.
-        profileOverlay.update(m.geometry, m.frame.normal)
+        // Rebuild only when the ENGINE result changed (the hook keeps the
+        // geometry reference stable per preview) — cursor motion and chain
+        // clicks re-enter here constantly and must not re-rasterize sprites.
+        if (m.geometry !== lastProfileGeometry) {
+          profileOverlay.update(m.geometry, m.frame.normal)
+          lastProfileGeometry = m.geometry
+        }
+        chainEcho.update(m.chain, m.frame)
         suppressedProfileId = m.ownedFeatureId
         applyCommittedSuppression()
       }
@@ -1125,8 +1162,25 @@ export default function Viewport({
         downX = e.clientX
         downY = e.clientY
       }
+      if (e.button === 1) {
+        midDownX = e.clientX
+        midDownY = e.clientY
+        midDownLive = true
+      }
     }
     const onLeftUp = (e: PointerEvent) => {
+      if (e.button === 1) {
+        // W-2 (the Creo idiom): a middle CLICK ends the open line chain. The
+        // same 4px slop guard that separates orbit from place for the left
+        // button separates orbit from end-chain here — an MMB drag rotated
+        // the camera and must not also end the run.
+        const paired = midDownLive
+        midDownLive = false
+        if (!paired || modeKind !== 'profile') return
+        if (Math.hypot(e.clientX - midDownX, e.clientY - midDownY) > 4) return
+        sketchCbRef.current.onSketchChainEnd?.()
+        return
+      }
       if (e.button !== 0) return
       // the slop guard doubles as the orbit-vs-place distinction (Codex3
       // bar 6): a drag gesture never places a point or picks a plane
@@ -1161,7 +1215,19 @@ export default function Viewport({
         // drawing tools own placement clicks (Codex3 bar 5); canonical
         // topology stays hover-only in this arc
         const uv = sketchUvAt(e.clientX, e.clientY)
-        if (uv) sketchCbRef.current.onSketchPlace?.(uv)
+        if (!uv) return
+        if (modeKind === 'profile') {
+          // W-2 close-hit radius: CLOSE_HIT_PX at the current view scale,
+          // measured by probing the plane one radius to the right — the
+          // "clicked the first point" test means the same gesture at every
+          // zoom. A grazing probe yields no tolerance (exact hits only).
+          const CLOSE_HIT_PX = 8
+          const probe = sketchUvAt(e.clientX + CLOSE_HIT_PX, e.clientY)
+          const tol = probe ? Math.hypot(probe.u - uv.u, probe.v - uv.v) : undefined
+          sketchCbRef.current.onSketchPlace?.(uv, tol !== undefined ? { closeToleranceMm: tol } : undefined)
+          return
+        }
+        sketchCbRef.current.onSketchPlace?.(uv)
         return
       }
       if (!part) return
@@ -1439,6 +1505,7 @@ export default function Viewport({
       applyInteractionRef.current = null
       sketchEdit.dispose()
       profileOverlay.dispose()
+      chainEcho.dispose()
       controls.dispose()
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)

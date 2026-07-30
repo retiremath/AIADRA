@@ -2,11 +2,13 @@
 import { describe, it, expect } from 'vitest'
 import * as THREE from 'three'
 import {
+  createChainEcho,
   createProfileOverlay,
   formatAnnotation,
   glyphLabel,
   type ProfileGeometry,
 } from './profileOverlay'
+import { SKETCH_LIFT_MM, principalFrame } from './planeFrame'
 
 const XY: [number, number, number] = [0, 0, 1]
 
@@ -147,6 +149,42 @@ describe('the overlay renders what the engine handed it', () => {
     o.update(rectangle(), XY)
     expect(o.group.children.length).toBe(first)
     o.dispose()
+  })
+
+  it('the chain echo renders DRAWN nominals in the session frame (W-2)', () => {
+    const e = createChainEcho()
+    e.update(
+      { pending: [{ u: 0, v: 0 }, { u: 20, v: 0 }], cursor: { u: 20, v: 15 } },
+      principalFrame('yz'), // u→Y, v→Z: the mapping is the frame's, not XY's
+    )
+    const lines = e.group.children.filter((c) => c instanceof THREE.Line) as THREE.Line[]
+    expect(lines).toHaveLength(2) // the confirmed chain + the rubber segment
+    const chain = lines[0].geometry.getAttribute('position')
+    // (u=20, v=0) on the yz frame lands at world (lift, 20, 0)
+    expect(chain.getX(1)).toBeCloseTo(SKETCH_LIFT_MM, 5)
+    expect(chain.getY(1)).toBeCloseTo(20, 5)
+    expect(chain.getZ(1)).toBeCloseTo(0, 5)
+    const rubber = lines[1].geometry.getAttribute('position')
+    expect(rubber.getY(1)).toBeCloseTo(20, 5)
+    expect(rubber.getZ(1)).toBeCloseTo(15, 5)
+    e.dispose()
+  })
+
+  it('a single-vertex run shows its point and the rubber segment only', () => {
+    const e = createChainEcho()
+    e.update({ pending: [{ u: 5, v: 5 }], cursor: { u: 9, v: 9 } }, principalFrame('xy'))
+    expect(e.group.children.filter((c) => c instanceof THREE.Line)).toHaveLength(1) // rubber only
+    expect(e.group.children.filter((c) => c instanceof THREE.Points)).toHaveLength(1)
+    e.dispose()
+  })
+
+  it('the echo clears on null chain and on a null cursor drops the rubber', () => {
+    const e = createChainEcho()
+    e.update({ pending: [{ u: 0, v: 0 }, { u: 10, v: 0 }], cursor: null }, principalFrame('xy'))
+    expect(e.group.children.filter((c) => c instanceof THREE.Line)).toHaveLength(1) // chain only
+    e.update(null, principalFrame('xy'))
+    expect(e.group.children).toHaveLength(0)
+    e.dispose()
   })
 
   it('a live PREVIEW and a committed profile render through the same path', () => {

@@ -19,6 +19,7 @@
  */
 import * as THREE from 'three'
 import type { ConstraintGlyph, ProfileAnnotation } from '../display/contract'
+import { frameToWorld, SKETCH_LIFT_MM, type PlaneFrameTS } from './planeFrame'
 
 /** The geometry members shared by a live preview and a committed profile. */
 export interface ProfileGeometry {
@@ -168,6 +169,75 @@ export function createProfileOverlay(): ProfileOverlay {
 
     for (const g of geometry.constraint_glyphs) {
       addLabel(glyphLabel(g.kind), v3(g.anchor), COLOR_GLYPH, labelScale * 0.8)
+    }
+  }
+
+  return {
+    group,
+    update,
+    dispose() {
+      clear()
+    },
+  }
+}
+
+/** The in-progress line chain, plane-local mm (DRAWN nominals — never
+ *  solved output). */
+export interface ChainEchoState {
+  pending: { u: number; v: number }[]
+  cursor: { u: number; v: number } | null
+}
+
+export interface ChainEcho {
+  group: THREE.Group
+  update(chain: ChainEchoState | null, frame: PlaneFrameTS | null): void
+  dispose(): void
+}
+
+// The v1 pad's rubber grey (sketchEditOverlay) — one idiom across both lanes.
+const COLOR_RUBBER = 0x64748b
+
+/**
+ * The chain ECHO (W-2) — the only overlay drawn from Studio-side coordinates.
+ *
+ * While a line chain is in progress its vertices are not yet a completed
+ * shape, so the engine preview knows nothing about them; without this echo
+ * the run is invisible until it ends (the walk defect). It renders the DRAWN
+ * nominals: the confirmed chain in the profile colour, a rubber segment to
+ * the live cursor in the v1 pad's rubber grey. Display-only by construction —
+ * the moment the run completes, these vertices reach the engine and the
+ * SOLVED result replaces this echo through the ordinary preview path.
+ */
+export function createChainEcho(): ChainEcho {
+  const group = new THREE.Group()
+  group.name = 'profile-chain-echo'
+  const disposables: { dispose(): void }[] = []
+
+  const clear = () => {
+    for (const child of [...group.children]) group.remove(child)
+    for (const d of disposables.splice(0)) d.dispose()
+  }
+
+  const addLine = (pts: THREE.Vector3[], color: number) => {
+    const geom = new THREE.BufferGeometry().setFromPoints(pts)
+    const mat = new THREE.LineBasicMaterial({ color })
+    group.add(new THREE.Line(geom, mat))
+    disposables.push(geom, mat)
+  }
+
+  const update = (chain: ChainEchoState | null, frame: PlaneFrameTS | null) => {
+    clear()
+    if (chain === null || frame === null || chain.pending.length === 0) return
+    const world = (p: { u: number; v: number }) =>
+      new THREE.Vector3(...frameToWorld(frame, p.u, p.v, SKETCH_LIFT_MM))
+    const pts = chain.pending.map(world)
+    if (pts.length >= 2) addLine(pts, COLOR_PROFILE)
+    const geom = new THREE.BufferGeometry().setFromPoints(pts)
+    const mat = new THREE.PointsMaterial({ color: COLOR_POINT, size: 5, sizeAttenuation: false })
+    group.add(new THREE.Points(geom, mat))
+    disposables.push(geom, mat)
+    if (chain.cursor !== null) {
+      addLine([pts[pts.length - 1], world(chain.cursor)], COLOR_RUBBER)
     }
   }
 

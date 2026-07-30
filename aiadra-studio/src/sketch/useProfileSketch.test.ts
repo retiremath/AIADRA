@@ -44,9 +44,12 @@ function setup(overrides: Partial<Parameters<typeof useProfileSketch>[0]> = {}) 
   return { hook, preview, onCommit }
 }
 
+// W-2 chain grammar: a single line is click·click·end (the viewport's
+// middle-click / Enter both route to finishTool).
 const drawLine = (h: ReturnType<typeof setup>['hook']) => {
   act(() => h.result.current.place({ u: 0, v: 0 }))
   act(() => h.result.current.place({ u: 20, v: 0.4 }))
+  act(() => h.result.current.finishTool())
 }
 
 describe('the lane is inert until a session opens', () => {
@@ -207,6 +210,27 @@ describe('Close and Cancel', () => {
   it('Close on an EMPTY create session commits nothing — it coincides with Cancel', () => {
     const { hook, onCommit } = setup()
     act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.close())
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(hook.result.current.active).toBe(false)
+  })
+
+  it('Close SETTLES an endable open chain run — OK without the end gesture commits the line (W-2)', async () => {
+    const { hook, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    // no finishTool — the user went straight to OK
+    act(() => hook.result.current.close())
+    expect(onCommit).toHaveBeenCalledOnce()
+    const profile = onCommit.mock.calls[0][0].params.profile as ProfilePayload
+    expect(profile.segments).toHaveLength(1)
+  })
+
+  it('Close over a lone stray click still coincides with Cancel (the click is an accident)', () => {
+    const { hook, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 5, v: 5 }))
     act(() => hook.result.current.close())
     expect(onCommit).not.toHaveBeenCalled()
     expect(hook.result.current.active).toBe(false)

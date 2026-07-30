@@ -163,10 +163,10 @@ describe('B4 — the rendered dense ribbon (jsdom)', () => {
     }
   })
 
-  it('working commands dispatch from a small cell (dev lane: Sketch works)', () => {
+  it('working commands dispatch from a small cell (dev lane: the legacy Sketch works)', () => {
     const onStart = vi.fn()
     render(<ModelRibbon inputs={inputs({ realLane: false })} onStart={onStart} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Sketch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Sketch (legacy)' }))
     expect(onStart).toHaveBeenCalledWith('sketch')
   })
 })

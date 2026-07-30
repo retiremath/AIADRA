@@ -1,7 +1,7 @@
 /**
  * The drawing tools, as ONE fact graph (ADR/0044 A4; arc 20260730-1).
  *
- * Line, polyline, rectangle and circle are UI SUGAR. Each builds the SAME
+ * The line chain, rectangle and circle are UI SUGAR. Each builds the SAME
  * `ProfilePayload` an agent would author directly — there are deliberately no
  * per-tool operations, and that is precisely what keeps the G-AI gate true:
  * every modeling capability a human has through this UI is reachable through
