@@ -126,6 +126,76 @@ describe('drawing drives the engine preview', () => {
   })
 })
 
+describe('the per-segment preview cadence (Codex11 B1)', () => {
+  it('click 1 sends nothing; click 2 sends the one-segment graph', async () => {
+    const { hook, preview } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    await act(async () => {})
+    expect(preview).not.toHaveBeenCalled()
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    await act(async () => {})
+    expect(preview).toHaveBeenCalledOnce()
+    const profile = (preview.mock.calls[0] as unknown as unknown[])[3] as ProfilePayload
+    expect(profile.segments).toHaveLength(1)
+  })
+
+  it('click 3 sends the full chain — two segments off the shared vertex', async () => {
+    const { hook, preview } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.2 }))
+    await act(async () => {})
+    act(() => hook.result.current.place({ u: 25, v: 15 }))
+    await act(async () => {})
+    expect(preview).toHaveBeenCalledTimes(2)
+    const profile = (preview.mock.calls[1] as unknown as unknown[])[3] as ProfilePayload
+    expect(profile.segments).toHaveLength(2)
+    expect(profile.segments?.[0].end).toEqual(profile.segments?.[1].start)
+  })
+
+  it('the end gesture sends NO duplicate — the graph did not change', async () => {
+    const { hook, preview } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    await act(async () => {})
+    expect(preview).toHaveBeenCalledOnce()
+    act(() => hook.result.current.finishTool()) // the MMB/Enter route
+    await act(async () => {})
+    expect(preview).toHaveBeenCalledOnce()
+  })
+
+  it('Close commits the graph most recently previewed (preview/commit parity)', async () => {
+    const { hook, preview, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    await act(async () => {})
+    const previewed = (preview.mock.calls.at(-1) as unknown as unknown[])[3] as ProfilePayload
+    act(() => hook.result.current.close()) // settles the open run
+    expect(onCommit).toHaveBeenCalledOnce()
+    const committed = onCommit.mock.calls[0][0].params.profile as ProfilePayload
+    expect(JSON.stringify(committed)).toBe(JSON.stringify(previewed))
+  })
+
+  it('abandoning the run clears the stale solved preview — nothing left to show', async () => {
+    const { hook } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME, TARGET))
+    act(() => hook.result.current.place({ u: 0, v: 0 }))
+    act(() => hook.result.current.place({ u: 20, v: 0.4 }))
+    await act(async () => {})
+    let mode = hook.result.current.mode
+    expect(mode && 'geometry' in mode && mode.geometry).not.toBeNull()
+    act(() => hook.result.current.abandonRun())
+    await act(async () => {})
+    mode = hook.result.current.mode
+    expect(mode && 'geometry' in mode && mode.geometry).toBeNull()
+    expect(hook.result.current.refusal).toBeNull()
+    expect(hook.result.current.active).toBe(true) // the session itself survives
+  })
+})
+
 describe('refusals keep the session alive', () => {
   it('an engine refusal is surfaced without ending the session', async () => {
     const preview = vi.fn(async () => ({

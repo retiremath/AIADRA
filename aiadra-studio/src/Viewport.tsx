@@ -20,6 +20,7 @@ import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
 import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
 import { createChainEcho, createProfileOverlay, type ChainEchoState, type ProfileGeometry, type ProfileOverlay } from './sketch/profileOverlay'
+import { midPairDown, midPairIsClick, type MidPair } from './sketch/middleClick'
 import { committedProfiles } from './sketch/committedProfiles'
 import {
   arbitratePlanePick,
@@ -827,13 +828,12 @@ export default function Viewport({
     const ndc = new THREE.Vector2()
     let downX = 0
     let downY = 0
-    // W-2: middle-button travel — a slop-guarded MMB CLICK ends the line
-    // chain in profile mode; an MMB drag is orbit and must stay orbit.
-    // `midDownLive` pairs each up with ITS down: the nav-cube island swallows
-    // downs at capture, and an unpaired up must not consult stale coordinates.
-    let midDownX = 0
-    let midDownY = 0
-    let midDownLive = false
+    // W-2 (hardened per Codex11 N3): the middle-button PAIR — a slop-guarded
+    // MMB CLICK ends the line chain in profile mode; an MMB drag is orbit.
+    // Pointer-id-bound and cleared on cancel/leave, so a swallowed down (the
+    // nav-cube island), a cancelled gesture, or a foreign pointer can never
+    // lend stale coordinates to a later up (middleClick.ts is the pure half).
+    let midPair: MidPair | null = null
     let selId: SelId = null
     let hovId: SelId = null
     const sameId = (a: SelId, b: SelId) =>
@@ -1163,22 +1163,17 @@ export default function Viewport({
         downY = e.clientY
       }
       if (e.button === 1) {
-        midDownX = e.clientX
-        midDownY = e.clientY
-        midDownLive = true
+        midPair = midPairDown(e)
       }
     }
     const onLeftUp = (e: PointerEvent) => {
       if (e.button === 1) {
-        // W-2 (the Creo idiom): a middle CLICK ends the open line chain. The
-        // same 4px slop guard that separates orbit from place for the left
-        // button separates orbit from end-chain here — an MMB drag rotated
-        // the camera and must not also end the run.
-        const paired = midDownLive
-        midDownLive = false
-        if (!paired || modeKind !== 'profile') return
-        if (Math.hypot(e.clientX - midDownX, e.clientY - midDownY) > 4) return
-        sketchCbRef.current.onSketchChainEnd?.()
+        // W-2 (the Creo idiom): a middle CLICK ends the open line chain —
+        // an up paired with ITS OWN down (same pointer id, within the slop);
+        // an MMB drag rotated the camera and must not also end the run.
+        const click = midPairIsClick(midPair, e)
+        midPair = null
+        if (click && modeKind === 'profile') sketchCbRef.current.onSketchChainEnd?.()
         return
       }
       if (e.button !== 0) return
@@ -1314,6 +1309,7 @@ export default function Viewport({
     const onPointerLeave = () => {
       navCube.setHover(null)
       setQuadHover(null)
+      midPair = null // a gesture that left the canvas is not a click (N3)
       if (modeKind === 'sketch' || modeKind === 'profile') {
         sketchCbRef.current.onSketchCursor?.(null)
         sketchCbRef.current.onContextHover?.(null)
@@ -1323,11 +1319,15 @@ export default function Viewport({
         repaintHighlights()
       }
     }
+    const onPointerCancel = () => {
+      midPair = null // a cancelled/lost gesture must not pair a later up (N3)
+    }
 
     canvas.addEventListener('pointerdown', onLeftDown)
     canvas.addEventListener('pointerup', onLeftUp)
     canvas.addEventListener('pointermove', onPointerMove)
     canvas.addEventListener('pointerleave', onPointerLeave)
+    canvas.addEventListener('pointercancel', onPointerCancel)
 
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault()
@@ -1499,6 +1499,7 @@ export default function Viewport({
       canvas.removeEventListener('pointerup', onLeftUp)
       canvas.removeEventListener('pointermove', onPointerMove)
       canvas.removeEventListener('pointerleave', onPointerLeave)
+      canvas.removeEventListener('pointercancel', onPointerCancel)
       canvas.removeEventListener('contextmenu', onContextMenu)
       canvas.removeEventListener('wheel', onWheelCapture, true)
       navCube.dispose()

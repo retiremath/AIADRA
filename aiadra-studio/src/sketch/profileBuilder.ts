@@ -49,10 +49,11 @@ export interface BuildOptions {
 /**
  * Build a payload for an open or closed run of drawn points.
  *
- * This is the single implementation behind the line tool (2 points, open),
- * the polyline tool (N points, open) and any closed contour. Each consecutive
- * pair becomes a segment, and each segment independently gets at most one
- * proposed axis fact.
+ * This is the single implementation behind the Line CHAIN — the in-progress
+ * run previews through it per completed segment, the end gesture completes
+ * through it (open or, via first-point close, closed), so before/after-end
+ * graphs are byte-identical. Each consecutive pair becomes a segment, and
+ * each segment independently gets at most one proposed axis fact.
  */
 export function buildPolyline(points: DrawnPoint[], opts: BuildOptions): ProfilePayload {
   const closed = opts.closed === true

@@ -200,13 +200,13 @@ const COLOR_RUBBER = 0x64748b
 /**
  * The chain ECHO (W-2) — the only overlay drawn from Studio-side coordinates.
  *
- * While a line chain is in progress its vertices are not yet a completed
- * shape, so the engine preview knows nothing about them; without this echo
- * the run is invisible until it ends (the walk defect). It renders the DRAWN
- * nominals: the confirmed chain in the profile colour, a rubber segment to
- * the live cursor in the v1 pad's rubber grey. Display-only by construction —
- * the moment the run completes, these vertices reach the engine and the
- * SOLVED result replaces this echo through the ordinary preview path.
+ * The engine previews the chain PER COMPLETED SEGMENT (Codex11 B1), so this
+ * echo is NOT the run's only visibility — it carries what the solve cannot:
+ * the rubber segment to the live cursor (never part of the graph) and the
+ * instant DRAWN-nominal feedback in the beat between a click and its
+ * asynchronous solve reply. Confirmed chain in the profile colour, rubber in
+ * the v1 pad's grey. Display-only by construction — the solved result always
+ * arrives through the ordinary preview path and overdraws the nominals.
  */
 export function createChainEcho(): ChainEcho {
   const group = new THREE.Group()

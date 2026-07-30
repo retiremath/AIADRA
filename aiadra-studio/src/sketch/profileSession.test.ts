@@ -217,6 +217,84 @@ describe('drawing — the line CHAIN (W-2)', () => {
   })
 })
 
+describe('the engine previews per completed SEGMENT (Codex11 B1)', () => {
+  it('click 1 previews nothing — a vertex is not yet a segment', () => {
+    const s = commitPoint(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS), { u: 0, v: 0 })
+    expect(previewRequest(s)).toBeNull()
+  })
+
+  it('click 2 previews the one-segment graph, snap fact included', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    s = commitPoint(s, { u: 0, v: 0 })
+    s = commitPoint(s, { u: 20, v: 0.4 }) // near-horizontal at tol 3°
+    const req = previewRequest(s)
+    expect(req?.profile.points).toHaveLength(2)
+    expect(req?.profile.segments).toHaveLength(1)
+    expect(req?.profile.facts?.map((f) => f.kind)).toEqual(['horizontal'])
+  })
+
+  it('click 3 previews two segments off the SHARED vertex', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0.2 }, { u: 25, v: 15 }]) s = commitPoint(s, p)
+    const req = previewRequest(s)
+    expect(req?.profile.points).toHaveLength(3)
+    expect(req?.profile.segments).toHaveLength(2)
+    expect(req?.profile.segments?.[0].end).toEqual(req?.profile.segments?.[1].start)
+  })
+
+  it('the end gesture changes NOTHING — the before/after graphs are byte-identical', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0.2 }, { u: 25, v: 15 }]) s = commitPoint(s, p)
+    const before = previewRequest(s)
+    const after = previewRequest(endTool(s))
+    expect(JSON.stringify(after?.profile)).toBe(JSON.stringify(before?.profile))
+  })
+
+  it('first-point close DOES change the graph — the closing segment is new geometry', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    for (const p of [{ u: 0, v: 0 }, { u: 20, v: 0 }, { u: 10, v: 15 }]) s = commitPoint(s, p)
+    const open = previewRequest(s)
+    const closed = previewRequest(commitPoint(s, { u: 0, v: 0 }, { closeToleranceMm: 1 }))
+    expect(open?.profile.segments).toHaveLength(2)
+    expect(closed?.profile.segments).toHaveLength(3)
+  })
+
+  it('Close settlement commits exactly the graph most recently previewed', () => {
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    s = commitPoint(s, { u: 0, v: 0 })
+    s = commitPoint(s, { u: 20, v: 0.4 })
+    const previewed = previewRequest(s)?.profile
+    const intent = commitIntent(endTool(s), 'P-000001') // what close() settles to
+    expect(JSON.stringify(intent?.params.profile)).toBe(JSON.stringify(previewed))
+  })
+
+  it('abandoning the run removes it from the graph', () => {
+    let s = drawLine(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS))
+    s = commitPoint(s, { u: 40, v: 0 })
+    s = commitPoint(s, { u: 60, v: 5 })
+    expect(previewRequest(s)?.profile.segments).toHaveLength(2)
+    expect(previewRequest(abandonRun(s))?.profile.segments).toHaveLength(1)
+  })
+
+  it('shrinking the graph to EMPTY clears the solved result — no stale overlay', () => {
+    const solved = { points: [] } as unknown as NonNullable<ProfileSessionState['preview']>
+    // abandon the only run
+    let s = openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)
+    s = commitPoint(commitPoint(s, { u: 0, v: 0 }), { u: 20, v: 0 })
+    s = applyPreview(s, { preview: solved, refusal: null })
+    expect(abandonRun(s).preview).toBeNull()
+    // undo the only part
+    let t = drawLine(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS))
+    t = applyPreview(t, { preview: solved, refusal: null })
+    expect(undoLastPart(t).preview).toBeNull()
+    // …but with geometry REMAINING, the last solve stands until replaced
+    let u = drawLine(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS))
+    u = commitPoint(commitPoint(u, { u: 40, v: 0 }), { u: 60, v: 5 })
+    u = applyPreview(u, { preview: solved, refusal: null })
+    expect(abandonRun(u).preview).not.toBeNull()
+  })
+})
+
 describe('the preview is a READ that never ends the session', () => {
   it('the request carries the owner the engine expects', () => {
     const create = previewRequest(drawLine(openCreate(PLACEMENT, 'draft1', FRAME, TARGET, OPTS)))

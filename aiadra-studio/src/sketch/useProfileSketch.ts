@@ -199,7 +199,9 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     [run],
   )
 
-  // Every change to the drawn graph asks for a fresh preview. Requests
+  // Every change to the drawn graph asks for a fresh preview — and the graph
+  // includes the in-progress chain run (Codex11 B1: the engine solves per
+  // completed SEGMENT; click 2 previews the one-segment graph). Requests
   // coalesce, so a fast sequence of clicks cannot outrun the engine.
   const lastSent = useRef<string | null>(null)
   useEffect(() => {
@@ -209,7 +211,12 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     }
     const req = previewRequest(session)
     if (req === null) {
+      // Nothing left to preview (an abandoned run, an undo to empty). The
+      // SESSION action already cleared its own preview state (the pure-layer
+      // invariant); here we only stop an in-flight reply from resurrecting
+      // stale geometry.
       lastSent.current = null
+      requester.cancel()
       return
     }
     // The cursor is live state and is NOT part of the graph, so hovering
@@ -363,9 +370,11 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
       // that feature's committed overlay while the live preview replaces it,
       // and restores it the moment the session ends (Codex6 B1).
       ownedFeatureId: session.owner.kind === 'edit' ? session.owner.sketchFeatureId : null,
-      // W-2: the in-progress chain — DRAWN nominals, display-only. The engine
-      // preview still updates per completed shape and stays the solve
-      // authority; this echo only makes the run visible while it is drawn.
+      // W-2: the in-progress chain — DRAWN nominals, display-only. The
+      // engine previews PER COMPLETED SEGMENT (Codex11 B1 — the run is in
+      // `currentProfile`) and stays the solve authority; this echo carries
+      // the rubber segment to the cursor and the instant nominal feedback
+      // between a click and its asynchronous solve reply.
       chain:
         session.tool.kind === 'line' && session.tool.pending.length > 0
           ? { pending: session.tool.pending, cursor: session.tool.cursor }

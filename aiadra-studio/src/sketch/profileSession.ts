@@ -137,7 +137,7 @@ export function openEdit(
 export function setTool(s: ProfileSessionState, kind: ProfileToolKind): ProfileSessionState {
   // Switching tools abandons the in-progress run — it never half-commits a
   // partial shape into `parts`.
-  return { ...s, tool: freshTool(kind) }
+  return withPreviewConsistency({ ...s, tool: freshTool(kind) })
 }
 
 export function moveCursor(s: ProfileSessionState, at: DrawnPoint | null): ProfileSessionState {
@@ -209,11 +209,23 @@ export function hasRun(s: ProfileSessionState): boolean {
   return s.tool.pending.length > 0
 }
 
+/**
+ * The pure-layer preview invariant: a session whose graph holds NOTHING must
+ * not keep showing a solved result or a refusal for geometry it no longer
+ * has. Applied by every action that can SHRINK the graph to empty (abandon,
+ * tool switch, undo) — the hook's effect only stops in-flight replies.
+ */
+function withPreviewConsistency(s: ProfileSessionState): ProfileSessionState {
+  if (s.preview === null && s.refusal === null) return s
+  if (currentProfile(s) !== null) return s
+  return { ...s, preview: null, refusal: null }
+}
+
 /** Abandon the in-progress run (Escape). Completed shapes stay; the tool
  *  re-arms empty. Distinct from `setTool` in intent, identical in effect —
  *  named so the Escape path states what it does. */
 export function abandonRun(s: ProfileSessionState): ProfileSessionState {
-  return { ...s, tool: freshTool(s.tool.kind) }
+  return withPreviewConsistency({ ...s, tool: freshTool(s.tool.kind) })
 }
 
 function completeWith(s: ProfileSessionState, closed = false): ProfileSessionState {
@@ -245,7 +257,7 @@ function completeWith(s: ProfileSessionState, closed = false): ProfileSessionSta
 /** Drop the most recent completed drawing (the sketcher's undo). */
 export function undoLastPart(s: ProfileSessionState): ProfileSessionState {
   if (s.parts.length === 0) return s
-  return { ...s, parts: s.parts.slice(0, -1) }
+  return withPreviewConsistency({ ...s, parts: s.parts.slice(0, -1) })
 }
 
 export function applyPreview(
@@ -260,15 +272,40 @@ export function applyPreview(
 }
 
 /**
+ * The in-progress chain as a graph fragment (Codex11 B1: the engine previews
+ * PER COMPLETED SEGMENT — two vertices down IS a segment, and every later
+ * click extends the graph the engine solves; only the cursor stays out).
+ *
+ * It compiles through the SAME `buildPolyline` call `completeWith` uses, so
+ * the graph is BYTE-IDENTICAL before and after the end gesture — ending the
+ * chain can neither duplicate geometry nor trigger a redundant solve, and
+ * Close commits exactly the graph most recently previewed.
+ */
+function pendingRunPart(s: ProfileSessionState): ProfilePayload | null {
+  if (s.tool.kind !== 'line' || s.tool.pending.length < 2) return null
+  try {
+    return buildPolyline(s.tool.pending, { snapAngleToleranceDeg: s.snapAngleToleranceDeg })
+  } catch {
+    // mirrors completeWith: a degenerate run previews nothing rather than
+    // sending a graph the builder itself refuses
+    return null
+  }
+}
+
+/**
  * The graph as it currently stands — what both the preview and the commit are
- * built from, so they can never describe different things.
+ * built from, so they can never describe different things. Completed shapes
+ * AND the in-progress chain run participate (Codex11 B1); the end gesture
+ * merely moves the run from `pending` into `parts` without changing content.
  *
  * On the EDIT path the committed baseline leads: records the user did not
  * touch are re-sent under their own ids, which is what preserves their
  * identity under the survival law. Newly drawn parts follow under fresh keys.
  */
 export function currentProfile(s: ProfileSessionState): ProfilePayload | null {
-  const drawn = s.parts.length > 0 ? mergeProfiles(s.parts) : null
+  const run = pendingRunPart(s)
+  const shapes = run !== null ? [...s.parts, run] : s.parts
+  const drawn = shapes.length > 0 ? mergeProfiles(shapes) : null
   if (s.owner.kind === 'create') return drawn
   if (drawn === null) return s.owner.baseline
   return {
