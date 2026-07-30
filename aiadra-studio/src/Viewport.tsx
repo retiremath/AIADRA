@@ -19,6 +19,7 @@ import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
 import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
+import { createProfileOverlay, type ProfileGeometry } from './sketch/profileOverlay'
 import {
   arbitratePlanePick,
   frameFromNormalAndPoint,
@@ -99,6 +100,11 @@ export type SketchInteractionMode =
   | { kind: 'planePick' }
   | { kind: 'sketch'; frame: PlaneFrameTS; tool: SketchTool; construction: boolean }
   | { kind: 'sketchSolicit'; eligibleIds: ReadonlySet<string> }
+  /** ADR/0044 A4 (arc 20260730-1): the v2 PROFILE drawing mode. `geometry` is
+   *  the ENGINE's last preview — the viewport renders it and derives nothing.
+   *  Clicks and cursor motion ride the same `onSketchPlace`/`onSketchCursor`
+   *  callbacks as the v1 lane, in the same plane-local mm. */
+  | { kind: 'profile'; frame: PlaneFrameTS; geometry: ProfileGeometry | null }
 
 /** S3: the resolved pick — a datum enum, or an ENGINE-PLANAR face enriched
  *  with the TRANSIENT mirror frame (drawing-only; the engine re-derives). */
@@ -845,7 +851,12 @@ export default function Viewport({
     const sketchEdit = createSketchEditOverlay()
     sketchEdit.group.visible = false
     scene.add(sketchEdit.group)
-    let modeKind: 'none' | 'planePick' | 'sketch' | 'sketchSolicit' = 'none'
+    // ADR/0044 A4: the solved-profile overlay. A sibling lane to sketchEdit
+    // with the same identity rules — overlay-only, never a pick target.
+    const profileOverlay = createProfileOverlay()
+    profileOverlay.group.visible = false
+    scene.add(profileOverlay.group)
+    let modeKind: 'none' | 'planePick' | 'sketch' | 'sketchSolicit' | 'profile' = 'none'
     let sketchFrame: PlaneFrameTS | null = null
     let hoveredQuad: THREE.Mesh | null = null
     let datumsPriorVisible: boolean | null = null
@@ -1032,10 +1043,28 @@ export default function Viewport({
         sketchFrame = null
         sketchCbRef.current.onContextHover?.(null)
       }
+      if (kind === 'profile' && modeKind !== 'profile' && m?.kind === 'profile') {
+        ghostPart(true)
+        profileOverlay.group.visible = true
+        applySketchFraming(m.frame)
+      }
+      if (kind !== 'profile' && modeKind === 'profile') {
+        ghostPart(false)
+        profileOverlay.group.visible = false
+        profileOverlay.update(null, [0, 0, 1])
+        sketchFrame = null
+        sketchCbRef.current.onContextHover?.(null)
+      }
       modeKind = kind
       if (m?.kind === 'sketch') {
         sketchFrame = m.frame
         sketchEdit.update(m.frame, m.tool, m.construction)
+      }
+      if (m?.kind === 'profile') {
+        sketchFrame = m.frame
+        // The engine's world points arrive already mapped; the frame normal
+        // is passed only so a circle is tessellated IN the sketch plane.
+        profileOverlay.update(m.geometry, m.frame.normal)
       }
     }
     applyInteractionRef.current = applyInteraction
@@ -1077,7 +1106,7 @@ export default function Viewport({
         }
         return // never canonical selection from pick mode (Codex1 B4.3)
       }
-      if (modeKind === 'sketch') {
+      if (modeKind === 'sketch' || modeKind === 'profile') {
         // drawing tools own placement clicks (Codex3 bar 5); canonical
         // topology stays hover-only in this arc
         const uv = sketchUvAt(e.clientX, e.clientY)
@@ -1140,7 +1169,7 @@ export default function Viewport({
         }
         return
       }
-      if (modeKind === 'sketch') {
+      if (modeKind === 'sketch' || modeKind === 'profile') {
         // the live cursor rides the TRUE plane (display lift is render-only)…
         sketchCbRef.current.onSketchCursor?.(sketchUvAt(e.clientX, e.clientY))
         // …and canonical topology stays HOVERABLE (Codex2 B5.7 — the SK-E
@@ -1156,7 +1185,9 @@ export default function Viewport({
       hovId = next
       // Codex4 B1.3: while sketching, the hovered canonical id is SURFACED —
       // observable evidence + the operator affordance the SK-E tools build on.
-      if (modeKind === 'sketch') sketchCbRef.current.onContextHover?.(next)
+      if (modeKind === 'sketch' || modeKind === 'profile') {
+        sketchCbRef.current.onContextHover?.(next)
+      }
       repaintHighlights()
     }
     const onPointerMove = (e: PointerEvent) => {
@@ -1166,7 +1197,7 @@ export default function Viewport({
     const onPointerLeave = () => {
       navCube.setHover(null)
       setQuadHover(null)
-      if (modeKind === 'sketch') {
+      if (modeKind === 'sketch' || modeKind === 'profile') {
         sketchCbRef.current.onSketchCursor?.(null)
         sketchCbRef.current.onContextHover?.(null)
       }
@@ -1356,6 +1387,7 @@ export default function Viewport({
       navCube.dispose()
       applyInteractionRef.current = null
       sketchEdit.dispose()
+      profileOverlay.dispose()
       controls.dispose()
       removePart()
       for (const g of importGroups.values()) disposeGroup(g)

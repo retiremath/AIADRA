@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import Viewport, { type SketchInteractionMode, type ViewportApi } from './Viewport'
+import { useProfileSketch } from './sketch/useProfileSketch'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
 import { createOperationStore, useOperation, type OperationStore } from './operation/store'
@@ -1459,7 +1460,23 @@ function Workbench({
     return eligibleExtrudeSketchIds(part)
   }, [authoringSession, partFacts.readyPart])
 
+  // ADR/0044 A4 (arc 20260730-1): the v2 PROFILE lane. It owns its own
+  // session, preview round trip and interaction mode, so integrating it here
+  // is three lines rather than another six pieces of coupled state.
+  const [snapAngleToleranceDeg] = useSetting('sketch.snapAngleToleranceDeg')
+  const [minDragPx] = useSetting('sketch.minDragPx')
+  const profileLane = useProfileSketch({
+    workspaceId: currentWs?.workspaceId ?? null,
+    partNumber: pc.partNumber,
+    frame: authoringSession.mode === 'sketch' ? supportFrame(authoringSession.support) : null,
+    snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
+    minDragPx: Number(minDragPx),
+  })
+
   const interactionMode = useMemo<SketchInteractionMode | null>(() => {
+    // The profile session takes the surface while it is open — it is the one
+    // mode that owns both the drawing plane and what is rendered on it.
+    if (profileLane.mode !== null) return profileLane.mode
     if (authoringSession.mode === 'planePick') return { kind: 'planePick' }
     if (
       authoringSession.mode === 'extrude'
@@ -1482,7 +1499,7 @@ function Workbench({
       }
     }
     return null
-  }, [authoringSession, solicitEligibleIds])
+  }, [authoringSession, solicitEligibleIds, profileLane.mode])
 
   // A generation change INVALIDATES the whole pick→sketch interaction
   // FAIL-CLOSED (Codex4 B2) — a DISTINCT transition from user Escape/cancel:
@@ -1860,10 +1877,16 @@ function Workbench({
                   if (!eligibleExtrudeSketchIds(partSnap.inspection.part).has(sketchId)) return
                   authoringStore.chooseCommittedSketch(sketchId)
                 }}
-                onSketchPlace={(uv) =>
-                  routeSketchPlacement(authoringStore, uv, partContext.getSnapshot().generation)
-                }
-                onSketchCursor={(uv) => authoringStore.setCursor(uv ? { x: uv.u, y: uv.v } : null)}
+                onSketchPlace={(uv) => {
+                  // ONE surface, two lanes: the open profile session wins;
+                  // otherwise the v1 pad keeps its behaviour verbatim.
+                  if (profileLane.active) profileLane.place(uv)
+                  else routeSketchPlacement(authoringStore, uv, partContext.getSnapshot().generation)
+                }}
+                onSketchCursor={(uv) => {
+                  if (profileLane.active) profileLane.cursor(uv)
+                  else authoringStore.setCursor(uv ? { x: uv.u, y: uv.v } : null)
+                }}
                 onContextHover={setContextHover}
               />
             </>

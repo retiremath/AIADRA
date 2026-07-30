@@ -32,7 +32,7 @@ export interface ProfileGeometry {
 export interface ProfileOverlay {
   group: THREE.Group
   /** Re-render from an engine result. `null` clears without disposing. */
-  update(geometry: ProfileGeometry | null, frameNormal: [number, number, number]): void
+  update(geometry: ProfileGeometry | null, frameNormal: readonly [number, number, number]): void
   dispose(): void
 }
 
@@ -107,7 +107,7 @@ export function createProfileOverlay(): ProfileOverlay {
     disposables.push(sprite.material, (sprite.material as THREE.SpriteMaterial).map as THREE.Texture)
   }
 
-  const update = (geometry: ProfileGeometry | null, frameNormal: [number, number, number]) => {
+  const update = (geometry: ProfileGeometry | null, frameNormal: readonly [number, number, number]) => {
     clear()
     if (geometry === null) return
     const byId = new Map(geometry.points.map((p) => [p.id, v3(p.world)]))
