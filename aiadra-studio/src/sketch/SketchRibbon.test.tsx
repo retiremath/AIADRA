@@ -164,3 +164,74 @@ describe('the Sketch ribbon (the dedicated Sketch-tab grammar)', () => {
     expect((screen.getByRole('button', { name: 'Reopen' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
+  const profileProp = (over: Record<string, unknown> = {}) => ({
+    active: true,
+    closing: false,
+    refusal: null,
+    close: () => {},
+    cancel: () => {},
+    setTool: () => {},
+    finishTool: () => {},
+    undo: () => {},
+    toolKind: 'line' as const,
+    ...over,
+  })
+
+  it('renders the profile tools + EXACTLY ONE terminal with the v1 store IDLE', () => {
+    // Codex7 B1: the production composition seam — a profile-only session
+    // (legacy store idle) must reach the profile grammar. The App now selects
+    // this ribbon on `sketch-mode OR profileLane.active`; this proves what
+    // that selection mounts: tools present, one OK, one Cancel, and NO legacy
+    // groups that could end a session they do not own.
+    const store = createAuthoringSessionStore() // idle — never entered sketch
+    render(
+      <SketchRibbon {...harness(store)} onSketchView={() => {}} profile={profileProp()} />,
+    )
+    for (const label of ['Line', 'Contour', 'Rectangle', 'Circle', 'Undo']) {
+      expect(screen.getByRole('button', { name: label })).toBeTruthy()
+    }
+    expect(screen.getAllByRole('button', { name: /OK/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(1)
+    // the legacy grammar is ABSENT — one terminal owner
+    expect(screen.queryByRole('button', { name: 'Close ring' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Constr.' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sketch view' })).toBeNull()
+  })
+
+  it('the profile grammar WINS even if a legacy session exists (defense in depth)', () => {
+    const store = enterSketch()
+    render(
+      <SketchRibbon {...harness(store)} onSketchView={() => {}} profile={profileProp()} />,
+    )
+    expect(screen.getAllByRole('button', { name: /OK/ })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Close ring' })).toBeNull()
+  })
+
+  it('an in-flight terminal disables every control (single-flight)', () => {
+    const store = createAuthoringSessionStore()
+    render(
+      <SketchRibbon
+        {...harness(store)}
+        onSketchView={() => {}}
+        profile={profileProp({ closing: true })}
+      />,
+    )
+    for (const btn of screen.getAllByRole('button')) {
+      expect((btn as HTMLButtonElement).disabled).toBe(true)
+    }
+  })
+
+  it('an engine refusal is shown beside the tools, not swallowed', () => {
+    const store = createAuthoringSessionStore()
+    render(
+      <SketchRibbon
+        {...harness(store)}
+        onSketchView={() => {}}
+        profile={profileProp({ refusal: 'segment collapsed' })}
+      />,
+    )
+    expect(screen.getByText('segment collapsed')).toBeTruthy()
+  })
+})

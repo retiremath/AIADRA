@@ -21,6 +21,7 @@ import type { PlaneFrameTS } from './planeFrame'
 import type { ProfileGeometry } from './profileOverlay'
 import {
   applyPreview,
+  type SessionTarget,
   cancel as cancelSession,
   commitIntent,
   commitPoint,
@@ -41,8 +42,6 @@ import type { DrawnPoint } from './snapProposal'
 /** What the hook needs from the shell. Deliberately narrow — no store, no
  *  viewport handle, no bridge object: just identity and the two settings. */
 export interface ProfileSketchDeps {
-  workspaceId: string | null
-  partNumber: string | null
   snapAngleToleranceDeg: number
   minDragPx: number
   /** The engine that owns this sketch. Codex6 B3: carried EXPLICITLY from
@@ -60,7 +59,12 @@ export interface ProfileSketchDeps {
   ) => Promise<PreviewResult>
   /** Called on Close with the operation to run. The Workbench owns the
    *  authoring session/commit lane; this hook never writes. */
-  onCommit?: (intent: { kind: string; params: Record<string, unknown> }) => void
+  onCommit?: (intent: { kind: string; params: Record<string, unknown> }, target: SessionTarget) => void
+  /** Codex7 B2: terminal-start revalidation of the CAPTURED tuple against the
+   *  live shell. Non-null = the refusal to surface; Close then does NOT run.
+   *  (Defense in depth — the App also cancels the session outright on
+   *  generation invalidation.) */
+  validateTarget?: (target: SessionTarget) => string | null
 }
 
 export interface ProfileSketchLane {
@@ -72,8 +76,13 @@ export interface ProfileSketchLane {
   refusal: string | null
   /** Null unless a session is open — merge into the Workbench's mode memo. */
   mode: SketchInteractionMode | null
-  openCreateSession(placement: SketchPlacementInput, frame: PlaneFrameTS): void
-  openEditSession(sketchFeatureId: string, baseline: ProfilePayload, frame: PlaneFrameTS): void
+  openCreateSession(placement: SketchPlacementInput, frame: PlaneFrameTS, target: SessionTarget): void
+  openEditSession(
+    sketchFeatureId: string,
+    baseline: ProfilePayload,
+    frame: PlaneFrameTS,
+    target: SessionTarget,
+  ): void
   setTool(kind: ProfileToolKind): void
   place(uv: { u: number; v: number }): void
   cursor(uv: { u: number; v: number } | null): void
@@ -150,18 +159,20 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
       createPreviewRequester<{
         profile: ProfilePayload
         owner: { sketchFeatureId: string } | { placement: SketchPlacementInput; candidateKey: string }
+        target: SessionTarget
       }>({
         run: (req) => {
-          const { workspaceId, partNumber } = depsRef.current
-          if (!workspaceId || !partNumber) {
+          // Codex7 B2: the CAPTURED tuple, never the shell's current values —
+          // a preview can never silently retarget to a navigated-to Part.
+          if (!req.target.workspaceId) {
             return Promise.resolve({
               preview: null,
-              refusal: { message: 'no open workspace or active Part' },
+              refusal: { message: 'no open workspace' },
             })
           }
           return run(
-            workspaceId,
-            partNumber,
+            req.target.workspaceId,
+            req.target.partNumber,
             depsRef.current.engineId ?? MECHANICAL,
             req.profile,
             req.owner,
@@ -199,7 +210,7 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     const key = JSON.stringify(req.profile)
     if (key === lastSent.current) return
     lastSent.current = key
-    requester.request(req)
+    requester.request({ ...req, target: session.target })
   }, [session, requester])
 
   useEffect(() => () => requester.cancel(), [requester])
@@ -207,11 +218,11 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
   const [closing, setClosing] = useState(false)
 
   const openCreateSession = useCallback(
-    (placement: SketchPlacementInput, frame: PlaneFrameTS) => {
+    (placement: SketchPlacementInput, frame: PlaneFrameTS, target: SessionTarget) => {
       const d = depsRef.current
       setClosing(false)
       setSession(
-        openCreate(placement, nextCandidateKey(), frame, {
+        openCreate(placement, nextCandidateKey(), frame, target, {
           snapAngleToleranceDeg: d.snapAngleToleranceDeg,
           minDragPx: d.minDragPx,
         }),
@@ -221,11 +232,11 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
   )
 
   const openEditSession = useCallback(
-    (sketchFeatureId: string, baseline: ProfilePayload, frame: PlaneFrameTS) => {
+    (sketchFeatureId: string, baseline: ProfilePayload, frame: PlaneFrameTS, target: SessionTarget) => {
       const d = depsRef.current
       setClosing(false)
       setSession(
-        openEdit(sketchFeatureId, baseline, frame, {
+        openEdit(sketchFeatureId, baseline, frame, target, {
           snapAngleToleranceDeg: d.snapAngleToleranceDeg,
           minDragPx: d.minDragPx,
         }),
@@ -260,8 +271,14 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     if (closingRef.current) return // single-flight: one terminal in motion
     setSession((s) => {
       if (s === null) return s
-      if (!d.partNumber) return s
-      const intent = commitIntent(s, d.partNumber)
+      // Codex7 B2: terminal-start revalidation of the CAPTURED tuple — the
+      // mid-flight check in the runner cannot see a retarget that happened
+      // BEFORE Close was pressed.
+      const staleness = d.validateTarget?.(s.target) ?? null
+      if (staleness !== null) {
+        return applyPreview(s, { preview: null, refusal: { message: staleness } })
+      }
+      const intent = commitIntent(s, s.target.partNumber)
       if (intent === null) {
         // A create session with nothing drawn has no transaction at all —
         // Close and Cancel coincide, which is the correct behaviour.
@@ -273,7 +290,7 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
       // recoverable drawing, and a cleared session cannot be recovered).
       closingRef.current = true
       setClosing(true)
-      d.onCommit?.(intent)
+      d.onCommit?.(intent, s.target)
       return s
     })
   }, [requester])

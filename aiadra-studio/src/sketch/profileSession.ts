@@ -30,6 +30,15 @@ import type { PlaneFrameTS } from './planeFrame'
 
 export type ProfileToolKind = 'line' | 'polyline' | 'rectangle' | 'circle'
 
+/** The authority tuple captured at session OPEN (Codex7 B2): every preview
+ *  and the terminal use THIS, never the shell's current values — a session
+ *  opened against Part A can never be silently retargeted to Part B. */
+export interface SessionTarget {
+  workspaceId: string | null
+  partNumber: string
+  generation: number
+}
+
 /** The in-progress tool. `pending` are confirmed clicks; `cursor` is live. */
 export interface ToolState {
   kind: ProfileToolKind
@@ -59,6 +68,8 @@ export interface ProfileSessionState {
    *  session owns its frame — no other lifecycle's death can take it away
    *  from an active drawing. */
   frame: PlaneFrameTS
+  /** Captured at OPEN; revalidated at terminal start (Codex7 B2). */
+  target: SessionTarget
   tool: ToolState
   /** Completed drawings this session, in order. */
   parts: ProfilePayload[]
@@ -83,11 +94,13 @@ export function openCreate(
   placement: SketchPlacementInput,
   candidateKey: string,
   frame: PlaneFrameTS,
+  target: SessionTarget,
   opts: OpenOptions,
 ): ProfileSessionState {
   return {
     owner: { kind: 'create', placement, candidateKey },
     frame,
+    target,
     tool: freshTool(opts.tool ?? 'line'),
     parts: [],
     preview: null,
@@ -101,11 +114,13 @@ export function openEdit(
   sketchFeatureId: string,
   baseline: ProfilePayload,
   frame: PlaneFrameTS,
+  target: SessionTarget,
   opts: OpenOptions,
 ): ProfileSessionState {
   return {
     owner: { kind: 'edit', sketchFeatureId, baseline },
     frame,
+    target,
     tool: freshTool(opts.tool ?? 'line'),
     parts: [],
     preview: null,

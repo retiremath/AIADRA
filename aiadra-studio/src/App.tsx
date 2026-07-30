@@ -719,7 +719,11 @@ function Workbench({
   // Authoring dispatch (arc 20260711-11): the Model ribbon starts either the
   // sketch pad (draw a contour) or the extrude feature session. One at a time.
   const authoringSession = useAuthoringSession(authoringStore)
-  const authoringBusy = authoringSession.mode !== 'idle'
+  // Codex7 B2: profile pick/session/terminal activity participates in the
+  // SAME global gate as every other lifecycle — declared here (before the
+  // gate composes) and maintained by the profile lane's effect below.
+  const [profileBusy, setProfileBusy] = useState(false)
+  const authoringBusy = authoringSession.mode !== 'idle' || profileBusy
   // The live canonical selection (transient UI state — enablement only; the
   // capture happens at session start, D-R8).
   const selectionSnap = useSyncExternalStore(selectionStore.subscribe, selectionStore.getSnapshot)
@@ -976,9 +980,18 @@ function Workbench({
           return
         }
         const { u, v, n } = derivePlacementFrame(feat.placement)
-        profileLane.openEditSession(featureId, feat.profile, {
-          origin: [0, 0, 0], u, v, normal: n,
-        })
+        const snap = partContext.getSnapshot()
+        if (snap.partNumber === null) return
+        profileLane.openEditSession(
+          featureId,
+          feat.profile,
+          { origin: [0, 0, 0], u, v, normal: n },
+          {
+            workspaceId: currentWs?.workspaceId ?? null,
+            partNumber: snap.partNumber,
+            generation: snap.generation,
+          },
+        )
         return
       }
       if (feat && feat.kind === 'sketchV2') {
@@ -1497,14 +1510,22 @@ function Workbench({
   // the drawing recoverable; a generation change never installs stale success.
   const profileLaneRef = useRef<ReturnType<typeof useProfileSketch> | null>(null)
   const profileLane = useProfileSketch({
-    workspaceId: currentWs?.workspaceId ?? null,
-    partNumber: pc.partNumber,
     snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
     minDragPx: Number(minDragPx),
-    onCommit: (intent) => {
-      const partNumber = pc.partNumber
+    // Codex7 B2: terminal-start revalidation of the tuple CAPTURED at open.
+    validateTarget: (t) => {
+      const live = partContext.getSnapshot()
+      if ((currentWs?.workspaceId ?? null) !== t.workspaceId) {
+        return 'the workspace changed under this sketch — the session is stale (nothing was written)'
+      }
+      if (live.partNumber !== t.partNumber || live.generation !== t.generation) {
+        return 'the Part context changed under this sketch — the session is stale (nothing was written)'
+      }
+      return null
+    },
+    onCommit: (intent, target) => {
       const lane = profileLaneRef.current
-      if (!partNumber || !lane) return
+      if (!lane) return
       void runProfileClose(intent, {
         backend: {
           begin: (ops) => featureBackend.begin(ops as never).then((r) => ({ sessionId: r.sessionId })),
@@ -1512,9 +1533,10 @@ function Workbench({
           rollback: (sid) => featureBackend.rollback(sid),
         },
         lane,
-        partNumber,
+        // the CAPTURED Part, never the current one (Codex7 B2)
+        partNumber: target.partNumber,
         generation: () => partContext.getSnapshot().generation,
-        adopt: (display) => adoptPart(currentWs?.workspaceId ?? null, partNumber, display),
+        adopt: (display) => adoptPart(target.workspaceId, target.partNumber, display),
       })
     },
   })
@@ -1523,6 +1545,26 @@ function Workbench({
   // profile session, with the v1 authoring store IDLE throughout — the two
   // lifecycles are never nested (Codex6 B2).
   const [profilePick, setProfilePick] = useState(false)
+  // Codex7 B2 — the gate: pick, live session and in-flight terminal all
+  // count as authoring activity (one render behind, which the action-time
+  // gateRef read absorbs; the tuple revalidation below is the semantic lock).
+  useEffect(() => {
+    setProfileBusy(profilePick || profileLane.active || profileLane.closing)
+  }, [profilePick, profileLane.active, profileLane.closing])
+  // Codex7 B2 — generation invalidation unwinds the profile lane WITHOUT
+  // writing, exactly like the legacy planePick/sketch effect: the pick dies
+  // with any generation change; an open session dies when the generation it
+  // captured is gone.
+  useEffect(() => {
+    if (profilePick) setProfilePick(false)
+    if (
+      profileLane.session !== null &&
+      profileLane.session.target.generation !== pc.generation
+    ) {
+      void profileLane.cancel()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pc.generation])
   useEffect(() => {
     if (!profilePick) return
     const onKey = (e: KeyboardEvent) => {
@@ -1788,9 +1830,12 @@ function Workbench({
         <FileMenu items={fileItems} />
         {appSession === 'home' ? (
           <span className="rtab active">Home</span>
-        ) : authoringSession.mode === 'sketch' ? (
+        ) : authoringSession.mode === 'sketch' || profileBusy ? (
           // pass sketch-ribbon-1: entering a sketch ADDS the dedicated Sketch
-          // tab and activates it; Model stays visible but inactive.
+          // tab and activates it; Model stays visible but inactive. Codex7
+          // B1: the PROFILE session selects the same tab — with the v1 store
+          // idle by design, keying on it alone rendered the Model ribbon and
+          // stranded the session with no tools and no terminal.
           <>
             <span className="rtab">Model</span>
             <span className="rtab active">Sketch</span>
@@ -1818,7 +1863,7 @@ function Workbench({
       )}
       {appSession === 'modeling' && (
         <>
-      {authoringSession.mode === 'sketch' ? (
+      {authoringSession.mode === 'sketch' || profileLane.active ? (
         // sketch-ribbon-1: the Sketch tab's ribbon REPLACES the Model ribbon
         // while the session is active (ADR/0040 D4 — one session, projected);
         // increment 2: the ribbon owns the whole surface incl. the Close
@@ -1944,12 +1989,21 @@ function Workbench({
                     // to the profile lane in I1 (same rule as placement).
                     if (hit.kind !== 'datum') return
                     setProfilePick(false)
+                    const snap = partContext.getSnapshot()
+                    if (snap.partNumber === null) return
                     const placement = {
                       support: { kind: 'principal' as const, orientation: hit.orientation },
                     }
-                    profileLane.openCreateSession(placement, supportFrame({
-                      kind: 'principal', orientation: hit.orientation,
-                    }))
+                    profileLane.openCreateSession(
+                      placement,
+                      supportFrame({ kind: 'principal', orientation: hit.orientation }),
+                      // the authority tuple, CAPTURED at open (Codex7 B2)
+                      {
+                        workspaceId: currentWs?.workspaceId ?? null,
+                        partNumber: snap.partNumber,
+                        generation: snap.generation,
+                      },
+                    )
                     return
                   }
                   if (hit.kind === 'datum') authoringStore.resolvePlanePick(hit.orientation)

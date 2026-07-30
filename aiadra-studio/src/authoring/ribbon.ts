@@ -274,7 +274,7 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // CREATE entry — plane pick → the v2 profile drawing session, with the v1
   // authoring store idle throughout (the lifecycles never nest). I3 routes
   // ordinary Sketch here and retires this command.
-  { key: 'profile-sketch', label: 'Profile', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 2) },
+  { key: 'profile-sketch', label: 'Profile Sketch', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 2) },
   // Shapes
   { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
   { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },
