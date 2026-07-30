@@ -164,7 +164,7 @@ def _is_number(v: Any) -> bool:
 # with no contract semantics.
 _POINT_KEYS = {"id", "type", "construction", "nominal"}
 _LINE_KEYS = {"id", "type", "construction", "start", "end"}
-_CIRCLE_KEYS = {"id", "type", "construction", "center", "radius"}
+_CIRCLE_KEYS = {"id", "type", "construction", "center", "nominal"}
 _CONSTRAINT_KEYS = {"id", "kind", "args"}
 _NOMINAL_KEYS = {"x", "y"}
 _WEAK_TARGET_KEYS = {"entity", "parameter"}
@@ -329,8 +329,13 @@ def admit_graph(entities: Sequence[Mapping[str, Any]],
         if etype == "circle":
             if not isinstance(e.get("center"), str):
                 _fail(f"circle {eid!r} center must be an entity-id string")
-            if not _is_number(e.get("radius")):
-                _fail(f"circle {eid!r} radius must be a strict finite number")
+            # the authored radius nominal lives in `nominal`, exactly like a
+            # point's coordinates (solver SCHEMA.md §1 parameter catalogue)
+            nom = e.get("nominal")
+            if not (isinstance(nom, Mapping) and set(nom.keys()) == {"radius"}
+                    and _is_number(nom.get("radius"))):
+                _fail(f"circle {eid!r} nominal must be exactly "
+                      "{radius: strict finite number}")
         ents[eid] = e
 
     seen_cids: set[str] = set()
@@ -537,7 +542,7 @@ def admit_graph(entities: Sequence[Mapping[str, Any]],
         effective[_scalar(p, "x")] = x
         effective[_scalar(p, "y")] = y
     for c_ in pro_circles:
-        effective[_scalar(c_, "radius")] = float(ents[c_]["radius"])
+        effective[_scalar(c_, "radius")] = float(ents[c_]["nominal"]["radius"])
     # weak magnitudes override, and propagate across each equality class —
     # the values the solve will ACTUALLY pin.
     for target, mag in magnitudes.items():

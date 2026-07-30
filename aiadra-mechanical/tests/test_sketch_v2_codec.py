@@ -100,10 +100,20 @@ class TestRecordRefusals:
             sketch_v2.validate_v2_sketch_record(rec)
 
     def test_unknown_v2_minor_refuses(self):
-        # 0.2.1 became a DEFINED writer version (ADR/0044 A3) — the unknown
-        # minor moves up; the refusal law is unchanged.
-        rec = _record(adapter_schema_version="0.2.2")
+        # 0.2.1 (A3) and then 0.2.2 (A4) became DEFINED writer versions — the
+        # unknown minor moves up each time; the refusal law is unchanged.
+        rec = _record(adapter_schema_version="0.2.3")
         with pytest.raises(TransactionError, match="unknown 0.2.x minor"):
+            sketch_v2.validate_v2_sketch_record(rec)
+
+    def test_the_adapter_version_x_branch_policy_matrix_is_closed(self):
+        """ADR/0044 A4 (Claude2 §7, Codex5): an unknown PAIRING never
+        resolves — a historical version stamped with a newer policy, or a
+        newer version stamped with the older policy, both refuse rather than
+        being reinterpreted."""
+        rec = _record()                                   # a 0.2.0 record ...
+        rec["adapter_payload"]["branch_policy"] = "skb-b1"   # ... stamped skb-b1
+        with pytest.raises(TransactionError, match="matrix is closed"):
             sketch_v2.validate_v2_sketch_record(rec)
 
     def test_missing_and_unknown_payload_keys_refuse(self):

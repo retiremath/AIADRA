@@ -56,7 +56,7 @@ def _line(eid, s, e, construction=False):
 
 def _circle(eid, center, radius, construction=False):
     return {"id": eid, "type": "circle", "construction": construction,
-            "center": center, "radius": radius}
+            "center": center, "nominal": {"radius": radius}}
 
 
 def _con(cid, kind, target):

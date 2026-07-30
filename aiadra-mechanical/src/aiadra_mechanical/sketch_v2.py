@@ -38,6 +38,7 @@ from aiadra_core.transaction.boundary import TransactionError
 
 from .recipe import validate_plane_record
 from .solver import branch_policy
+from .solver import branch_policy_b1
 from .solver.contract import SOLVER_CONTRACT, WEAK_POLICY
 
 SKETCH_V2_ADAPTER_VERSION = "0.2.0"
@@ -45,7 +46,22 @@ SKETCH_V2_ADAPTER_VERSION = "0.2.0"
 # 0.2.0 is IMMORTAL (A3.1) — its shape, semantics, bytes, and hashes never
 # change; 0.2.1 replaces `plane` with the 4-member `placement` record.
 SKETCH_V21_ADAPTER_VERSION = "0.2.1"
+# ADR/0044 A4 (arc 20260730-1, pass sketch-line-1 I1): the PROFILE writer.
+# 0.2.2 keeps 0.2.1's closed key set and WIDENS the admitted content of
+# `entities`/`constraints` (profile points, segments, bare circles, and
+# horizontal/vertical on profile segments) under branch policy skb-b1.
+SKETCH_V22_ADAPTER_VERSION = "0.2.2"
 SKETCH_MODEL_V2 = 2
+
+# The closed adapter-version x branch-policy dispatch matrix (Claude2 §7 as
+# confirmed by Codex5). An unknown pairing — a historical version stamped
+# with a newer policy, or the converse — REFUSES at every surface; it is
+# never guessed and never silently upgraded.
+_POLICY_FOR_VERSION = {
+    SKETCH_V2_ADAPTER_VERSION: branch_policy,
+    SKETCH_V21_ADAPTER_VERSION: branch_policy,
+    SKETCH_V22_ADAPTER_VERSION: branch_policy_b1,
+}
 
 _OP = "mechanical.sketch_v2"
 
@@ -95,11 +111,11 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
             f"defined 0.2 semantics (ADR/0044 A2.4) — refuse"
         )
     version = record.get("adapter_schema_version")
-    if version not in (SKETCH_V2_ADAPTER_VERSION, SKETCH_V21_ADAPTER_VERSION):
+    if version not in _POLICY_FOR_VERSION:
         _fail(
             f"sketch {record.get('id')!r} carries {version!r}; the defined "
-            f"v2 writer versions are {SKETCH_V2_ADAPTER_VERSION!r} and "
-            f"{SKETCH_V21_ADAPTER_VERSION!r} (an unknown 0.2.x minor "
+            f"v2 writer versions are "
+            f"{sorted(_POLICY_FOR_VERSION)!r} (an unknown 0.2.x minor "
             "refuses rather than guessing)"
         )
     payload = record.get("adapter_payload")
@@ -108,6 +124,8 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
 
     # A3.1: version dispatch is EXPLICIT and centralized HERE — each literal
     # version owns its exact closed key set; no surface re-derives it.
+    # 0.2.1 and 0.2.2 share the closed key set; 0.2.2 widens the admitted
+    # CONTENT of entities/constraints, never the key vocabulary (A4).
     want_keys = _PAYLOAD_KEYS if version == SKETCH_V2_ADAPTER_VERSION else _PAYLOAD_KEYS_021
     keys = set(payload.keys())
     if keys != want_keys:
@@ -121,10 +139,18 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
 
     if payload["sketch_model"] != SKETCH_MODEL_V2:
         _fail(f"sketch_model {payload['sketch_model']!r} != {SKETCH_MODEL_V2}")
+    # The version -> branch-policy pairing is CLOSED (A4 dispatch matrix): a
+    # 0.2.1 record stamped skb-b1, or a 0.2.2 record stamped skb-b0, is an
+    # unknown pairing and refuses rather than being reinterpreted.
+    policy = _POLICY_FOR_VERSION[version]
     ids = (payload["solver_contract"], payload["weak_policy"], payload["branch_policy"])
-    want = (SOLVER_CONTRACT, WEAK_POLICY, branch_policy.POLICY_ID)
+    want = (SOLVER_CONTRACT, WEAK_POLICY, policy.POLICY_ID)
     if ids != want:
-        _fail(f"contract ids {ids!r} != the supported {want!r}")
+        _fail(
+            f"contract ids {ids!r} != the supported {want!r} for adapter "
+            f"version {version} (the adapter-version x branch-policy matrix "
+            "is closed; an unknown pairing never resolves)"
+        )
 
     if version == SKETCH_V2_ADAPTER_VERSION:
         # (validate_plane_record returns the orientation for principal records
@@ -164,8 +190,9 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
                 )
 
     if list(payload["references"]):
-        _fail("references must be empty under skb-b0 (body-edge projection "
-              "is SK-E; the fixed references ARE the construction entities)")
+        _fail("references must be empty under skb-b0 and skb-b1 (body-edge "
+              "projection is SK-E; the fixed references ARE the construction "
+              "entities)")
 
     # A2.8: nested origin blocks cross-check the record's TOP-LEVEL ids.
     for w in payload["weak_completion"]:
@@ -190,12 +217,12 @@ def validate_v2_sketch_record(record: Mapping[str, Any]) -> branch_policy.Admiss
                 )
 
     try:
-        admission = branch_policy.admit_graph(
+        admission = policy.admit_graph(
             payload["entities"], payload["constraints"],
             payload["dimensions"], payload["weak_completion"],
         )
-        branch_policy.validate_witness_set(payload["witnesses"], admission)
-    except branch_policy.OutOfDomain as exc:
+        policy.validate_witness_set(payload["witnesses"], admission)
+    except policy.OutOfDomain as exc:
         _fail(str(exc))
     return admission
 
@@ -306,6 +333,43 @@ def encode_v21_sketch(*, feature_id: str, name: str,
 # ---------------------------------------------------------------------------
 
 
+def encode_v22_sketch(*, feature_id: str, name: str,
+                      placement: Mapping[str, Any],
+                      entities: Sequence[Mapping[str, Any]],
+                      constraints: Sequence[Mapping[str, Any]],
+                      weak_completion: Sequence[Mapping[str, Any]],
+                      fact_provenance: Mapping[str, Any]) -> dict[str, Any]:
+    """Build + VALIDATE a canonical `0.2.2` PROFILE sketch record (A4).
+
+    Identical envelope to `0.2.1` — the key set is unchanged — with the
+    branch policy stamped `skb-b1` and the widened entity/constraint content
+    it admits. 0.2.0/0.2.1 bytes are untouched by this writer.
+    """
+    record = {
+        "id": feature_id,
+        "name": name,
+        "feature_type": "sketch",
+        "engine": "mechanical",
+        "adapter_schema_version": SKETCH_V22_ADAPTER_VERSION,
+        "adapter_payload": {
+            "sketch_model": SKETCH_MODEL_V2,
+            "solver_contract": SOLVER_CONTRACT,
+            "weak_policy": WEAK_POLICY,
+            "branch_policy": branch_policy_b1.POLICY_ID,
+            "placement": copy.deepcopy(dict(placement)),
+            "entities": [copy.deepcopy(dict(e)) for e in entities],
+            "constraints": [copy.deepcopy(dict(c)) for c in constraints],
+            "dimensions": [],
+            "references": [],
+            "weak_completion": [copy.deepcopy(dict(w)) for w in weak_completion],
+            "witnesses": [],
+        },
+        "fact_provenance": copy.deepcopy(dict(fact_provenance)),
+    }
+    validate_v2_sketch_record(record)
+    return record
+
+
 def _corpus_case(feature_id: str, entities: Sequence[Mapping[str, Any]],
                  constraints: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Translate an admitted v2 graph into the skb-1-shaped system the typed
@@ -316,6 +380,12 @@ def _corpus_case(feature_id: str, entities: Sequence[Mapping[str, Any]],
     for e in entities:
         if e["type"] == "point":
             ents.append({"id": e["id"], "type": "point",
+                         "nominal": dict(e["nominal"])})
+        elif e["type"] == "circle":
+            # A4: the bare circle carries its own `radius` scalar plus a
+            # centre point ref (solver SCHEMA.md §1 catalogue).
+            ents.append({"id": e["id"], "type": "circle",
+                         "center": e["center"],
                          "nominal": dict(e["nominal"])})
         else:
             ents.append({"id": e["id"], "type": "line",

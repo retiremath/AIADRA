@@ -162,8 +162,16 @@ class TestClosedShapeRefusals:
 
     def test_unknown_02x_minor_still_refuses(self):
         rec = copy.deepcopy(ORACLE["record"])
-        rec["adapter_schema_version"] = "0.2.2"
+        rec["adapter_schema_version"] = "0.2.3"  # 0.2.2 became DEFINED (A4)
         with pytest.raises(TransactionError, match="unknown 0.2.x minor"):
+            sketch_v2.validate_v2_sketch_record(rec)
+
+    def test_0_2_2_stamped_with_the_older_policy_refuses(self):
+        """ADR/0044 A4: the version x policy matrix is CLOSED in both
+        directions — a 0.2.2 record carrying skb-b0 never resolves."""
+        rec = copy.deepcopy(_author_placed())     # a real 0.2.1 record ...
+        rec["adapter_schema_version"] = "0.2.2"   # ... still stamped skb-b0
+        with pytest.raises(TransactionError, match="matrix is closed"):
             sketch_v2.validate_v2_sketch_record(rec)
 
     def test_completion_requires_support(self):
