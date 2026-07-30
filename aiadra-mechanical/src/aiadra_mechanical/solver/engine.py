@@ -237,6 +237,55 @@ class _Builder:
         return cfg
 
 
+def solve_feasible(case: Mapping[str, Any]) -> dict | None:
+    """Solve the STRONG system ONLY and return the feasible configuration
+    nearest the authored nominals — or None if it does not converge.
+
+    ADDITIVE capability (arc 20260730-1, defect D-1). It changes NOTHING
+    about `skb-0` (the completion algorithm) or `skb-c0` (the numeric
+    contract): it runs the same DogLeg solve over the same residual blocks,
+    simply without weak facts, and reports the intermediate the contract
+    already computes conceptually.
+
+    Why it exists: `skb-0` evaluates its rank test at the configuration it
+    is handed. At AUTHORED nominals that do not yet satisfy the strong
+    constraints (any hand-drawn rectangle), a slightly off-axis constraint
+    row still looks independent, so completion pins BOTH scalars of one
+    equality class and the system becomes contradictory. Completion must
+    therefore run at the FEASIBLE solution. Per Petre's ruling (2026-07-30)
+    the drawn coordinates nevertheless persist as the authored nominals —
+    committing solved output as nominals would be an implicit rebaseline,
+    and ADR/0044 A2.5/A2.9 require a rebaseline to be an explicit
+    authoring transaction.
+    """
+    ents = {e["id"]: e for e in case["entities"]}
+    nominal_of = {e["id"]: e["nominal"] for e in case["entities"] if "nominal" in e}
+
+    bad = [f["id"] for f in case["constraints"] + case["dimensions"]
+           if not gc.domain_ok(f, ents)]
+    if bad:
+        return None
+
+    b = _Builder(case)                       # strong facts + anchors only
+    b.sys.declare_unknowns()
+    b.sys.init_solution()
+    cap = case.get("iteration_cap", DEFAULT_ITERATION_CAP)
+    b.sys.set_max_iter(cap)
+    status = b.sys.solve(2, True)            # DogLeg, exactly as `solve`
+    if status in (0, 1):
+        b.sys.apply()
+    cfg = b.solved_cfg()
+
+    from .contract import TOL_BLOCK
+    worst = gc.block_worst([
+        r for f in (case["constraints"] + case["dimensions"] + case["anchors"])
+        for r in gc.fact_residuals(f, ents, cfg, nominal_of)
+    ])
+    if status not in (0, 1) or any(v > TOL_BLOCK for v in worst.values()):
+        return None
+    return cfg
+
+
 def solve(case: Mapping[str, Any]) -> SolveResult:
     """Solve one skb-1-shaped system; return the typed two-axis result."""
     t0 = time.perf_counter()

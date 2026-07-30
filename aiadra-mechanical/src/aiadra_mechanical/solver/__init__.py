@@ -34,7 +34,7 @@ from .contract import (
     TOL_SCALAR,
     WEAK_POLICY,
 )
-from .engine import solve
+from .engine import solve, solve_feasible
 from .loader import (
     SolverABIMismatchError,
     SolverArtifactMissingError,
@@ -66,4 +66,5 @@ __all__ = [
     "load_solver",
     "resolve_dist_dir",
     "solve",
+    "solve_feasible",
 ]

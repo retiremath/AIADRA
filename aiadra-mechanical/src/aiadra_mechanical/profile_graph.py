@@ -33,6 +33,25 @@ def _fail(reason: str) -> None:
     raise TransactionError(f"{_OP}: {reason}")
 
 
+def _renominalize(entities: Sequence[Mapping[str, Any]],
+                  cfg: Mapping[str, float]) -> list:
+    """An IN-MEMORY copy of the graph whose nominals are the feasible
+    configuration. Used ONLY as a solve input so `skb-0` completion evaluates
+    its rank test where the constraints actually hold. It is never persisted:
+    the authored nominals stay exactly as drawn (Petre's ruling 2026-07-30)."""
+    out = []
+    for e in entities:
+        e2 = dict(e)
+        if e["type"] == "point":
+            e2["nominal"] = {"x": cfg.get(f"{e['id']}.x", e["nominal"]["x"]),
+                             "y": cfg.get(f"{e['id']}.y", e["nominal"]["y"])}
+        elif e["type"] == "circle":
+            e2["nominal"] = {
+                "radius": cfg.get(f"{e['id']}.radius", e["nominal"]["radius"])}
+        out.append(e2)
+    return out
+
+
 def frame_from_placement(placement: Mapping[str, Any]) -> dict[str, Any]:
     """The engine-resolved sketch frame for a placement record. `sketch_placement`
     stays THE frame authority (A3.5/A3.7); this only shapes it for the wire."""
@@ -71,10 +90,25 @@ def compile_profile_graph(*, case_id: str,
                           constraints: Sequence[Mapping[str, Any]]) -> CompiledGraph:
     """Solve, complete, admit, and derive — or refuse typed, having written
     nothing. `case_id` labels the solve only; it need not be a feature id."""
-    from .solver import solve
+    from .solver import solve, solve_feasible
     from .sketch_v2 import _corpus_case
 
-    result = solve(_corpus_case(case_id, entities, constraints))
+    # PHASE 1 — the feasible solution of the STRONG system, nearest the
+    # drawn nominals. This is where snapping physically happens.
+    feasible = solve_feasible(_corpus_case(case_id, entities, constraints))
+    if feasible is None:
+        _fail(
+            "the strong constraints of this profile graph have no feasible "
+            "solution near the drawn geometry — nothing was authored"
+        )
+
+    # PHASE 2 — the canonical skb-0 completion runs AT the feasible solution
+    # (defect D-1, Petre's ruling 2026-07-30). The re-nominalized case is an
+    # IN-MEMORY solve input only; the caller keeps the drawn nominals as the
+    # authored ones, because committing solved output would be an implicit
+    # rebaseline and A2.5/A2.9 require a rebaseline to be explicit.
+    feasible_entities = _renominalize(entities, feasible)
+    result = solve(_corpus_case(case_id, feasible_entities, constraints))
     # A profile graph always carries free scalars before completion, so the
     # solver classification is `under` for every admitted member.
     if result.classification != "under" or result.diagnostics \

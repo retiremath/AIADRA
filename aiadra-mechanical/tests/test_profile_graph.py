@@ -107,20 +107,10 @@ class TestTheNamedSchemes:
         assert len(c.annotations) == 4
         assert len(c.glyphs) == 4
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="BUILD-DISCOVERED DEFECT D-1 (arc 20260730-1, pending Codex ruling): "
-               "skb-0 completion runs its rank test at the AUTHORED nominals. When "
-               "those do not yet satisfy the strong constraints (any hand-drawn "
-               "rectangle), a slightly off-axis constraint row still looks "
-               "independent, so completion pins BOTH scalars of one equality class "
-               "(here skp_0007.x=30.0 AND skp_0008.x=30.1) and the over-pinned "
-               "system cannot converge. The frozen corpus never hit this because "
-               "its cases are completed at a configuration that already satisfies "
-               "the constraints. Fix requires a design ruling on whether an "
-               "accepted authoring gesture commits the SOLVED configuration as the "
-               "authored nominals (ADR/0044 A2.6.1 wording).")
-    def test_hand_drawn_rectangle_is_four_descriptors(self):
+    def test_hand_drawn_rectangle_solves_via_the_two_phase_derivation(self):
+        """Defect D-1, fixed per Petre's ruling (2026-07-30): completion runs
+        at the FEASIBLE solution, so a rough rectangle no longer over-pins an
+        equality class. The drawn nominals still persist as authored."""
         ents, cons = self._rectangle([(0.0, 0.0), (30.0, 0.2),
                                       (30.1, 12.0), (-0.2, 12.1)])
         c = compile_profile_graph(case_id="feat_0001", entities=ents, constraints=cons)
@@ -133,6 +123,58 @@ class TestTheNamedSchemes:
         assert [a.kind for a in c.annotations] == [
             "radius", "position_x", "position_y"]
         assert c.annotations[0].value == pytest.approx(4.0)
+
+
+class TestTheNominalRuling:
+    """Petre's ruling (2026-07-30) on defect D-1, pinned:
+
+    completion runs at the accepted feasible solution WHILE the drawn
+    coordinates persist as authored nominals. Committing solved output as
+    nominals would be an implicit rebaseline, and ADR/0044 A2.5/A2.9 require
+    a rebaseline to be an explicit authoring transaction.
+    """
+
+    def _snapped(self):
+        ents, cons = _line_case(y2=3.4)          # drawn 0.4mm off horizontal
+        cons = cons + [{"id": "c04", "kind": "horizontal", "args": ["skp_0008"]}]
+        return compile_profile_graph(case_id="feat_0001",
+                                     entities=ents, constraints=cons), ents
+
+    def test_authored_nominals_are_the_RAW_drawn_coordinates(self):
+        compiled, drawn = self._snapped()
+        by_id = {e["id"]: e for e in compiled.entities}
+        assert by_id["skp_0007"]["nominal"] == {"x": 22.0, "y": 3.4}
+        # ... i.e. exactly what was drawn, untouched by the solve
+        assert by_id["skp_0007"]["nominal"] == \
+            {e["id"]: e for e in drawn}["skp_0007"]["nominal"]
+
+    def test_weak_values_come_from_the_FEASIBLE_snapped_solution(self):
+        compiled, _ = self._snapped()
+        weak = {(w["target"]["entity"], w["target"]["parameter"]):
+                w["value"]["magnitude"] for w in compiled.weak_completion}
+        # the drawn y was 3.0/3.4; the feasible (snapped) shared y is 3.0
+        assert weak[("skp_0006", "y")] == pytest.approx(3.0)
+        assert ("skp_0007", "y") not in weak      # determined by the H fact
+
+    def test_solved_coordinates_stay_DERIVED(self):
+        compiled, _ = self._snapped()
+        assert compiled.solved["skp_0007.y"] == pytest.approx(3.0)
+        by_id = {e["id"]: e for e in compiled.entities}
+        assert by_id["skp_0007"]["nominal"]["y"] == 3.4   # never overwritten
+
+    def test_skb_b1_does_not_inherit_magnitude_equals_nominal(self):
+        """skb-b0's rule 2 is specific to G0/G1/G2, where weak-pinned
+        coordinates do not move. Under skb-b1 a weak magnitude legitimately
+        differs from its authored nominal."""
+        compiled, _ = self._snapped()
+        by_id = {e["id"]: e for e in compiled.entities}
+        weak = {(w["target"]["entity"], w["target"]["parameter"]):
+                w["value"]["magnitude"] for w in compiled.weak_completion}
+        drawn_y = by_id["skp_0006"]["nominal"]["y"]
+        assert weak[("skp_0006", "y")] == pytest.approx(drawn_y)
+        # and the record still validates as a whole (admission ran on the
+        # DRAWN nominals plus the FEASIBLE weak set)
+        assert compiled.admission.shape == "B1"
 
 
 class TestRefusals:

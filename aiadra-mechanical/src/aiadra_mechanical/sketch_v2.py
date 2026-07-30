@@ -543,6 +543,31 @@ def regenerate_v2_sketch(record: Mapping[str, Any]) -> Mapping[str, float]:
 
     from .solver import solve
 
+    if record["adapter_schema_version"] == SKETCH_V22_ADAPTER_VERSION:
+        # A4 + defect D-1: a 0.2.2 record's authored nominals are the RAW
+        # drawn coordinates, which need not satisfy the strong constraints.
+        # Regeneration must therefore derive through the SAME two-phase path
+        # the authoring transaction used, or the completion it derives would
+        # differ from the committed one and this read would refuse its own
+        # record. 0.2.0/0.2.1 keep their original single-phase path untouched
+        # (their nominals are engine-built and already feasible).
+        from .profile_graph import compile_profile_graph
+
+        compiled = compile_profile_graph(
+            case_id=record["id"], entities=payload["entities"],
+            constraints=payload["constraints"],
+        )
+        if [dict(w) for w in compiled.weak_completion] != \
+                [dict(w) for w in payload["weak_completion"]]:
+            _fail(
+                f"regeneration refused for sketch {record.get('id')!r}: the "
+                "committed weak completion differs from the skb-0 derivation "
+                "— regeneration never remints (A2.9); recovery is a new "
+                "accepted authoring transaction"
+            )
+        assert len(payload["witnesses"]) == 0
+        return dict(compiled.solved)
+
     result = solve(_corpus_case(record["id"], payload["entities"],
                                 payload["constraints"]))
     expected = "well" if decoded["shape"] == "G0" else "under"
