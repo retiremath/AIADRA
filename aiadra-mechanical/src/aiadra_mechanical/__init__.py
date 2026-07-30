@@ -35,8 +35,10 @@ def register(registrar: "NativeEngineRegistrar") -> None:
         handle_add_revolve_feature,
         handle_add_sketch_feature,
         handle_adjust_feature_parameter,
+        handle_author_profile_sketch,
         handle_redefine_sketch_placement,
         handle_remove_feature,
+        handle_replace_sketch_graph,
     )
 
     registrar.add_operation("mechanical.add_sketch_feature", handle_add_sketch_feature)
@@ -46,6 +48,11 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     # ADR/0044 A3 (arc 20260725-2, pass sketch-place-1; Petre's SP-06 ruling):
     # the 0.2.1 placement redefine — the strict minimal-delta edit.
     registrar.add_operation("mechanical.redefine_sketch_placement", handle_redefine_sketch_placement)
+    # ADR/0044 A4 (arc 20260730-1, pass sketch-line-1 increment I1): the
+    # 0.2.2 PROFILE lane — ONE fact graph behind every drawing tool. The
+    # create/edit pair are write operations; the preview is a READ (below).
+    registrar.add_operation("mechanical.author_profile_sketch", handle_author_profile_sketch)
+    registrar.add_operation("mechanical.replace_sketch_graph", handle_replace_sketch_graph)
     registrar.add_operation("mechanical.add_extrude_feature", handle_add_extrude_feature)
     # First non-referencing CREATION feature since extrude — ADR/0037 D8 (arc 20260622-4).
     registrar.add_operation("mechanical.add_revolve_feature", handle_add_revolve_feature)
@@ -71,3 +78,13 @@ def register(registrar: "NativeEngineRegistrar") -> None:
     from .hlr import handle_display_hlr
 
     registrar.add_read_operation("mechanical.display_hlr", handle_display_hlr)
+
+    # ADR/0044 A4: the live drawing preview. Same read lane — no draft, no
+    # staging, no audit, no minted id. It shares the ONE compiler with the
+    # two write operations above, which is what makes "what you see while
+    # drawing" and "what gets committed" the same computation.
+    from .handlers import handle_preview_sketch_graph
+
+    registrar.add_read_operation(
+        "mechanical.preview_sketch_graph", handle_preview_sketch_graph
+    )

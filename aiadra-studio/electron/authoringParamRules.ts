@@ -20,6 +20,11 @@ export const AUTHORING_KINDS = new Set<string>([
   'mechanical.add_reference_sketch',
   // ADR/0044 A3.6.2 (pass sketch-place-1): the 0.2.1 placement redefine.
   'mechanical.redefine_sketch_placement',
+  // ADR/0044 A4 (arc 20260730-1): the 0.2.2 profile lane — ONE fact graph
+  // behind every drawing tool. Line/polyline/rectangle/circle are UI sugar
+  // and deliberately have NO ops of their own.
+  'mechanical.author_profile_sketch',
+  'mechanical.replace_sketch_graph',
   'mechanical.add_extrude_feature',
   'mechanical.add_revolve_feature',
   'mechanical.add_fillet_feature',
@@ -57,6 +62,116 @@ const placementMemberError = (op: string, key: string, v: unknown): string | nul
   return v === 'positive' || v === 'negative'
     ? null
     : `${op} normal_side must be 'positive'|'negative'`
+}
+
+// ---- ADR/0044 A4 profile wire shape (arc 20260730-1) ---------------------
+// Main owns the CLOSED envelope only: which keys exist, of which type, and
+// that a reference is `{key}` XOR `{id}` — never a bare string, so a ref can
+// never be read two ways. Identity minting, the survival law and every
+// geometric rule stay with the engine (ADR/0045 D6).
+const PROFILE_KEYS = ['points', 'segments', 'circles', 'facts'] as const
+const KEY_RE = /^[A-Za-z0-9_]{1,32}$/
+const ENTITY_ID_RE = /^skp_[0-9]{4}$/
+const FACT_ID_RE = /^c[0-9]{2}$/
+const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v)
+
+const refError = (op: string, where: string, v: unknown): string | null => {
+  if (v === null || typeof v !== 'object') {
+    return `${op} ${where} must be {key} or {id} — a bare string is never accepted`
+  }
+  const r = v as Record<string, unknown>
+  const keys = Object.keys(r)
+  if (keys.length !== 1) return `${op} ${where} must carry exactly one of 'key' or 'id'`
+  if (keys[0] === 'key') {
+    return typeof r.key === 'string' && KEY_RE.test(r.key)
+      ? null
+      : `${op} ${where} key must match ^[A-Za-z0-9_]{1,32}$`
+  }
+  if (keys[0] === 'id') {
+    return typeof r.id === 'string' && ENTITY_ID_RE.test(r.id)
+      ? null
+      : `${op} ${where} id must match ^skp_NNNN$`
+  }
+  return `${op} ${where} must carry 'key' or 'id'`
+}
+
+/** One record's own identity slot: exactly one of `key` (mint) or `id` (preserve). */
+const identityError = (op: string, where: string, r: Record<string, unknown>,
+                       idRe: RegExp): string | null => {
+  const hasKey = r.key !== undefined
+  const hasId = r.id !== undefined
+  if (hasKey === hasId) {
+    return `${op} ${where} must carry exactly one of 'key' (new) or 'id' (preserve)`
+  }
+  if (hasKey) {
+    return typeof r.key === 'string' && KEY_RE.test(r.key)
+      ? null
+      : `${op} ${where} key must match ^[A-Za-z0-9_]{1,32}$`
+  }
+  return typeof r.id === 'string' && idRe.test(r.id)
+    ? null
+    : `${op} ${where} id has the wrong shape`
+}
+
+export function profileError(op: string, profile: unknown): string | null {
+  if (profile === null || typeof profile !== 'object' || Array.isArray(profile)) {
+    return `${op} profile must be an object`
+  }
+  const prof = profile as Record<string, unknown>
+  const unknownKeys = Object.keys(prof).filter(
+    (k) => !(PROFILE_KEYS as readonly string[]).includes(k),
+  )
+  if (unknownKeys.length > 0) {
+    return `${op} profile carries unknown keys ${JSON.stringify(unknownKeys)}`
+  }
+  for (const collection of PROFILE_KEYS) {
+    if (prof[collection] !== undefined && !Array.isArray(prof[collection])) {
+      return `${op} profile ${collection} must be an array`
+    }
+  }
+  const points = (prof.points as unknown[]) ?? []
+  const segments = (prof.segments as unknown[]) ?? []
+  const circles = (prof.circles as unknown[]) ?? []
+  const facts = (prof.facts as unknown[]) ?? []
+
+  for (let i = 0; i < points.length; i++) {
+    const r = points[i] as Record<string, unknown> | null
+    if (r === null || typeof r !== 'object') return `${op} profile points[${i}] must be an object`
+    const e = identityError(op, `points[${i}]`, r, ENTITY_ID_RE)
+    if (e !== null) return e
+    if (!finite(r.x) || !finite(r.y)) return `${op} profile points[${i}] needs finite x + y`
+  }
+  for (let i = 0; i < segments.length; i++) {
+    const r = segments[i] as Record<string, unknown> | null
+    if (r === null || typeof r !== 'object') return `${op} profile segments[${i}] must be an object`
+    const e = identityError(op, `segments[${i}]`, r, ENTITY_ID_RE)
+    if (e !== null) return e
+    for (const end of ['start', 'end'] as const) {
+      const re = refError(op, `segments[${i}].${end}`, r[end])
+      if (re !== null) return re
+    }
+  }
+  for (let i = 0; i < circles.length; i++) {
+    const r = circles[i] as Record<string, unknown> | null
+    if (r === null || typeof r !== 'object') return `${op} profile circles[${i}] must be an object`
+    const e = identityError(op, `circles[${i}]`, r, ENTITY_ID_RE)
+    if (e !== null) return e
+    const re = refError(op, `circles[${i}].center`, r.center)
+    if (re !== null) return re
+    if (!posNum(r.radius_mm)) return `${op} profile circles[${i}] radius_mm must be a number > 0`
+  }
+  for (let i = 0; i < facts.length; i++) {
+    const r = facts[i] as Record<string, unknown> | null
+    if (r === null || typeof r !== 'object') return `${op} profile facts[${i}] must be an object`
+    const e = identityError(op, `facts[${i}]`, r, FACT_ID_RE)
+    if (e !== null) return e
+    if (r.kind !== 'horizontal' && r.kind !== 'vertical') {
+      return `${op} profile facts[${i}] kind must be 'horizontal'|'vertical'`
+    }
+    const re = refError(op, `facts[${i}].target`, r.target)
+    if (re !== null) return re
+  }
+  return null
 }
 
 export function validateAuthoringParams(kind: string, params: unknown): string | null {
@@ -165,6 +280,48 @@ export function validateAuthoringParams(kind: string, params: unknown): string |
         if (err !== null) return err
       }
       return null
+    }
+    case 'mechanical.author_profile_sketch': {
+      // A4 create lane: a placed sketch plus the drawn profile graph. The
+      // placement is REQUIRED here (a sketch is always placed) and is the
+      // same closed A3 record the reference writer uses.
+      if (typeof p.part_number !== 'string') {
+        return 'author_profile_sketch requires part_number'
+      }
+      const pm = p.placement as Record<string, unknown> | null
+      if (pm === null || typeof pm !== 'object') {
+        return 'author_profile_sketch requires a placement object'
+      }
+      const unknown = Object.keys(pm).filter(
+        (k) => !(PLACEMENT_MEMBERS as readonly string[]).includes(k),
+      )
+      if (unknown.length > 0) {
+        return `author_profile_sketch placement carries unknown members ${JSON.stringify(unknown)}`
+      }
+      if (pm.support === undefined) return 'author_profile_sketch placement requires support'
+      for (const key of PLACEMENT_MEMBERS) {
+        if (pm[key] === undefined) continue
+        const e = placementMemberError('author_profile_sketch placement', key, pm[key])
+        if (e !== null) return e
+      }
+      if (p.axes !== undefined && p.axes !== 'none' && p.axes !== 'x' && p.axes !== 'xy') {
+        return "author_profile_sketch axes must be 'none'|'x'|'xy'"
+      }
+      if (p.x_axis_mm !== undefined && !posNum(p.x_axis_mm)) {
+        return 'author_profile_sketch x_axis_mm must be a finite number > 0'
+      }
+      if (p.y_axis_mm !== undefined && !posNum(p.y_axis_mm)) {
+        return 'author_profile_sketch y_axis_mm must be a finite number > 0'
+      }
+      return profileError('author_profile_sketch', p.profile)
+    }
+    case 'mechanical.replace_sketch_graph': {
+      // A4 edit lane. Absence of a record from the profile is MEANINGFUL
+      // (it removes it), so main must not "helpfully" default anything.
+      if (typeof p.part_number !== 'string' || typeof p.sketch_feature_id !== 'string') {
+        return 'replace_sketch_graph requires part_number + sketch_feature_id'
+      }
+      return profileError('replace_sketch_graph', p.profile)
     }
     case 'mechanical.add_extrude_feature':
       return typeof p.part_number === 'string' &&

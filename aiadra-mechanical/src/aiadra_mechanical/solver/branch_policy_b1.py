@@ -289,16 +289,45 @@ class _Union:
 # ---------------------------------------------------------------------------
 
 
-def admit_graph(entities: Sequence[Mapping[str, Any]],
-                constraints: Sequence[Mapping[str, Any]],
-                dimensions: Sequence[Mapping[str, Any]],
-                weak_completion: Sequence[Mapping[str, Any]]) -> Admission:
-    """The total whole-fact-graph admission predicate (doc §3).
+@dataclass(frozen=True)
+class Structure:
+    """The WEAK-INDEPENDENT half of an admission (doc §3 layers 1-2).
 
-    Raises :class:`OutOfDomain` for everything outside the admitted family —
-    local-table violations, malformed blocks, failed guards, duplicate edges,
-    orphan points, cross-block facts, and any weak set that is not the EXACT
-    canonical skb-0 completion.
+    Everything decidable from entities + facts alone: the closed shapes, the
+    block split, the reference shape and role binding, the profile rules, and
+    the equality classes with their canonical completion targets.
+
+    Exposed separately because it must be checkable BEFORE a solve. The
+    canonical completion is derived FROM a solve, so `admit_graph` cannot run
+    first — yet a structurally inadmissible graph (a segment carrying both
+    `horizontal` and `vertical`, say) collapses to a degenerate configuration
+    that makes the solver divide by a zero length. This is a PREFIX of
+    `admit_graph`, never a second predicate: `admit_graph` calls it.
+    """
+
+    entities: Mapping[str, Mapping[str, Any]]
+    reference_shape: str
+    roles: Mapping[str, str]
+    counts: Mapping[str, int]
+    classes: tuple
+    profile_targets: tuple
+    reference_targets: tuple
+    profile_points: tuple
+    profile_segments: tuple
+    profile_circles: tuple
+    reference_points: tuple
+
+
+def admit_structure(entities: Sequence[Mapping[str, Any]],
+                    constraints: Sequence[Mapping[str, Any]],
+                    dimensions: Sequence[Mapping[str, Any]]) -> Structure:
+    """The weak-independent admission prefix (doc §3 layers 1-2).
+
+    Raises :class:`OutOfDomain` for local-table violations, malformed blocks,
+    duplicate edges, orphan points, cross-block facts, a reference block that
+    is not exactly G0/G1/G2, and a segment carrying more than one axis fact.
+    The value-dependent guards and the exact-completion check stay in
+    `admit_graph`, which needs the solved weak set to evaluate them.
     """
     # ---- layer 1 (necessary) --------------------------------------------
     if dimensions:
@@ -512,6 +541,51 @@ def admit_graph(entities: Sequence[Mapping[str, Any]],
     if reference_shape == "G2":
         ref_targets.append(_scalar(roles["PY"], "y"))
 
+    # cross-check (doc §4): one class <-> one profile completion target
+    if len(classes) != len(profile_targets):
+        _fail("internal inconsistency: profile equality classes and profile "
+              "completion targets disagree")
+
+    return Structure(
+        entities=ents,
+        reference_shape=reference_shape,
+        roles=dict(roles),
+        counts={"K": len(pro_pts), "M": len(pro_segs),
+                "C": len(pro_circles), "A": len(pro_axis)},
+        classes=classes,
+        profile_targets=tuple(profile_targets),
+        reference_targets=tuple(ref_targets),
+        profile_points=tuple(pro_pts),
+        profile_segments=tuple(pro_segs),
+        profile_circles=tuple(pro_circles),
+        reference_points=tuple(ref_pts),
+    )
+
+
+def admit_graph(entities: Sequence[Mapping[str, Any]],
+                constraints: Sequence[Mapping[str, Any]],
+                dimensions: Sequence[Mapping[str, Any]],
+                weak_completion: Sequence[Mapping[str, Any]]) -> Admission:
+    """The total whole-fact-graph admission predicate (doc §3).
+
+    Raises :class:`OutOfDomain` for everything outside the admitted family —
+    local-table violations, malformed blocks, failed guards, duplicate edges,
+    orphan points, cross-block facts, and any weak set that is not the EXACT
+    canonical skb-0 completion.
+    """
+    st = admit_structure(entities, constraints, dimensions)
+    ents = st.entities
+    reference_shape = st.reference_shape
+    roles = dict(st.roles)
+    origin_id = roles["O"]
+    classes = st.classes
+    ref_pts = list(st.reference_points)
+    pro_pts = list(st.profile_points)
+    pro_segs = list(st.profile_segments)
+    pro_circles = list(st.profile_circles)
+    profile_targets = list(st.profile_targets)
+    ref_targets = list(st.reference_targets)
+
     # The persisted weak array is canonically ordered over the WHOLE graph.
     all_targets = sorted(ref_targets + profile_targets,
                          key=lambda s: (s.rsplit(".", 1)[0], s.rsplit(".", 1)[1]))
@@ -525,11 +599,6 @@ def admit_graph(entities: Sequence[Mapping[str, Any]],
         unit = "mm"
         magnitudes[target] = _validate_weak_record(
             weak_completion[i], i, (eid, prm), unit)
-
-    # cross-check (doc §4): one class <-> one profile weak record
-    if len(classes) != len(profile_targets):
-        _fail("internal inconsistency: profile equality classes and profile "
-              "weak records disagree")
 
     # ---- effective values + guards ---------------------------------------
     effective: dict[str, float] = {}
@@ -587,8 +656,7 @@ def admit_graph(entities: Sequence[Mapping[str, Any]],
         shape="B1",
         reference_shape=reference_shape,
         roles=dict(roles),
-        counts={"K": len(pro_pts), "M": len(pro_segs),
-                "C": len(pro_circles), "A": len(pro_axis)},
+        counts=dict(st.counts),
         classes=classes,
         effective=effective,
     )

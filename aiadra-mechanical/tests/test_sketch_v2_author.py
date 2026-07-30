@@ -285,14 +285,14 @@ class TestDisplayV2Construction:
         assert pts["skp_0003"] == [0.0, 20.0, 0.0]
         assert {ln["id"] for ln in item["lines"]} == {"skp_0004", "skp_0005"}
 
-    def test_no_solid_display_carries_v2_construction_at_1_3(self):
+    def test_no_solid_display_carries_v2_construction_at_1_4(self):
         rec = _author()
         payload = display_mod._no_solid_display(
             [rec], object_uuid="u-1", object_number="P-1",
             geometry_ref="sha256:" + "0" * 64, cache_key="ck",
             linear_deflection_mm=0.1, angular_deflection_rad=0.3,
         )
-        assert payload["display_representation_version"] == "1.3"
+        assert payload["display_representation_version"] == "1.4"
         assert len(payload["v2_construction"]) == 1
 
     def test_core_contract_validates_the_1_3_payload(self):

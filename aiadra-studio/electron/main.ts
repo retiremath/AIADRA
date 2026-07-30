@@ -14,7 +14,7 @@ import {
   validatePersistedSettingsBlob,
   validatePersistedSettingsForSave,
 } from '../src/settings/persisted'
-import { AUTHORING_KINDS, validateAuthoringParams } from './authoringParamRules'
+import { AUTHORING_KINDS, profileError, validateAuthoringParams } from './authoringParamRules'
 
 /**
  * AIADRA Studio — Electron main process (ADR/0032 D6; arc 20260602-6).
@@ -396,6 +396,57 @@ function registerIpc(): void {
     const wsPath = workspaces.get(a.workspaceId)
     if (!wsPath) return err('unknown workspaceId — open a workspace first')
     return callBridge('display_representation', { workspace_path: wsPath, object_ref: a.objectRef })
+  })
+
+  // Live preview of an uncommitted profile sketch graph (ADR/0044 A4; arc
+  // 20260730-1). READ lane — no operation session, because a preview opens no
+  // Transaction and mints no identity; it is closer to displayRepresentation
+  // than to an authoring op. Main validates the CLOSED wire envelope (the same
+  // pure `profileError` the write ops go through, so the drawing surface can
+  // never send the preview a shape the commit would reject) and the engine
+  // owns every semantic rule.
+  ipcMain.handle('aiadra:previewSketchGraph', (_e, args: unknown) => {
+    aiadraIpcCalls++
+    const a = args as {
+      workspaceId?: unknown
+      objectRef?: unknown
+      profile?: unknown
+      sketchFeatureId?: unknown
+      placement?: unknown
+      candidateKey?: unknown
+    } | null
+    if (!a || typeof a.workspaceId !== 'string' || typeof a.objectRef !== 'string') {
+      return err('previewSketchGraph requires { workspaceId, objectRef, profile }')
+    }
+    const profileErr = profileError('previewSketchGraph', a.profile)
+    if (profileErr !== null) return err(profileErr)
+
+    const hasFeature = typeof a.sketchFeatureId === 'string' && a.sketchFeatureId.length > 0
+    const hasCandidate = a.placement !== undefined && a.placement !== null
+    if (hasFeature === hasCandidate) {
+      return err(
+        'previewSketchGraph needs exactly one owner: sketchFeatureId (edit) or placement + candidateKey (create)',
+      )
+    }
+    if (hasCandidate && (typeof a.candidateKey !== 'string' || a.candidateKey.length === 0)) {
+      return err('previewSketchGraph create previews require a non-empty candidateKey')
+    }
+    if (hasCandidate) {
+      const pm = a.placement as Record<string, unknown>
+      if (typeof pm !== 'object' || Array.isArray(pm)) {
+        return err('previewSketchGraph placement must be an object')
+      }
+      if (pm.support === undefined) return err('previewSketchGraph placement requires support')
+    }
+    const wsPath = workspaces.get(a.workspaceId)
+    if (!wsPath) return err('unknown workspaceId — open a workspace first')
+    return callBridge('preview_sketch_graph', {
+      workspace_path: wsPath,
+      object_ref: a.objectRef,
+      profile: a.profile,
+      ...(hasFeature ? { sketch_feature_id: a.sketchFeatureId } : {}),
+      ...(hasCandidate ? { placement: a.placement, candidate_key: a.candidateKey } : {}),
+    })
   })
 
   // View-dependent HLR overlay (Display contract v1.1; arc 20260609-2).

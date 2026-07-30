@@ -44,7 +44,10 @@ from .topology import (  # re-exported for compatibility (tests import from here
 # producer echoes THIS constant too (Codex2 B3.1: one version authority).
 # v1.3 (Gate F2b, arc 20260717-2): additive `v2_construction` — the solved
 # construction geometry of v2 sketches (A2.9 read-lifecycle output).
-DISPLAY_REPRESENTATION_VERSION = "1.3"
+# v1.4 (ADR/0044 A4, arc 20260730-1): additive `v2_profiles` — the solved
+# PROFILE geometry of 0.2.2 sketches with their derived annotations and
+# constraint glyphs, joined to `sketch_frames[]` by `sketch_feature_id`.
+DISPLAY_REPRESENTATION_VERSION = "1.4"
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +198,9 @@ def generate_display_representation(
     )
     return build_display_payload(
         topo,
-        sketch_frames=build_sketch_frames(features),
+        sketch_frames=build_sketch_frames(features) + build_profile_sketch_frames(features),
         v2_construction=build_v2_construction(features),
+        v2_profiles=build_v2_profiles(features),
     )
 
 
@@ -238,8 +242,9 @@ def _no_solid_display(
             "pickable_kinds": [],
             "names": {},
         },
-        "sketch_frames": [],
+        "sketch_frames": build_profile_sketch_frames(features),
         "v2_construction": build_v2_construction(features),
+        "v2_profiles": build_v2_profiles(features),
         "view_dependent": None,
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],
@@ -270,6 +275,10 @@ def build_v2_construction(features: list[dict[str, Any]]) -> list[dict[str, Any]
                 and f.get("engine") == "mechanical"):
             continue
         solved = regenerate_v2_sketch(f)
+        # A4: a 0.2.2 record carries a profile block too, and profile
+        # geometry is NOT construction geometry — it ships in `v2_profiles`.
+        # For 0.2.0/0.2.1 every entity is construction, so this filter is
+        # byte-identical for them.
         payload = f.get("adapter_payload", {})
         if "placement" in payload:
             # 0.2.1 (ADR/0044 A3): the frame is DERIVED from the persisted
@@ -290,31 +299,101 @@ def build_v2_construction(features: list[dict[str, Any]]) -> list[dict[str, Any]
             def to_world(u: float, v: float) -> list[float]:
                 return list(frame.to_3d(u, v))
 
+        construction = [e for e in payload.get("entities", [])
+                        if e.get("construction") is True]
+
         points: list[dict[str, Any]] = []
         lines: list[dict[str, Any]] = []
         pt_world: dict[str, list[float]] = {}
-        for e in payload.get("entities", []):
+        for e in construction:
             if e.get("type") == "point":
                 w = to_world(solved[f"{e['id']}.x"], solved[f"{e['id']}.y"])
                 pt_world[e["id"]] = w
                 points.append({"id": e["id"], "at": w})
-        for e in payload.get("entities", []):
+        for e in construction:
             if e.get("type") == "line":
                 lines.append({
                     "id": e["id"],
                     "a": pt_world[e["start"]],
                     "b": pt_world[e["end"]],
                 })
-        from .sketch_v2 import decode_v2_sketch
+        from .sketch_v2 import validate_v2_sketch_record
 
+        # `shape` describes the CONSTRUCTION block, so a 0.2.2 record reports
+        # its reference shape (G0|G1|G2) — never the whole-graph "B1", which
+        # would be a member the v1.3 vocabulary never defined.
+        admission = validate_v2_sketch_record(f)
         out.append({
             "sketch_feature_id": f.get("id"),
-            "shape": decode_v2_sketch(f)["shape"],
+            "shape": getattr(admission, "reference_shape", None) or admission.shape,
             "construction": True,
             "points": points,
             "lines": lines,
         })
     return out
+
+
+def build_v2_profiles(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Display v1.4 (ADR/0044 A4): the SOLVED profile geometry of every
+    `0.2.2` sketch, with its derived annotations and constraint glyphs.
+
+    Everything here is DERIVED display data regenerated from committed Truth —
+    solved coordinates, the annotation basis, and the H/V glyphs are computed,
+    never stored. The entry joins `sketch_frames[]` by `sketch_feature_id`
+    (Codex3 B3: no invented `sketch_frame_id`, no duplicated frame).
+    """
+    from .profile_graph import compile_profile_graph, frame_from_placement, \
+        profile_geometry_payload
+    from .sketch_v2 import SKETCH_V22_ADAPTER_VERSION
+
+    out: list[dict[str, Any]] = []
+    for f in features:
+        if not (f.get("feature_type") == "sketch"
+                and f.get("engine") == "mechanical"
+                and f.get("adapter_schema_version") == SKETCH_V22_ADAPTER_VERSION):
+            continue
+        payload = f["adapter_payload"]
+        compiled = compile_profile_graph(
+            case_id=f["id"], entities=payload["entities"],
+            constraints=payload["constraints"])
+        frame = frame_from_placement(payload["placement"])
+        out.append({
+            "sketch_feature_id": f.get("id"),
+            **profile_geometry_payload(compiled, frame),
+        })
+    return out
+
+
+def build_profile_sketch_frames(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """v1.4: the resolved frame of every `0.2.2` profile sketch.
+
+    `v2_profiles[]` ships world geometry but its annotation VALUES are
+    sketch-local scalars, and Studio orients its drawing surface from the
+    frame — so every profile entry needs a `sketch_frames[]` row to join.
+    Deliberately scoped to 0.2.2: 0.2.1 placed sketches keep the v1.3
+    behaviour untouched, because `sketch-place-1` is parked with its
+    acceptance walk still outstanding and this is not that pass.
+    """
+    from .sketch_placement import derive_frame
+    from .sketch_v2 import SKETCH_V22_ADAPTER_VERSION
+
+    frames: list[dict[str, Any]] = []
+    for f in features:
+        if not (f.get("feature_type") == "sketch"
+                and f.get("engine") == "mechanical"
+                and f.get("adapter_schema_version") == SKETCH_V22_ADAPTER_VERSION):
+            continue
+
+        def _dfail(reason: str) -> None:
+            raise ValueError(f"display: {reason}")
+
+        u, v, n = derive_frame(f["adapter_payload"]["placement"], _dfail)
+        frames.append({
+            "sketch_feature_id": f.get("id"),
+            "origin_mm": [0.0, 0.0, 0.0],
+            "u_axis": list(u), "v_axis": list(v), "normal": list(n),
+        })
+    return frames
 
 
 def build_sketch_frames(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -346,6 +425,7 @@ def build_display_payload(
     topo: "topology.PartTopology",
     sketch_frames: list[dict[str, Any]] | None = None,
     v2_construction: list[dict[str, Any]] | None = None,
+    v2_profiles: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the contract dict from extracted topology records (B1: ids come
     from the records, never derived here)."""
@@ -407,6 +487,7 @@ def build_display_payload(
         # v1.3 (Gate F2b): SOLVED-derived v2 construction geometry (A2.9 read
         # lifecycle output) — derived display data, never Truth.
         "v2_construction": list(v2_construction or []),
+        "v2_profiles": list(v2_profiles or []),
         "view_dependent": None,  # populated only by the HLR read lane (hlr.py)
         "invalidation": {
             "stale_when": ["geometry_ref_changed", "cache_key_changed"],

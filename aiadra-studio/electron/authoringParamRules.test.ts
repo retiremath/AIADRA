@@ -165,3 +165,104 @@ describe('redefine_sketch_placement boundary (A3.6.2 wire shape)', () => {
       { ...base, support: { kind: 'principal', orientation: 'xy', extra: 1 } })).toMatch(/support/)
   })
 })
+
+describe('profile wire shape (ADR/0044 A4 — author_profile_sketch / replace_sketch_graph)', () => {
+  const placement = { support: { kind: 'principal', orientation: 'xy' } }
+  const line = {
+    points: [
+      { key: 'p0', x: 0, y: 0 },
+      { key: 'p1', x: 20, y: 0.4 },
+    ],
+    segments: [{ key: 's0', start: { key: 'p0' }, end: { key: 'p1' } }],
+    facts: [{ key: 'f0', kind: 'horizontal', target: { key: 's0' } }],
+  }
+  const create = { part_number: 'P-000001', placement, profile: line }
+  const edit = { part_number: 'P-000001', sketch_feature_id: 'feat_0001', profile: line }
+
+  it('both kinds are allowlisted', () => {
+    expect(AUTHORING_KINDS.has('mechanical.author_profile_sketch')).toBe(true)
+    expect(AUTHORING_KINDS.has('mechanical.replace_sketch_graph')).toBe(true)
+  })
+
+  it('a drawn line passes both lanes', () => {
+    expect(validateAuthoringParams('mechanical.author_profile_sketch', create)).toBeNull()
+    expect(validateAuthoringParams('mechanical.replace_sketch_graph', edit)).toBeNull()
+  })
+
+  it('a preserved-id edit payload passes', () => {
+    expect(
+      validateAuthoringParams('mechanical.replace_sketch_graph', {
+        ...edit,
+        profile: {
+          points: [
+            { id: 'skp_0006', x: 0, y: 0 },
+            { id: 'skp_0007', x: 35, y: 0.4 },
+          ],
+          segments: [{ id: 'skp_0008', start: { id: 'skp_0006' }, end: { id: 'skp_0007' } }],
+          facts: [{ id: 'c04', kind: 'horizontal', target: { id: 'skp_0008' } }],
+        },
+      }),
+    ).toBeNull()
+  })
+
+  it('a circle passes', () => {
+    expect(
+      validateAuthoringParams('mechanical.author_profile_sketch', {
+        ...create,
+        profile: {
+          points: [{ key: 'c', x: 5, y: 5 }],
+          circles: [{ key: 'o', center: { key: 'c' }, radius_mm: 3 }],
+        },
+      }),
+    ).toBeNull()
+  })
+
+  it.each([
+    ['no placement', { part_number: 'P-1', profile: line }, /requires a placement object/],
+    ['placement without support', { ...create, placement: { orientation: 'right' } }, /requires support/],
+    ['no profile', { part_number: 'P-1', placement }, /profile must be an object/],
+    ['unknown profile key', { ...create, profile: { ...line, arcs: [] } }, /unknown keys/],
+    [
+      'a BARE STRING reference',
+      { ...create, profile: { ...line, segments: [{ key: 's0', start: 'p0', end: { key: 'p1' } }] } },
+      /bare string is never accepted/,
+    ],
+    [
+      'both key and id on one record',
+      { ...create, profile: { ...line, points: [{ key: 'p0', id: 'skp_0001', x: 0, y: 0 }] } },
+      /exactly one of/,
+    ],
+    [
+      'neither key nor id',
+      { ...create, profile: { ...line, points: [{ x: 0, y: 0 }] } },
+      /exactly one of/,
+    ],
+    [
+      'a non-finite coordinate',
+      { ...create, profile: { ...line, points: [{ key: 'p0', x: Infinity, y: 0 }] } },
+      /finite x \+ y/,
+    ],
+    [
+      'an out-of-vocabulary fact kind',
+      { ...create, profile: { ...line, facts: [{ key: 'f0', kind: 'tangent', target: { key: 's0' } }] } },
+      /horizontal.*vertical/,
+    ],
+    [
+      'a malformed engine id',
+      { ...create, profile: { ...line, points: [{ id: 'skp_1', x: 0, y: 0 }] } },
+      /wrong shape/,
+    ],
+    [
+      'a zero-radius circle',
+      { ...create, profile: { points: [{ key: 'c', x: 0, y: 0 }], circles: [{ key: 'o', center: { key: 'c' }, radius_mm: 0 }] } },
+      /radius_mm/,
+    ],
+  ])('%s refuses before bridge dispatch', (_l, params, pattern) => {
+    expect(validateAuthoringParams('mechanical.author_profile_sketch', params)).toMatch(pattern)
+  })
+
+  it('the edit lane requires its target pair', () => {
+    expect(validateAuthoringParams('mechanical.replace_sketch_graph', { profile: line }))
+      .toMatch(/part_number \+ sketch_feature_id/)
+  })
+})

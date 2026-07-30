@@ -8,9 +8,10 @@
  * the SAME shape the bridge ships as JSON (`{ display: DisplayRepresentation }`
  * / `{ view_dependent: ViewDependentPayload }`).
  */
-// The CURRENT contract version (Gate F2b: v1.3 additive `v2_construction` —
-// solved-derived v2 construction geometry) — mirrors the engine authority.
-export const DISPLAY_REPRESENTATION_VERSION = '1.3'
+// The CURRENT contract version (ADR/0044 A4: v1.4 additive `v2_profiles` —
+// solved-derived PROFILE geometry with its annotations and constraint
+// glyphs) — mirrors the engine authority.
+export const DISPLAY_REPRESENTATION_VERSION = '1.4'
 /** Legacy fixture producers still emit 1.1 (accepted by the version matrix). */
 export const LEGACY_FIXTURE_DISPLAY_VERSION = '1.1'  as const
 
@@ -46,14 +47,74 @@ export interface V2ConstructionSketch {
   lines: { id: string; a: [number, number, number]; b: [number, number, number] }[]
 }
 
-/** v1.2: the RESOLVED plane frame of one face-bound sketch — derived display
- *  data, identity-bound by CONTAINMENT in this package (Codex2 B3.1). */
-export interface SketchFrame {
+/** v1.4 (ADR/0044 A4): one DERIVED display dimension of a profile sketch.
+ *
+ *  Class-5 display data: regenerated from committed Truth on every read,
+ *  never persisted, never identity-bearing. `value` is a sketch-LOCAL scalar
+ *  in `unit`; `anchors` are WORLD points, so the renderer places witness
+ *  lines without ever re-deriving the sketch plane. */
+export interface ProfileAnnotation {
+  id: string
+  kind: 'length' | 'angle' | 'radius' | 'position_x' | 'position_y'
+  value: number
+  unit: 'mm' | 'deg'
+  entities: string[]
+  anchors: [number, number, number][]
+}
+
+/** v1.4: one constraint marker on a profile segment (the Creo-style glyph). */
+export interface ConstraintGlyph {
+  id: string
+  kind: 'horizontal' | 'vertical'
+  target: string
+  anchor: [number, number, number]
+}
+
+/** v1.4: the SOLVED profile block of one 0.2.2 constrained sketch.
+ *
+ *  Joins this package's `sketch_frames[]` by `sketch_feature_id` — the frame
+ *  lives in exactly one place. Segment endpoints and circle centres are point
+ *  IDs, never repeated coordinates, so geometry can never self-contradict. */
+export interface V2ProfileSketch {
   sketch_feature_id: string
+  points: { id: string; world: [number, number, number] }[]
+  segments: { id: string; start: string; end: string }[]
+  circles: { id: string; center: string; radius_mm: number }[]
+  annotations: ProfileAnnotation[]
+  constraint_glyphs: ConstraintGlyph[]
+}
+
+/** The uncommitted counterpart of `V2ProfileSketch` — what
+ *  `previewSketchGraph` returns while the user is still drawing.
+ *
+ *  Deliberately NOT a `v2_profiles[]` entry (Codex4 B2): a create preview
+ *  runs before any feature exists, so it carries a caller-scoped owner and
+ *  the resolved frame INLINE. Ids are the CALLER's own keys for new records.
+ *  Parity with committed Display is evaluated after substituting the owner
+ *  and keys — never as literal equality. */
+export interface ProfileGraphPreview {
+  owner: { feature_id: string } | { candidate_key: string }
+  frame: SketchPlaneFrame
+  points: { id: string; world: [number, number, number] }[]
+  segments: { id: string; start: string; end: string }[]
+  circles: { id: string; center: string; radius_mm: number }[]
+  annotations: ProfileAnnotation[]
+  constraint_glyphs: ConstraintGlyph[]
+}
+
+/** An engine-resolved sketch plane in world space. The ENGINE owns this
+ *  mapping; Studio never re-derives a sketch plane from a placement. */
+export interface SketchPlaneFrame {
   origin_mm: [number, number, number]
   u_axis: [number, number, number]
   v_axis: [number, number, number]
   normal: [number, number, number]
+}
+
+/** v1.2: the RESOLVED plane frame of one sketch — derived display data,
+ *  identity-bound by CONTAINMENT in this package (Codex2 B3.1). */
+export interface SketchFrame extends SketchPlaneFrame {
+  sketch_feature_id: string
 }
 
 export type EdgeKind = 'sharp' | 'tangent' | 'seam' | 'boundary' | 'free'
@@ -189,6 +250,9 @@ export interface DisplayRepresentation {
   /** v1.3 (Gate F2b): SOLVED-derived v2 construction geometry — the A2.9
    *  read lifecycle's display output (derived, never Truth). Absent ≤1.2. */
   v2_construction?: V2ConstructionSketch[]
+  /** v1.4 (ADR/0044 A4): SOLVED-derived PROFILE geometry with its annotation
+   *  basis and constraint glyphs. Absent ≤1.3. */
+  v2_profiles?: V2ProfileSketch[]
   invalidation: DisplayInvalidation
   counters: DisplayCounters
 }

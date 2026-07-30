@@ -387,14 +387,289 @@ def handle_redefine_sketch_placement(context: "NativeEngineContext", params: dic
     context.stage_sidecar(part_uuid, sidecar)
     context.emit_event("part_changed", {
         "object_uuid": part_uuid,
-        "rationale": f"redefine placement of {sketch_feature_id}",
-        # A3.6.2 step 5 — the NEW placement facts' provenance rides the
-        # event; the feature's original provenance/history is untouched.
-        "placement_provenance": {"category": _provenance_category_for_actor(context.actor)},
+        # A3.6.2 step 5 — the editing ACTOR rides the transaction (its audit
+        # and commit record it); the feature's own fact_provenance is
+        # untouched, so old geometry is never relabelled by a later edit.
+        # Defect D-3 (build-discovered 2026-07-30): this event previously
+        # carried a `placement_provenance` payload member and RAW geometry
+        # records — both rejected by `event/part_changed.schema.json`, so the
+        # operation could never have committed. The handler tests drive a mock
+        # context that does not schema-validate, which is exactly the
+        # green-suite boundary gap lesson W-1 named.
+        "rationale": (
+            f"redefine placement of {sketch_feature_id} "
+            f"({_provenance_category_for_actor(context.actor)})"
+        ),
         "feature_delta": {"updated": [{"id": sketch_feature_id,
                                        "new_record": copy.deepcopy(updated_feature)}]},
-        "geometry_ref_delta": {"updated": [copy.deepcopy(g) for g in updated_geoms]},
+        "geometry_ref_delta": {"updated": [
+            {"id": g["id"], "new_record": copy.deepcopy(g)} for g in updated_geoms]},
     })
+
+
+# =============================================================================
+# Handlers 1c/1d/1e: the A4 PROFILE sketch operations (arc 20260730-1)
+#
+# Three operations over ONE fact graph. Line, polyline, rectangle and circle
+# are UI SUGAR, deliberately WITHOUT per-tool operations — that is what keeps
+# the G-AI gate true: an agent authors the identical graph with no renderer in
+# the loop. All three reach geometry through `compile_profile_graph`.
+# =============================================================================
+
+
+def handle_author_profile_sketch(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    """ADR/0044 A4 (arc 20260730-1, increment I1): author a NEW `0.2.2`
+    profile sketch — the create lane behind Studio's temporary `Profile
+    Sketch` command. Placement commits nothing on its own; this operation is
+    the whole transaction, and a refusal leaves NO feature."""
+    _op = "mechanical.author_profile_sketch"
+    part_number = _require_param(params, "part_number", str, _op)
+    placement_input = _require_param(params, "placement", dict, _op)
+    profile = _require_param(params, "profile", dict, _op)
+    axes = params.get("axes", "xy")
+    x_axis_mm = params.get("x_axis_mm", 20.0)
+    y_axis_mm = params.get("y_axis_mm", 20.0)
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+
+    feature_id = _next_id(sidecar.get("feature", []), prefix="feat_")
+    geom_id = _next_id(sidecar.get("geometry_ref", []), prefix="geom_")
+
+    from .profile_ops import author_profile_sketch_record
+
+    feature_record = author_profile_sketch_record(
+        feature_id=feature_id,
+        name=f"sketch_{feature_id}",
+        placement_input=placement_input,
+        profile=profile,
+        axes=axes,
+        x_axis_mm=x_axis_mm,
+        y_axis_mm=y_axis_mm,
+        fact_provenance={"category": _provenance_category_for_actor(context.actor)},
+    )
+
+    sidecar = copy.deepcopy(sidecar)
+    sidecar.setdefault("feature", []).append(copy.deepcopy(feature_record))
+
+    _gate_validity(context, sidecar["feature"])
+
+    vault_ref, proj = _project_and_stage(context, sidecar["feature"], feature_id)
+    geom_record = {
+        "id": geom_id,
+        "role": "authoring_geometry",
+        **_geom_fields_from_projection(vault_ref, proj),
+    }
+    sidecar.setdefault("geometry_ref", []).append(copy.deepcopy(geom_record))
+
+    counts = _profile_counts(feature_record)
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        "rationale": (
+            f"author v2 profile sketch {feature_id} "
+            f"({counts['segments']} segment(s), {counts['circles']} circle(s), "
+            f"{counts['facts']} axis fact(s))"
+        ),
+        "feature_delta": {"added": [copy.deepcopy(feature_record)]},
+        "geometry_ref_delta": {"added": [copy.deepcopy(geom_record)]},
+    })
+
+
+def handle_replace_sketch_graph(context: "NativeEngineContext", params: dict[str, Any]) -> None:
+    """ADR/0044 A4: replace the PROFILE block of an existing `0.2.2` sketch.
+
+    The reference block, placement, name, id and original `fact_provenance`
+    survive byte-for-byte; the survival law (Codex4 B1) governs which profile
+    records keep their identity. A record ABSENT from the call is REMOVED —
+    the skeleton case, which invalidates dependents fail-closed rather than
+    silently re-pointing them.
+    """
+    _op = "mechanical.replace_sketch_graph"
+    part_number = _require_param(params, "part_number", str, _op)
+    sketch_feature_id = _require_param(params, "sketch_feature_id", str, _op)
+    profile = _require_param(params, "profile", dict, _op)
+
+    part_uuid, sidecar = _resolve_part_sidecar(context, part_number)
+    index, target = _resolve_v22_sketch(sidecar, sketch_feature_id, part_number, _op)
+
+    from .profile_ops import replace_profile_graph_record
+
+    updated_feature, removed = replace_profile_graph_record(
+        record=target, profile=profile)
+
+    # The effective no-op refuses BEFORE staging — the A3.6.2 discipline: no
+    # recipe, event or geometry projection is ever minted for a no-change
+    # edit (a drag that lands exactly where it started is not a transaction).
+    if updated_feature == target:
+        raise TransactionError(
+            f"{_op}: sketch-graph-unchanged — the proposed profile equals the "
+            f"committed one on {sketch_feature_id!r}; nothing is minted for a no-op"
+        )
+
+    sidecar = copy.deepcopy(sidecar)
+    sidecar["feature"][index] = copy.deepcopy(updated_feature)
+
+    _gate_validity(context, sidecar["feature"])
+
+    # A4.7: re-stage every authoring_geometry output whose head closure
+    # contains the edited sketch (its own projection re-derives).
+    updated_geoms: list[dict[str, Any]] = []
+    for i, g in enumerate(sidecar.get("geometry_ref", [])):
+        if g.get("role") != "authoring_geometry":
+            continue
+        head = _geom_head(g)
+        if head is None:
+            continue
+        if sketch_feature_id not in body_history.dependency_closure(
+                sidecar["feature"], head):
+            continue
+        new_ref, proj = _project_and_stage(context, sidecar["feature"], head)
+        updated = copy.deepcopy(g)
+        updated.update(_geom_fields_from_projection(new_ref, proj))
+        sidecar["geometry_ref"][i] = copy.deepcopy(updated)
+        updated_geoms.append(updated)
+    if not updated_geoms:
+        raise TransactionError(
+            f"{_op}: no authoring_geometry geom_ref found depending on "
+            f"feature {sketch_feature_id!r} on Part {part_number}"
+        )
+
+    context.stage_sidecar(part_uuid, sidecar)
+    context.emit_event("part_changed", {
+        "object_uuid": part_uuid,
+        # The editing actor rides the TRANSACTION; the feature's original
+        # fact_provenance is never relabelled by a later edit (A3.6.2 step 5).
+        "rationale": (
+            f"replace profile graph of {sketch_feature_id} "
+            f"({len(removed)} record(s) removed, "
+            f"{_provenance_category_for_actor(context.actor)})"
+        ),
+        "feature_delta": {"updated": [{"id": sketch_feature_id,
+                                       "new_record": copy.deepcopy(updated_feature)}]},
+        "geometry_ref_delta": {"updated": [
+            {"id": g["id"], "new_record": copy.deepcopy(g)} for g in updated_geoms]},
+    })
+
+
+def handle_preview_sketch_graph(context, params: dict[str, Any]) -> dict[str, Any]:
+    """ADR/0044 A4: the READ-lane preview (ADR/0035 read category).
+
+    Writes nothing, stages nothing, opens no Transaction and mints no id —
+    yet it is NOT a second implementation: the geometry comes from the same
+    `compile_profile_graph` both write lanes use, so what the user sees while
+    drawing and what the engine commits can never drift apart.
+
+    Two owners, exactly one per call:
+      * `sketch_feature_id` — previewing an edit of a committed sketch;
+      * `candidate_key` + `placement` — previewing a CREATE, where no feature
+        exists yet, so the envelope carries the resolved frame inline rather
+        than inventing a `sketch_feature_id` to join on (Codex4 B2).
+    """
+    _op = "mechanical.preview_sketch_graph"
+    part_uuid = params.get("object_uuid")
+    if not part_uuid:
+        raise TransactionError(f"{_op}: missing object_uuid")
+    profile = _require_param(params, "profile", dict, _op)
+    sketch_feature_id = params.get("sketch_feature_id")
+    placement_input = params.get("placement")
+    candidate_key = params.get("candidate_key")
+
+    from .profile_ops import preview_profile_graph, split_profile_block
+
+    if (sketch_feature_id is None) == (placement_input is None):
+        raise TransactionError(
+            f"{_op}: exactly one of 'sketch_feature_id' (edit preview) or "
+            "'placement' (create preview) is required — the owner of a "
+            "preview is never inferred"
+        )
+
+    if sketch_feature_id is not None:
+        if candidate_key is not None:
+            raise TransactionError(
+                f"{_op}: 'candidate_key' belongs to the create lane; an edit "
+                "preview is owned by its committed feature id"
+            )
+        sidecar = context.load_sidecar(part_uuid)
+        _index, target = _resolve_v22_sketch(sidecar, sketch_feature_id,
+                                             str(part_uuid), _op)
+        payload = target["adapter_payload"]
+        ref_e, ref_c, cur_e, cur_c = split_profile_block(
+            payload["entities"], payload["constraints"])
+        return preview_profile_graph(
+            case_id=sketch_feature_id,
+            placement=payload["placement"],
+            profile=profile,
+            owner={"feature_id": sketch_feature_id},
+            reference=(ref_e, ref_c),
+            existing={**{e["id"]: e for e in cur_e},
+                      **{c["id"]: c for c in cur_c}},
+            reserved_ids=([e["id"] for e in payload["entities"]]
+                          + [c["id"] for c in payload["constraints"]]),
+        )
+
+    if not isinstance(candidate_key, str) or not candidate_key:
+        raise TransactionError(
+            f"{_op}: a create preview requires a caller-scoped "
+            "'candidate_key' — a preview never carries a feature id it "
+            "cannot honour"
+        )
+    from .sketch_placement import complete_placement, derive_frame
+    from .sketch_v2 import reference_graph_skeleton
+
+    def _pfail(reason: str) -> None:
+        raise TransactionError(f"{_op}: {reason}")
+
+    placement = complete_placement(placement_input, _pfail)
+    derive_frame(placement, _pfail)
+    axes = params.get("axes", "xy")
+    reference = reference_graph_skeleton(
+        axes, params.get("x_axis_mm", 20.0), params.get("y_axis_mm", 20.0),
+        _pfail)
+    return preview_profile_graph(
+        case_id=candidate_key, placement=placement, profile=profile,
+        owner={"candidate_key": candidate_key}, reference=reference,
+    )
+
+
+def _resolve_v22_sketch(sidecar: dict[str, Any], sketch_feature_id: str,
+                        owner: str, op: str) -> tuple[int, dict[str, Any]]:
+    """Resolve a target `0.2.2` profile sketch — every wrong-target case
+    refuses BEFORE any solver invocation (the A3.6.2 discipline)."""
+    from .sketch_v2 import SKETCH_V22_ADAPTER_VERSION
+
+    matches = [i for i, f in enumerate(sidecar.get("feature", []) or [])
+               if f.get("id") == sketch_feature_id]
+    if len(matches) != 1:
+        raise TransactionError(
+            f"{op}: feature {sketch_feature_id!r} "
+            f"{'not found' if not matches else 'is ambiguous'} on {owner}"
+        )
+    target = sidecar["feature"][matches[0]]
+    if target.get("feature_type") != "sketch" or target.get("engine") != "mechanical":
+        raise TransactionError(
+            f"{op}: feature {sketch_feature_id!r} is not a mechanical sketch"
+        )
+    asv = target.get("adapter_schema_version")
+    if asv != SKETCH_V22_ADAPTER_VERSION:
+        raise TransactionError(
+            f"{op}: feature {sketch_feature_id!r} carries adapter version "
+            f"{asv!r}; the profile-graph operations target literal "
+            f"{SKETCH_V22_ADAPTER_VERSION!r} only (a cross-version rewrite is "
+            "deliberately not opened here)"
+        )
+    return matches[0], target
+
+
+def _profile_counts(record: dict[str, Any]) -> dict[str, int]:
+    payload = record["adapter_payload"]
+    profile = [e for e in payload["entities"] if e.get("construction") is False]
+    ref_ids = {e["id"] for e in payload["entities"] if e.get("construction") is True}
+    return {
+        "points": sum(1 for e in profile if e["type"] == "point"),
+        "segments": sum(1 for e in profile if e["type"] == "line"),
+        "circles": sum(1 for e in profile if e["type"] == "circle"),
+        "facts": sum(1 for c in payload["constraints"] if c["args"][0] not in ref_ids),
+    }
 
 
 # =============================================================================

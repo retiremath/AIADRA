@@ -24,6 +24,16 @@ contextBridge.exposeInMainWorld('aiadra', {
     views: unknown[],
     algorithm?: 'exact' | 'poly',
   ) => ipcRenderer.invoke('aiadra:displayHlr', { workspaceId, objectRef, views, algorithm }),
+  // Live profile-sketch preview (ADR/0044 A4) — a READ: it writes nothing,
+  // opens no Transaction and mints no id, so it needs no operation session.
+  previewSketchGraph: (
+    workspaceId: string,
+    objectRef: string,
+    profile: unknown,
+    owner:
+      | { sketchFeatureId: string }
+      | { placement: unknown; candidateKey: string },
+  ) => ipcRenderer.invoke('aiadra:previewSketchGraph', { workspaceId, objectRef, profile, ...owner }),
   // Authoring session — the Ring-2 WRITE lane (arc 20260711-11; ADR/0043).
   // The renderer holds an opaque operationSessionId minted by main; it never
   // supplies paths or touches the engine draft directly.

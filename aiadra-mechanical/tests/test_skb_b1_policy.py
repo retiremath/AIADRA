@@ -397,3 +397,61 @@ class TestEmptyCatalog:
         with pytest.raises(OutOfDomain, match="exact-set rule"):
             bp1.validate_witness_set(
                 [{"id": "bw01", "kind": "cross_sign", "of": [], "sign": 1}], adm)
+
+
+# ------------------------------------------------- the pre-solve prefix (D-2)
+
+
+class TestAdmitStructure:
+    """`admit_structure` is the WEAK-INDEPENDENT prefix of `admit_graph`.
+
+    It exists because the exact-completion check needs a solved weak set,
+    while a structurally inadmissible graph must be refused BEFORE the solver
+    ever sees it: defect D-2 (2026-07-30) had a segment carrying both
+    `horizontal` and `vertical` collapse to zero length inside the solver and
+    die with an untyped ZeroDivisionError instead of a typed refusal.
+    """
+
+    def _line_graph(self):
+        ents, cons = _reference_g2()
+        ents += [_pt("skp_0006", 1.0, 1.0), _pt("skp_0007", 4.0, 5.0),
+                 _line("skp_0008", "skp_0006", "skp_0007")]
+        return ents, cons
+
+    def test_it_agrees_with_admit_graph_on_an_admitted_member(self):
+        ents, cons = self._line_graph()
+        weaks = _weaks([(PX, "x", 10.0), (PY, "y", 10.0),
+                        ("skp_0006", "x", 1.0), ("skp_0006", "y", 1.0),
+                        ("skp_0007", "x", 4.0), ("skp_0007", "y", 5.0)])
+        full = _admit(ents, cons, weaks)
+        st = bp1.admit_structure(ents, cons, [])
+        assert st.reference_shape == full.reference_shape
+        assert st.classes == full.classes
+        assert dict(st.counts) == dict(full.counts)
+        assert dict(st.roles) == dict(full.roles)
+
+    def test_two_axis_facts_on_one_segment_refuse_WITHOUT_a_solve(self):
+        ents, cons = self._line_graph()
+        cons = cons + [_con("c04", "horizontal", "skp_0008"),
+                       _con("c05", "vertical", "skp_0008")]
+        with pytest.raises(OutOfDomain, match="more than one axis fact"):
+            bp1.admit_structure(ents, cons, [])
+
+    def test_an_empty_profile_refuses_without_a_solve(self):
+        ents, cons = _reference_g2()
+        with pytest.raises(OutOfDomain, match="non-empty profile block"):
+            bp1.admit_structure(ents, cons, [])
+
+    def test_a_duplicate_edge_refuses_without_a_solve(self):
+        ents, cons = self._line_graph()
+        ents = ents + [_line("skp_0009", "skp_0007", "skp_0006")]
+        with pytest.raises(OutOfDomain, match="duplicates an existing edge"):
+            bp1.admit_structure(ents, cons, [])
+
+    def test_it_takes_NO_weak_argument(self):
+        """The prefix is weak-independent by construction — if it ever grew a
+        weak parameter it would no longer be runnable before the solve."""
+        import inspect
+
+        params = list(inspect.signature(bp1.admit_structure).parameters)
+        assert params == ["entities", "constraints", "dimensions"]

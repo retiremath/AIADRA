@@ -1459,6 +1459,102 @@ def display_hlr(
     return ViewDependentPayload.from_engine_dict(result)
 
 
+_PREVIEW_ENVELOPE_KEYS = frozenset({
+    "owner", "frame", "points", "segments", "circles", "annotations",
+    "constraint_glyphs",
+})
+
+
+def preview_sketch_graph(
+    workspace: Path,
+    object_ref: str,
+    *,
+    engine_id: str,
+    profile: dict[str, Any],
+    sketch_feature_id: str | None = None,
+    placement: dict[str, Any] | None = None,
+    candidate_key: str | None = None,
+) -> dict[str, Any]:
+    """Read-only Ring-2 primitive: the LIVE preview of an uncommitted profile
+    sketch graph (ADR/0044 A4; arc 20260730-1).
+
+    This is what makes interactive drawing honest. The engine solves, snaps,
+    completes and dimensions the proposed graph through the SAME compiler its
+    write operations use, and returns the result — but writes nothing, opens
+    no Transaction, and mints no identifier. Studio therefore never computes
+    snapped geometry or dimension values of its own (ADR/0045 D6: the engine
+    is the sole semantic authority; Studio proposes and renders).
+
+    Exactly one owner per call:
+      * `sketch_feature_id` — previewing an EDIT of a committed sketch;
+      * `candidate_key` + `placement` — previewing a CREATE, before any
+        feature exists.
+
+    `engine_id` is explicit rather than resolved from the Object's authoring
+    geometry: a create preview legitimately runs against a Part that has no
+    geometry yet, and core stays kernel-neutral by not guessing an owner.
+
+    Returns the engine's `ProfileGraphPreview` envelope. It is deliberately
+    NOT a Display `v2_profiles[]` entry — it carries a caller-scoped owner and
+    an inline frame, because there is no committed feature to join on yet.
+    Parity with committed Display is evaluated after substituting the declared
+    owner and keys, never as literal equality (Codex4 B2).
+
+    Raises:
+        ProjectPinError: pin lookup failed.
+        ObjectNotFoundError: `object_ref` does not resolve.
+        EngineNotAvailableError: engine missing / failed / lacks the read kind.
+        TransactionError: the engine refused the proposed graph (typed).
+        NativeEngineKernelError: the engine raised while previewing.
+    """
+    try:
+        bundle = BundleRegistry().bundle_for_pin(workspace)
+    except (FileNotFoundError, BundleDigestMismatchError, BundleNotFoundError) as e:
+        raise ProjectPinError(str(e)) from e
+
+    bundle_dir = bundle.bundle_dir
+    uuid = _resolve_ref_to_uuid(workspace, bundle_dir, object_ref)
+    if uuid is None:
+        raise ObjectNotFoundError(object_ref)
+    sidecar = load_sidecar_validated(workspace, uuid, bundle_dir)
+
+    params: dict[str, Any] = {
+        "object_uuid": uuid,
+        "object_number": sidecar.get("object", {}).get("number", ""),
+        "profile": profile,
+    }
+    if sketch_feature_id is not None:
+        params["sketch_feature_id"] = sketch_feature_id
+    if placement is not None:
+        params["placement"] = placement
+    if candidate_key is not None:
+        params["candidate_key"] = candidate_key
+
+    kind = f"{engine_id}.preview_sketch_graph"
+    result = _dispatch_read(engine_id, kind, workspace, bundle, params, actor="agent")
+
+    keys = set(result)
+    if keys != set(_PREVIEW_ENVELOPE_KEYS):
+        from .display import DisplayContractError
+
+        raise DisplayContractError(
+            f"engine {engine_id!r} returned a malformed ProfileGraphPreview — "
+            f"missing {sorted(_PREVIEW_ENVELOPE_KEYS - keys)}, unknown "
+            f"{sorted(keys - _PREVIEW_ENVELOPE_KEYS)} (the envelope is closed)"
+        )
+    owner = result.get("owner")
+    if not (isinstance(owner, dict)
+            and set(owner) in ({"feature_id"}, {"candidate_key"})):
+        from .display import DisplayContractError
+
+        raise DisplayContractError(
+            f"engine {engine_id!r} returned preview owner {owner!r}; exactly "
+            "one of {feature_id} or {candidate_key} is required — a preview "
+            "never carries an identity it cannot honour"
+        )
+    return result
+
+
 def propose(
     workspace: Path,
     *,
@@ -1932,6 +2028,7 @@ __all__ = [
     "release",
     "display_representation",
     "display_hlr",
+    "preview_sketch_graph",
     "read_kinds",
     # Type shapes
     "DisplayRepresentation",

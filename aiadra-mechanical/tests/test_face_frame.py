@@ -287,7 +287,7 @@ def test_v12_fields_survive_the_real_core_chain():
     )
     payload = display_mod.build_display_payload(
         topo, sketch_frames=display_mod.build_sketch_frames(features))
-    assert payload["display_representation_version"] == "1.3"
+    assert payload["display_representation_version"] == "1.4"
 
     dr = DisplayRepresentation.from_engine_dict(payload)
     out = dr.to_dict()
@@ -309,7 +309,7 @@ def test_hlr_version_matrix_cross_versions_refuse():
         HLR_CAPABLE_VERSIONS,
         ViewDependentPayload,
     )
-    assert HLR_CAPABLE_VERSIONS == ("1.1", "1.2", "1.3")
+    assert HLR_CAPABLE_VERSIONS == ("1.1", "1.2", "1.3", "1.4")
 
     def hlr_dict(version):
         return {
@@ -339,7 +339,7 @@ def test_hlr_version_matrix_cross_versions_refuse():
             }],
         }
 
-    for ok_version in ("1.1", "1.2", "1.3"):
+    for ok_version in ("1.1", "1.2", "1.3", "1.4"):
         ViewDependentPayload.from_engine_dict(hlr_dict(ok_version))
     with pytest.raises(DisplayContractError, match="HLR-capable"):
         ViewDependentPayload.from_engine_dict(hlr_dict("1.0"))

@@ -50,14 +50,31 @@ from typing import Any
 # output; derived display data, never Truth). Same declared-shape amendment
 # discipline as v1.1→v1.2: a pre-1.3 package carrying the field is a
 # producer error, never an additive mutation.
-DISPLAY_REPRESENTATION_VERSION = "1.3"
-ACCEPTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3")
-HLR_CAPABLE_VERSIONS = ("1.1", "1.2", "1.3")
+# v1.4 (ADR/0044 A4, arc 20260730-1): additive `v2_profiles` — the SOLVED
+# PROFILE geometry of 0.2.2 sketches with their DERIVED annotations and
+# constraint glyphs. Same amendment discipline: a pre-1.4 package carrying a
+# populated `v2_profiles` is a producer error. Each entry joins the package's
+# own `sketch_frames[]` by `sketch_feature_id` — there is no separate frame
+# id, and the frame is never duplicated into the profile entry.
+DISPLAY_REPRESENTATION_VERSION = "1.4"
+ACCEPTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3", "1.4")
+HLR_CAPABLE_VERSIONS = ("1.1", "1.2", "1.3", "1.4")
 
 # sketch-frame numeric discipline (Codex2 B3.1.5)
 _FRAME_TOL = 1e-9
 
 _UNIT_TOL = 1e-6
+
+
+def _at_least(version: str, floor: str) -> bool:
+    """Is `version` at or above `floor` in the ACCEPTED_VERSIONS order?
+
+    The additive members below were originally gated on literal version
+    TUPLES, which silently became wrong on every minor bump — a whole class
+    of v1.4 failures traced to exactly that. The accepted list is already the
+    ordering authority, so "v1.2+" is expressed once, here.
+    """
+    return ACCEPTED_VERSIONS.index(version) >= ACCEPTED_VERSIONS.index(floor)
 
 
 class DisplayContractError(ValueError):
@@ -308,9 +325,9 @@ def _validate_v2_construction(raw: Any, version: str) -> tuple[V2ConstructionSke
     discipline, verbatim from sketch_frames)."""
     if raw in (None, []):
         return ()
-    if version not in ("1.3",):
+    if not _at_least(version, "1.3"):
         raise DisplayContractError(
-            f"v2_construction requires contract v1.3; producer declared {version!r}"
+            f"v2_construction requires contract v1.3+; producer declared {version!r}"
         )
     if not isinstance(raw, list):
         raise DisplayContractError("v2_construction must be a list")
@@ -371,13 +388,254 @@ def _validate_v2_construction(raw: Any, version: str) -> tuple[V2ConstructionSke
     return tuple(out)
 
 
+@dataclass(frozen=True)
+class ProfilePoint:
+    """One solved profile point (world mm)."""
+
+    id: str
+    world: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class ProfileSegment:
+    """One profile segment, addressed by the ids of its endpoints. Endpoint
+    COORDINATES are never repeated here: `points[]` is their one authority,
+    so a segment can never disagree with its own ends."""
+
+    id: str
+    start: str
+    end: str
+
+
+@dataclass(frozen=True)
+class ProfileCircle:
+    """One profile circle: a centre POINT id plus the solved radius."""
+
+    id: str
+    center: str
+    radius_mm: float
+
+
+@dataclass(frozen=True)
+class ProfileAnnotation:
+    """One DERIVED display dimension (ADR/0044 A4 annotation basis).
+
+    Class-5 display data: regenerated from committed Truth on every read,
+    never persisted, never identity-bearing, and never part of branch
+    identity. `value` is a sketch-LOCAL scalar in `unit`; `anchors` are world
+    points so the renderer places the witness lines without re-deriving the
+    sketch plane.
+    """
+
+    id: str
+    kind: str
+    value: float
+    unit: str
+    entities: tuple[str, ...]
+    anchors: tuple[tuple[float, float, float], ...]
+
+
+@dataclass(frozen=True)
+class ConstraintGlyph:
+    """One constraint marker (horizontal / vertical) on a profile segment."""
+
+    id: str
+    kind: str
+    target: str
+    anchor: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class V2ProfileSketch:
+    """v1.4: the solved PROFILE block of one 0.2.2 constrained sketch.
+
+    Joined to `sketch_frames[]` by `sketch_feature_id` — the frame lives in
+    exactly one place in the package.
+    """
+
+    sketch_feature_id: str
+    points: tuple[ProfilePoint, ...]
+    segments: tuple[ProfileSegment, ...]
+    circles: tuple[ProfileCircle, ...]
+    annotations: tuple[ProfileAnnotation, ...]
+    constraint_glyphs: tuple[ConstraintGlyph, ...]
+
+
+_ANNOTATION_KINDS = ("length", "angle", "radius", "position_x", "position_y")
+_GLYPH_KINDS = ("horizontal", "vertical")
+
+
+def _validate_v2_profiles(raw: Any, version: str) -> tuple[V2ProfileSketch, ...]:
+    """v1.4 validator. Every member is REQUIRED (absence never defaults to
+    empty), ids are unique within their collection, every structural
+    reference resolves INSIDE the entry, and every kind comes from a closed
+    vocabulary — so a renderer can never be handed a dangling id or a
+    dimension whose meaning this core does not know."""
+    if raw in (None, []):
+        return ()
+    if not _at_least(version, "1.4"):
+        raise DisplayContractError(
+            f"v2_profiles requires contract v1.4+; producer declared {version!r}"
+        )
+    if not isinstance(raw, list):
+        raise DisplayContractError("v2_profiles must be a list")
+    out: list[V2ProfileSketch] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise DisplayContractError("v2_profiles entries must be objects")
+        sid = item.get("sketch_feature_id")
+        if not isinstance(sid, str) or not sid or sid in seen:
+            raise DisplayContractError(
+                "v2_profiles entries need unique non-empty sketch_feature_id"
+            )
+        seen.add(sid)
+        for member in ("points", "segments", "circles", "annotations",
+                       "constraint_glyphs"):
+            if not isinstance(item.get(member), list):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} requires a {member}[] member"
+                )
+
+        points: list[ProfilePoint] = []
+        pt_ids: set[str] = set()
+        for p in item["points"]:
+            if not (isinstance(p, dict) and isinstance(p.get("id"), str)
+                    and p["id"] and p["id"] not in pt_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} points need unique string ids"
+                )
+            pt_ids.add(p["id"])
+            points.append(ProfilePoint(
+                id=p["id"], world=_finite3(p.get("world"),
+                                           f"{sid!r} point {p['id']!r} world")))
+
+        def _point_ref(value: Any, label: str) -> str:
+            if not (isinstance(value, str) and value in pt_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} {label} references {value!r}, which "
+                    f"is not a point of this entry"
+                )
+            return value
+
+        segments: list[ProfileSegment] = []
+        seg_ids: set[str] = set()
+        for sgm in item["segments"]:
+            if not (isinstance(sgm, dict) and isinstance(sgm.get("id"), str)
+                    and sgm["id"] and sgm["id"] not in seg_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} segments need unique string ids"
+                )
+            seg_ids.add(sgm["id"])
+            segments.append(ProfileSegment(
+                id=sgm["id"],
+                start=_point_ref(sgm.get("start"), f"segment {sgm['id']!r} start"),
+                end=_point_ref(sgm.get("end"), f"segment {sgm['id']!r} end")))
+
+        circles: list[ProfileCircle] = []
+        circ_ids: set[str] = set()
+        for c in item["circles"]:
+            if not (isinstance(c, dict) and isinstance(c.get("id"), str)
+                    and c["id"] and c["id"] not in circ_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} circles need unique string ids"
+                )
+            circ_ids.add(c["id"])
+            r = c.get("radius_mm")
+            if not (isinstance(r, (int, float)) and not isinstance(r, bool)
+                    and math.isfinite(r) and r > 0.0):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} circle {c['id']!r} radius_mm must be "
+                    f"a finite positive number, got {r!r}"
+                )
+            circles.append(ProfileCircle(
+                id=c["id"],
+                center=_point_ref(c.get("center"), f"circle {c['id']!r} center"),
+                radius_mm=float(r)))
+
+        entity_ids = pt_ids | seg_ids | circ_ids
+        annotations: list[ProfileAnnotation] = []
+        ann_ids: set[str] = set()
+        for a in item["annotations"]:
+            if not (isinstance(a, dict) and isinstance(a.get("id"), str)
+                    and a["id"] and a["id"] not in ann_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotations need unique string ids"
+                )
+            ann_ids.add(a["id"])
+            if a.get("kind") not in _ANNOTATION_KINDS:
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} kind "
+                    f"{a.get('kind')!r} is outside {list(_ANNOTATION_KINDS)}"
+                )
+            if a.get("unit") not in ("mm", "deg"):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} unit "
+                    f"{a.get('unit')!r} must be 'mm' or 'deg'"
+                )
+            val = a.get("value")
+            if not (isinstance(val, (int, float)) and not isinstance(val, bool)
+                    and math.isfinite(val)):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} value must be "
+                    f"a finite number, got {val!r}"
+                )
+            ents = a.get("entities")
+            if not (isinstance(ents, list) and ents
+                    and all(isinstance(e, str) and e in entity_ids for e in ents)):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} entities must "
+                    f"be a non-empty list of ids present in this entry"
+                )
+            anchors = a.get("anchors")
+            if not (isinstance(anchors, list) and len(anchors) == 2):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} needs exactly "
+                    f"two world anchors"
+                )
+            annotations.append(ProfileAnnotation(
+                id=a["id"], kind=a["kind"], value=float(val), unit=a["unit"],
+                entities=tuple(ents),
+                anchors=tuple(_finite3(p, f"{a['id']!r} anchor") for p in anchors)))
+
+        glyphs: list[ConstraintGlyph] = []
+        glyph_ids: set[str] = set()
+        for g in item["constraint_glyphs"]:
+            if not (isinstance(g, dict) and isinstance(g.get("id"), str)
+                    and g["id"] and g["id"] not in glyph_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} constraint_glyphs need unique string ids"
+                )
+            glyph_ids.add(g["id"])
+            if g.get("kind") not in _GLYPH_KINDS:
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} glyph {g['id']!r} kind "
+                    f"{g.get('kind')!r} is outside {list(_GLYPH_KINDS)}"
+                )
+            tgt = g.get("target")
+            if not (isinstance(tgt, str) and tgt in seg_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} glyph {g['id']!r} targets {tgt!r}, "
+                    f"which is not a segment of this entry"
+                )
+            glyphs.append(ConstraintGlyph(
+                id=g["id"], kind=g["kind"], target=tgt,
+                anchor=_finite3(g.get("anchor"), f"glyph {g['id']!r} anchor")))
+
+        out.append(V2ProfileSketch(
+            sketch_feature_id=sid, points=tuple(points),
+            segments=tuple(segments), circles=tuple(circles),
+            annotations=tuple(annotations), constraint_glyphs=tuple(glyphs)))
+    return tuple(out)
+
+
 def _validate_sketch_frames(raw: Any, version: str) -> tuple[SketchFrame, ...]:
     """The B3.1.5 validator: unique ids, finite 3-vectors, unit + orthogonal
     axes, right-handed v = normal × u. Empty/absent is valid; a populated list
     on a pre-1.2 version is a producer error."""
     if raw in (None, []):
         return ()
-    if version not in ("1.2", "1.3"):
+    if not _at_least(version, "1.2"):
         raise DisplayContractError(
             f"sketch_frames requires contract v1.2+; producer declared {version!r}"
         )
@@ -447,6 +705,7 @@ class DisplayRepresentation:
     sketch_frames: tuple[SketchFrame, ...] = ()
     # v1.3 (Gate F2b): solved v2 construction geometry (derived, never Truth).
     v2_construction: tuple[V2ConstructionSketch, ...] = ()
+    v2_profiles: tuple[V2ProfileSketch, ...] = ()
     display_representation_version: str = DISPLAY_REPRESENTATION_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -552,6 +811,7 @@ class DisplayRepresentation:
                 view_dependent.identity_echo, identity, version)
         sketch_frames = _validate_sketch_frames(d.get("sketch_frames"), version)
         v2_construction = _validate_v2_construction(d.get("v2_construction"), version)
+        v2_profiles = _validate_v2_profiles(d.get("v2_profiles"), version)
 
         return cls(
             identity=identity,
@@ -562,6 +822,7 @@ class DisplayRepresentation:
             view_dependent=view_dependent,
             sketch_frames=sketch_frames,
             v2_construction=v2_construction,
+            v2_profiles=v2_profiles,
             display_representation_version=version,
         )
 
@@ -818,7 +1079,7 @@ def _surface_kind(f: dict, version: str) -> str | None:
     # Codex7 B3: v1.1 -> v1.2 is a DECLARED-shape amendment — a legacy
     # package carrying the new field is a producer error, exactly like
     # populated sketch_frames (never an additive mutation of v1.1).
-    if version not in ("1.2", "1.3"):
+    if not _at_least(version, "1.2"):
         raise DisplayContractError(
             f"face {f.get('face_id')!r} carries surface_kind under contract "
             f"{version!r}; the field requires v1.2+"

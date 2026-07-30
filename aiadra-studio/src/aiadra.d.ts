@@ -1,7 +1,12 @@
 // Types for the preload-exposed, allowlisted bridge API (electron/preload.ts).
 // `window.aiadra` is optional: in browser-only dev (`npm run dev:web`, no Electron)
 // it is undefined, so the UI degrades gracefully.
-import type { DisplayRepresentation, ViewDependentPayload } from './display/contract'
+import type {
+  DisplayRepresentation,
+  ProfileGraphPreview,
+  ViewDependentPayload,
+} from './display/contract'
+import type { ProfilePayload, SketchPlacementInput } from './sketch/profileTypes'
 import type { PersistedSettings } from './settings/persisted'
 
 export {}
@@ -67,6 +72,20 @@ declare global {
         views: HlrViewRequest[],
         algorithm?: 'exact' | 'poly',
       ): Promise<Envelope<{ view_dependent: ViewDependentPayload }>>
+      /** Live preview of an uncommitted profile sketch graph (ADR/0044 A4).
+       *
+       * A READ: it writes nothing, opens no Transaction and mints no id, so
+       * new records come back under the CALLER's own keys. The engine solves,
+       * snaps and dimensions — Studio renders what it is given and never
+       * computes a snapped coordinate or a dimension value of its own
+       * (ADR/0045 D6). A refused graph returns `preview: null` with a typed
+       * refusal, so the drawing session survives an invalid intermediate. */
+      previewSketchGraph?(
+        workspaceId: string,
+        objectRef: string,
+        profile: ProfilePayload,
+        owner: { sketchFeatureId: string } | { placement: SketchPlacementInput; candidateKey: string },
+      ): Promise<Envelope<{ preview: ProfileGraphPreview | null; refusal: { message: string } | null }>>
       // Authoring session — the Ring-2 WRITE lane (arc 20260711-11; ADR/0043).
       // Optional: absent in browser-only dev (the AuthoringBackend uses a mock there).
       // S2 (arc 20260714-3 Codex1 B1): both mutating verbs return the op's

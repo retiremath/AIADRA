@@ -93,6 +93,19 @@ def compile_profile_graph(*, case_id: str,
     from .solver import solve, solve_feasible
     from .sketch_v2 import _corpus_case
 
+    # PHASE 0 — the WEAK-INDEPENDENT admission prefix, BEFORE any solve.
+    # Defect D-2 (build-discovered 2026-07-30): the exact-completion check
+    # needs a solved weak set, so full admission cannot run first — but a
+    # structurally inadmissible graph reaches the solver in a degenerate
+    # configuration and dies with an untyped ZeroDivisionError instead of a
+    # typed refusal. `admit_structure` is a PREFIX of `admit_graph` (one
+    # authority, two entry points), so this closes the hole without forking
+    # the policy.
+    try:
+        branch_policy_b1.admit_structure(entities, constraints, [])
+    except branch_policy_b1.OutOfDomain as exc:
+        _fail(str(exc))
+
     # PHASE 1 — the feasible solution of the STRONG system, nearest the
     # drawn nominals. This is where snapping physically happens.
     feasible = solve_feasible(_corpus_case(case_id, entities, constraints))

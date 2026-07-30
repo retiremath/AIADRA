@@ -341,7 +341,11 @@ class TestRedefineFloor(_HandlerHarness):
         b["adapter_payload"].pop("placement")
         assert a == b  # incl. fact_provenance — old geometry not relabeled
         (kind, payload), = events
-        assert payload["placement_provenance"] == {"category": "human_input"}
+        # Defect D-3: `part_changed` has NO provenance member — the editing
+        # actor rides the transaction. The event carries {id, new_record}
+        # deltas, which is what the bundle schema actually accepts.
+        assert "human_input" in payload["rationale"]
+        assert set(payload["geometry_ref_delta"]["updated"][0]) == {"id", "new_record"}
 
     def test_no_change_refuses_before_staging(self, monkeypatch):
         (ctx, staged, events), placed = self._seed(monkeypatch)
@@ -391,3 +395,57 @@ class TestRedefineFloor(_HandlerHarness):
         aiadra_mechanical.register(registrar)
         assert seen["mechanical.redefine_sketch_placement"] is \
             handlers.handle_redefine_sketch_placement
+
+
+class TestRedefineThroughTheRealProtocol:
+    """Defect D-3 (build-discovered 2026-07-30, arc 20260730-1).
+
+    The floors above drive the handler through a MOCK context, which does not
+    schema-validate the emitted event. Under a real commit the handler's
+    `part_changed` payload was rejected outright — a `placement_provenance`
+    member the schema does not define, and RAW geometry records where
+    `geometry_ref_delta.updated` requires `{id, new_record}`. The operation
+    could never have committed on a real workspace.
+
+    This is lesson W-1 again in a new place: a green suite proved the
+    handler's logic while the BOUNDARY it had to cross went unexercised. The
+    fix is this test, not a stricter mock — only a real commit can prove a
+    real commit.
+    """
+
+    def _placed(self, ws):
+        from aiadra_core.protocol import propose
+
+        propose(ws, kind="mechanical.add_reference_sketch", params={
+            "part_number": "P-000001",
+            "placement": {"support": {"kind": "principal", "orientation": "xy"}},
+        }).commit()
+
+    def test_a_redefine_actually_commits(self, workspace_with_part: Path):
+        from aiadra_core.protocol import propose
+
+        from conftest import part_sidecar
+
+        ws = workspace_with_part
+        self._placed(ws)
+        propose(ws, kind="mechanical.redefine_sketch_placement", params={
+            "part_number": "P-000001", "sketch_feature_id": "feat_0001",
+            "orientation": "top",
+        }).commit()
+
+        rec = part_sidecar(ws)["feature"][0]
+        assert rec["adapter_payload"]["placement"]["orientation"] == "top"
+        assert rec["adapter_payload"]["placement"]["support"] == \
+            {"kind": "principal", "orientation": "xy"}
+
+    def test_the_no_op_refusal_holds_through_the_real_protocol(
+            self, workspace_with_part: Path):
+        from aiadra_core.protocol import propose
+
+        ws = workspace_with_part
+        self._placed(ws)
+        with pytest.raises(TransactionError, match="sketch-placement-unchanged"):
+            propose(ws, kind="mechanical.redefine_sketch_placement", params={
+                "part_number": "P-000001", "sketch_feature_id": "feat_0001",
+                "orientation": "right",
+            }).commit()

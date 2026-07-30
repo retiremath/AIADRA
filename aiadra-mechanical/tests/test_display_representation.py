@@ -92,7 +92,7 @@ def test_box_with_hole_edge_kinds():
 def test_contract_round_trips_through_dto():
     d = _gen(_recipe())
     dr = DisplayRepresentation.from_engine_dict(d)
-    assert dr.display_representation_version == "1.3"
+    assert dr.display_representation_version == "1.4"
     assert dr.view_dependent is None  # base display never inlines HLR
     assert dr.selection.id_space == "canonical"
     assert dr.counters.face_count == 7

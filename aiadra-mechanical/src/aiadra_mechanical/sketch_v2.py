@@ -451,11 +451,21 @@ def author_reference_sketch(*, feature_id: str, name: str,
     return record
 
 
-def _author_reference_graph(feature_id: str, axes: str, x_axis_mm: float,
-                            y_axis_mm: float) -> tuple[list, list, list]:
-    """Build + preview-solve the canonical G0/G1/G2 reference graph — the
-    ONE graph/solve path shared by BOTH authoring lanes (the 2D system is
-    frame-independent; placement changes the frame, never the graph)."""
+def reference_graph_skeleton(axes: str, x_axis_mm: float, y_axis_mm: float,
+                             fail=None) -> tuple[list, list]:
+    """The canonical G0/G1/G2 construction frame — entities + strong facts,
+    UNSOLVED.
+
+    Extracted at A4 so the 0.2.2 PROFILE writer can obtain the frame without
+    the reference-only solve: a profile sketch must solve its reference and
+    profile blocks as ONE system, and solving the frame alone first would be
+    a second semantic path. The 0.2.0/0.2.1 lanes call it through
+    `_author_reference_graph` and their bytes are unchanged.
+    """
+    if fail is None:
+        fail = _fail
+    if axes not in _AXES_SHAPES:
+        fail(f"axes must be one of {sorted(_AXES_SHAPES)}, got {axes!r}")
     entities: list[dict[str, Any]] = [
         {"id": "skp_0001", "type": "point", "construction": True,
          "nominal": {"x": 0.0, "y": 0.0}},
@@ -475,6 +485,16 @@ def _author_reference_graph(feature_id: str, axes: str, x_axis_mm: float,
         entities.append({"id": "skp_0005", "type": "line", "construction": True,
                          "start": "skp_0001", "end": "skp_0003"})
         constraints.append({"id": "c03", "kind": "vertical", "args": ["skp_0005"]})
+    return entities, constraints
+
+
+def _author_reference_graph(feature_id: str, axes: str, x_axis_mm: float,
+                            y_axis_mm: float) -> tuple[list, list, list]:
+    """Build + preview-solve the canonical G0/G1/G2 reference graph — the
+    ONE graph/solve path shared by BOTH reference-authoring lanes (the 2D
+    system is frame-independent; placement changes the frame, never the
+    graph)."""
+    entities, constraints = reference_graph_skeleton(axes, x_axis_mm, y_axis_mm)
 
     from .solver import solve
 

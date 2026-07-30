@@ -146,11 +146,12 @@ def test_aiadra_core_version_bumped_to_0_15_0():
     1.0/1.1/1.2 compatibility matrix and the standalone-HLR capable set
     {1.1, 1.2}. Additive public behavior → minor bump (prior: 0.14.0,
     arc 20260714-2 EP0 — the empty-Part display state)."""
-    # 0.18.0: delete_object — ADR/0004 SCN terminal `deleted` lifecycle +
-    # bundle v0.30.0 (arc 20260728-3). 0.17.0 was F2b display contract v1.3.
+    # 0.19.0: ADR/0044 A4 — Display contract v1.4 (`v2_profiles`) + the new
+    # `protocol.preview_sketch_graph` read primitive (arc 20260730-1).
+    # 0.18.0 was delete_object + bundle v0.30.0; 0.17.0 was contract v1.3.
     # Keep in lockstep with pyproject — the Studio engine badge reads THIS
     # constant.
-    assert aiadra_version == "0.18.0"
+    assert aiadra_version == "0.19.0"
 
 
 # =============================================================================

@@ -145,6 +145,44 @@ def m_display_representation(params: dict[str, Any]) -> dict[str, Any]:
     return {"display": dr.to_dict()}
 
 
+def m_preview_sketch_graph(params: dict[str, Any]) -> dict[str, Any]:
+    """Live preview of an uncommitted profile sketch graph (ADR/0044 A4; arc
+    20260730-1). Read-only Ring-2 primitive — writes nothing, opens no
+    Transaction, mints no id.
+
+    This is the lane that makes interactive drawing honest: the ENGINE solves,
+    snaps and dimensions the proposed graph, and Studio renders what it is
+    given. Studio never computes a snapped coordinate or a dimension value of
+    its own (ADR/0045 D6).
+
+    A refused graph is NOT a transport error — it returns
+    `{preview: null, refusal: {message}}` so the drawing surface can show the
+    live refusal without the session dying under it.
+    """
+    from aiadra_core.protocol import preview_sketch_graph
+    from aiadra_core.transaction.boundary import TransactionError
+
+    workspace_path = params.get("workspace_path")
+    object_ref = params.get("object_ref")
+    profile = params.get("profile")
+    if not workspace_path or not object_ref:
+        raise ValueError("preview_sketch_graph requires 'workspace_path' and 'object_ref'")
+    if not isinstance(profile, dict):
+        raise ValueError("preview_sketch_graph requires a 'profile' object")
+    kwargs: dict[str, Any] = {
+        "engine_id": params.get("engine_id", "mechanical"),
+        "profile": profile,
+    }
+    for name in ("sketch_feature_id", "placement", "candidate_key"):
+        if params.get(name) is not None:
+            kwargs[name] = params[name]
+    try:
+        preview = preview_sketch_graph(Path(workspace_path), object_ref, **kwargs)
+    except TransactionError as exc:
+        return {"preview": None, "refusal": {"message": str(exc)}}
+    return {"preview": preview, "refusal": None}
+
+
 def m_display_hlr(params: dict[str, Any]) -> dict[str, Any]:
     """View-dependent HLR overlay for a canonical Object (Display contract
     v1.1; arc 20260609-2). Read-only Ring-2 primitive — computed on camera
@@ -316,6 +354,7 @@ METHODS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "delete_object": m_delete_object,
     "display_representation": m_display_representation,
     "display_hlr": m_display_hlr,
+    "preview_sketch_graph": m_preview_sketch_graph,
     # authoring (write) lane — arc 20260711-11 slice 1
     "authoring_begin": m_authoring_begin,
     "authoring_add": m_authoring_add,

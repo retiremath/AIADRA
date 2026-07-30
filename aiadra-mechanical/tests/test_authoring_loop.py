@@ -15,6 +15,9 @@ _OPS = {
     # Gate F2b (ADR/0044 A2): the first v2 writer — the references sketch.
     "mechanical.add_reference_sketch",
     "mechanical.redefine_sketch_placement",
+    # ADR/0044 A4 (arc 20260730-1): the 0.2.2 profile lane.
+    "mechanical.author_profile_sketch",
+    "mechanical.replace_sketch_graph",
     "mechanical.add_extrude_feature",
     "mechanical.add_revolve_feature",
     "mechanical.add_fillet_feature",
