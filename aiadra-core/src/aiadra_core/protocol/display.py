@@ -813,6 +813,22 @@ class DisplayRepresentation:
         v2_construction = _validate_v2_construction(d.get("v2_construction"), version)
         v2_profiles = _validate_v2_profiles(d.get("v2_profiles"), version)
 
+        # Codex6 B1: the v1.4 contract PROMISES that every profile entry joins
+        # exactly one frame by sketch_feature_id — so the validator enforces
+        # it, not only the consumer. Duplicate frame ids are already refused
+        # inside _validate_sketch_frames; what remains is the MISSING side.
+        # A profile without a frame would be world geometry Studio cannot
+        # orient a drawing surface (or a circle tessellation) on — that is a
+        # producer error, never a render-time judgment call.
+        frame_ids = {f.sketch_feature_id for f in sketch_frames}
+        for prof in v2_profiles:
+            if prof.sketch_feature_id not in frame_ids:
+                raise DisplayContractError(
+                    f"v2_profiles entry {prof.sketch_feature_id!r} has no "
+                    f"matching sketch_frames member — the v1.4 profile→frame "
+                    f"join is mandatory (frames present: {sorted(frame_ids)})"
+                )
+
         return cls(
             identity=identity,
             render=render,

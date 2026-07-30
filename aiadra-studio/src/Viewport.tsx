@@ -19,7 +19,8 @@ import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
 import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
-import { createProfileOverlay, type ProfileGeometry } from './sketch/profileOverlay'
+import { createProfileOverlay, type ProfileGeometry, type ProfileOverlay } from './sketch/profileOverlay'
+import { committedProfiles } from './sketch/committedProfiles'
 import {
   arbitratePlanePick,
   frameFromNormalAndPoint,
@@ -104,7 +105,14 @@ export type SketchInteractionMode =
    *  the ENGINE's last preview — the viewport renders it and derives nothing.
    *  Clicks and cursor motion ride the same `onSketchPlace`/`onSketchCursor`
    *  callbacks as the v1 lane, in the same plane-local mm. */
-  | { kind: 'profile'; frame: PlaneFrameTS; geometry: ProfileGeometry | null }
+  | {
+      kind: 'profile'
+      frame: PlaneFrameTS
+      geometry: ProfileGeometry | null
+      /** The committed feature an EDIT session owns — its committed overlay is
+       *  suppressed while the live preview replaces it. Null for Create. */
+      ownedFeatureId: string | null
+    }
 
 /** S3: the resolved pick — a datum enum, or an ENGINE-PLANAR face enriched
  *  with the TRANSIENT mirror frame (drawing-only; the engine re-derives). */
@@ -516,6 +524,7 @@ export default function Viewport({
       selectionStore.clearSelected() // → reconcileSelection (selId=null), no-op repaint (part gone)
       viewStore.setSceneFacts({ hasCanonicalPart: false })
       removeV2Construction()
+      removeCommittedProfiles()
     }
 
     // ---- Gate F2b: the v2 construction overlay (Display v1.3) ----
@@ -610,6 +619,7 @@ export default function Viewport({
       applyMode()
       viewStore.setSceneFacts({ hasCanonicalPart: true })
       buildV2Construction()
+      buildCommittedProfiles()
     }
 
     const reloadDisplay = async () => {
@@ -856,6 +866,43 @@ export default function Viewport({
     const profileOverlay = createProfileOverlay()
     profileOverlay.group.visible = false
     scene.add(profileOverlay.group)
+    // Codex6 B1: the COMMITTED profile lane. One overlay per committed 0.2.2
+    // sketch, fed from the installed Display package's v2_profiles[] joined
+    // to sketch_frames[] — the SAME ProfileGeometry vocabulary the live
+    // preview uses, so "committed equals the accepted preview" is a property
+    // of the data, not of two renderers happening to agree.
+    const committedOverlays = new Map<string, ProfileOverlay>()
+    // While an EDIT session owns a feature, its committed drawing is
+    // suppressed (the live preview replaces it); restored on session end.
+    let suppressedProfileId: string | null = null
+    const applyCommittedSuppression = () => {
+      for (const [sid, o] of committedOverlays) {
+        o.group.visible = sid !== suppressedProfileId
+      }
+    }
+    const removeCommittedProfiles = () => {
+      for (const o of committedOverlays.values()) {
+        scene.remove(o.group)
+        o.dispose()
+      }
+      committedOverlays.clear()
+    }
+    const buildCommittedProfiles = () => {
+      removeCommittedProfiles()
+      if (!display) return
+      // FAIL-CLOSED: a broken profile→frame join throws (core's v1.4
+      // validator already refuses it; reaching it here means the package
+      // bypassed the contract) — treated like any malformed display rather
+      // than rendered on a guessed plane.
+      for (const cp of committedProfiles(display)) {
+        const o = createProfileOverlay()
+        o.group.name = `committed-profile:${cp.sketchFeatureId}`
+        o.update(cp.geometry, cp.frameNormal)
+        scene.add(o.group)
+        committedOverlays.set(cp.sketchFeatureId, o)
+      }
+      applyCommittedSuppression()
+    }
     let modeKind: 'none' | 'planePick' | 'sketch' | 'sketchSolicit' | 'profile' = 'none'
     let sketchFrame: PlaneFrameTS | null = null
     let hoveredQuad: THREE.Mesh | null = null
@@ -1053,6 +1100,8 @@ export default function Viewport({
         profileOverlay.group.visible = false
         profileOverlay.update(null, [0, 0, 1])
         sketchFrame = null
+        suppressedProfileId = null
+        applyCommittedSuppression()
         sketchCbRef.current.onContextHover?.(null)
       }
       modeKind = kind
@@ -1065,6 +1114,8 @@ export default function Viewport({
         // The engine's world points arrive already mapped; the frame normal
         // is passed only so a circle is tessellated IN the sketch plane.
         profileOverlay.update(m.geometry, m.frame.normal)
+        suppressedProfileId = m.ownedFeatureId
+        applyCommittedSuppression()
       }
     }
     applyInteractionRef.current = applyInteraction

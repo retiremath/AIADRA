@@ -35,7 +35,6 @@ function setup(overrides: Partial<Parameters<typeof useProfileSketch>[0]> = {}) 
     useProfileSketch({
       workspaceId: 'ws1',
       partNumber: 'P-000001',
-      frame: FRAME,
       snapAngleToleranceDeg: 3,
       minDragPx: 4,
       preview,
@@ -60,18 +59,18 @@ describe('the lane is inert until a session opens', () => {
     expect(preview).not.toHaveBeenCalled()
   })
 
-  it('a session with no frame yields no mode — the viewport is never given a plane it lacks', () => {
-    const { hook } = setup({ frame: null })
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
-    expect(hook.result.current.active).toBe(true)
-    expect(hook.result.current.mode).toBeNull()
+  it('the mode carries the frame the session was OPENED with — no other lifecycle owns it', () => {
+    const { hook } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
+    const mode = hook.result.current.mode
+    expect(mode?.kind === 'profile' && mode.frame).toEqual(FRAME)
   })
 })
 
 describe('drawing drives the engine preview', () => {
   it('a completed line asks the engine, and the answer becomes the overlay geometry', async () => {
     const { hook, preview } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
 
@@ -92,7 +91,7 @@ describe('drawing drives the engine preview', () => {
 
   it('MOVING THE CURSOR never triggers a solve — only the drawn graph does', async () => {
     const { hook, preview } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
     expect(preview).toHaveBeenCalledOnce()
@@ -106,7 +105,7 @@ describe('drawing drives the engine preview', () => {
 
   it('an in-progress click does not solve a graph that has no segment yet', async () => {
     const { hook, preview } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     act(() => hook.result.current.place({ u: 0, v: 0 }))
     await act(async () => {})
     expect(preview).not.toHaveBeenCalled()
@@ -118,7 +117,7 @@ describe('drawing drives the engine preview', () => {
       points: [{ id: 'skp_0006', x: 0, y: 0 }],
       circles: [{ id: 'skp_0007', center: { id: 'skp_0006' }, radius_mm: 5 }],
     }
-    act(() => hook.result.current.openEditSession('feat_0001', baseline))
+    act(() => hook.result.current.openEditSession('feat_0001', baseline, FRAME))
     drawLine(hook)
     await act(async () => {})
     expect((preview.mock.calls[0] as unknown as unknown[])[4]).toEqual({ sketchFeatureId: 'feat_0001' })
@@ -132,7 +131,7 @@ describe('refusals keep the session alive', () => {
       refusal: { message: 'segment collapsed' },
     })) as unknown as NonNullable<Parameters<typeof useProfileSketch>[0]['preview']>
     const { hook } = setup({ preview })
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
 
@@ -147,7 +146,7 @@ describe('refusals keep the session alive', () => {
       throw new Error('bridge exited')
     }) as unknown as NonNullable<Parameters<typeof useProfileSketch>[0]['preview']>
     const { hook } = setup({ preview })
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
     expect(hook.result.current.refusal).toBe('bridge exited')
@@ -156,7 +155,7 @@ describe('refusals keep the session alive', () => {
 
   it('with no bridge at all the lane refuses honestly rather than mocking geometry', async () => {
     const { hook } = setup({ preview: undefined })
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
     expect(hook.result.current.refusal).toMatch(/bridge is unavailable/)
@@ -164,21 +163,51 @@ describe('refusals keep the session alive', () => {
 })
 
 describe('Close and Cancel', () => {
-  it('Close hands the shell exactly one commit intent and ends the session', async () => {
+  it('Close hands the shell ONE intent and the session SURVIVES until the outcome', async () => {
     const { hook, onCommit } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
     act(() => hook.result.current.close())
 
     expect(onCommit).toHaveBeenCalledOnce()
     expect(onCommit.mock.calls[0][0].kind).toBe('mechanical.author_profile_sketch')
+    // Codex6 B2: a cleared session cannot be recovered, so Close keeps it
+    // open (single-flight) until the shell reports the outcome.
+    expect(hook.result.current.active).toBe(true)
+    expect(hook.result.current.closing).toBe(true)
+    // a second Close mid-flight is refused — one terminal in motion
+    act(() => hook.result.current.close())
+    expect(onCommit).toHaveBeenCalledOnce()
+
+    act(() => hook.result.current.confirmClosed())
     expect(hook.result.current.active).toBe(false)
+    expect(hook.result.current.closing).toBe(false)
+  })
+
+  it('a FAILED commit leaves the drawing recoverable with the refusal surfaced', async () => {
+    const { hook, onCommit } = setup()
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
+    drawLine(hook)
+    await act(async () => {})
+    act(() => hook.result.current.close())
+    expect(onCommit).toHaveBeenCalledOnce()
+
+    act(() => hook.result.current.commitFailed('the engine refused the graph'))
+    expect(hook.result.current.active).toBe(true)
+    expect(hook.result.current.closing).toBe(false)
+    expect(hook.result.current.refusal).toBe('the engine refused the graph')
+    // fully recoverable: the user can keep drawing and Close again
+    act(() => hook.result.current.place({ u: 40, v: 0 }))
+    act(() => hook.result.current.place({ u: 60, v: 0.2 }))
+    await act(async () => {})
+    act(() => hook.result.current.close())
+    expect(onCommit).toHaveBeenCalledTimes(2)
   })
 
   it('Close on an EMPTY create session commits nothing — it coincides with Cancel', () => {
     const { hook, onCommit } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     act(() => hook.result.current.close())
     expect(onCommit).not.toHaveBeenCalled()
     expect(hook.result.current.active).toBe(false)
@@ -187,10 +216,14 @@ describe('Close and Cancel', () => {
   it('an edited sketch closes as a REPLACE', async () => {
     const { hook, onCommit } = setup()
     act(() =>
-      hook.result.current.openEditSession('feat_0001', {
-        points: [{ id: 'skp_0006', x: 0, y: 0 }],
-        circles: [{ id: 'skp_0007', center: { id: 'skp_0006' }, radius_mm: 5 }],
-      }),
+      hook.result.current.openEditSession(
+        'feat_0001',
+        {
+          points: [{ id: 'skp_0006', x: 0, y: 0 }],
+          circles: [{ id: 'skp_0007', center: { id: 'skp_0006' }, radius_mm: 5 }],
+        },
+        FRAME,
+      ),
     )
     drawLine(hook)
     await act(async () => {})
@@ -203,7 +236,7 @@ describe('Close and Cancel', () => {
 
   it('Cancel writes nothing and reports the preserved feature', async () => {
     const { hook, onCommit } = setup()
-    act(() => hook.result.current.openEditSession('feat_0001', { points: [] }))
+    act(() => hook.result.current.openEditSession('feat_0001', { points: [] }, FRAME))
     drawLine(hook)
     await act(async () => {})
     const outcomes: { wrote: false; preservedFeatureId: string | null }[] = []
@@ -217,7 +250,7 @@ describe('Close and Cancel', () => {
 
   it('a cancelled create session names no feature to preserve', () => {
     const { hook } = setup()
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     const outcomes: { preservedFeatureId: string | null }[] = []
     act(() => {
       outcomes.push(hook.result.current.cancel())
@@ -231,7 +264,7 @@ describe('Close and Cancel', () => {
       () => new Promise<PreviewResult>((res) => { release = res }),
     ) as unknown as NonNullable<Parameters<typeof useProfileSketch>[0]['preview']>
     const { hook } = setup({ preview })
-    act(() => hook.result.current.openCreateSession(PLACEMENT))
+    act(() => hook.result.current.openCreateSession(PLACEMENT, FRAME))
     drawLine(hook)
     await act(async () => {})
     act(() => void hook.result.current.cancel())

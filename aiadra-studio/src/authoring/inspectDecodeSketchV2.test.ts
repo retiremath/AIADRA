@@ -209,7 +209,7 @@ describe('the v2 refusal matrix at the Studio surface', () => {
   it('an unknown 0.2.x minor refuses rather than guessing', () => {
     // 0.2.1 became a DEFINED writer version (ADR/0044 A3) — the unknown
     // minor moves up; the refusal law is unchanged.
-    expect(() => decodeInspectedPart(view([v2sketch({ adapter_schema_version: '0.2.2' })])))
+    expect(() => decodeInspectedPart(view([v2sketch({ adapter_schema_version: '0.2.3' })])))
       .toThrow(/unknown 0\.2\.x minor/)
   })
 
@@ -292,5 +292,134 @@ describe('the v2 refusal matrix at the Studio surface', () => {
       }],
     })
     expect(() => decodeInspectedPart(view([badOrigin]))).toThrow(/origin/)
+  })
+})
+
+/** ADR/0044 A4 (arc 20260730-1, Codex6 B2): the 0.2.2 PROFILE lane at the
+ *  decoder surface. Before this, a committed profile sketch KILLED the whole
+ *  Part context — inspect refused the record, and since Part readiness is the
+ *  JOIN of display+inspect, the tree, eligibility and every entry died with
+ *  it. The walk would have ended at its second step. */
+describe('the 0.2.2 profile sketch at the decoder surface', () => {
+  const placement = {
+    support: { kind: 'principal', orientation: 'xy' },
+    orientation_ref: { kind: 'principal', orientation: 'yz' },
+    orientation: 'right',
+    normal_side: 'positive',
+  }
+  const cpt = (id: string, x: number, y: number, construction = false) => ({
+    id, type: 'point', construction, nominal: { x, y },
+  })
+  const cln = (id: string, start: string, end: string, construction = false) => ({
+    id, type: 'line', construction, start, end,
+  })
+  const v22payload = (over: Record<string, unknown> = {}) => ({
+    sketch_model: 2,
+    solver_contract: 'skb-c0',
+    weak_policy: 'skb-0',
+    branch_policy: 'skb-b1',
+    placement,
+    entities: [
+      // the G2 reference frame
+      cpt('skp_0001', 0, 0, true), cpt('skp_0002', 20, 0, true), cpt('skp_0003', 0, 20, true),
+      cln('skp_0004', 'skp_0001', 'skp_0002', true), cln('skp_0005', 'skp_0001', 'skp_0003', true),
+      // the drawn profile: one near-horizontal line, snapped by a fact
+      cpt('skp_0006', 0, 0), cpt('skp_0007', 20, 0.4),
+      cln('skp_0008', 'skp_0006', 'skp_0007'),
+    ],
+    constraints: [
+      { id: 'c01', kind: 'fix', args: ['skp_0001'] },
+      { id: 'c02', kind: 'horizontal', args: ['skp_0004'] },
+      { id: 'c03', kind: 'vertical', args: ['skp_0005'] },
+      { id: 'c04', kind: 'horizontal', args: ['skp_0008'] },
+    ],
+    dimensions: [],
+    references: [],
+    // cardinality only at this surface: G2 (2) + profile classes (3 — the
+    // horizontal fact unions the two y scalars). Magnitudes are engine-side.
+    weak_completion: [weak(1, 'skp_0002', 'x', 20), weak(2, 'skp_0003', 'y', 20),
+      weak(3, 'skp_0006', 'x', 0), weak(4, 'skp_0006', 'y', 0), weak(5, 'skp_0007', 'x', 20)],
+    witnesses: [],
+    ...over,
+  })
+  const v22sketch = (payload: Record<string, unknown> = {}) => ({
+    id: 'feat_0001',
+    feature_type: 'sketch',
+    engine: 'mechanical',
+    adapter_schema_version: '0.2.2',
+    adapter_payload: v22payload(payload),
+  })
+
+  it('a committed profile sketch decodes — the Part context SURVIVES the commit', () => {
+    const part = decodeInspectedPart(view([v22sketch()]))
+    const feat = part.features[0]
+    expect(feat.kind).toBe('sketchV2')
+    if (feat.kind !== 'sketchV2') return
+    expect(feat.version).toBe('0.2.2')
+    expect(feat.branchPolicy).toBe('skb-b1')
+    expect(feat.shape).toBe('G2')
+  })
+
+  it('the decoded baseline is the committed profile block in id-form, byte-exact', () => {
+    const part = decodeInspectedPart(view([v22sketch()]))
+    const feat = part.features[0]
+    if (feat.kind !== 'sketchV2') throw new Error('not a sketchV2')
+    expect(feat.profile).toEqual({
+      points: [
+        { id: 'skp_0006', x: 0, y: 0 },
+        { id: 'skp_0007', x: 20, y: 0.4 },
+      ],
+      segments: [{ id: 'skp_0008', start: { id: 'skp_0006' }, end: { id: 'skp_0007' } }],
+      circles: [],
+      facts: [{ id: 'c04', kind: 'horizontal', target: { id: 'skp_0008' } }],
+    })
+  })
+
+  it('the version×policy matrix is CLOSED in both directions', () => {
+    expect(() => decodeInspectedPart(view([v22sketch({ branch_policy: 'skb-b0' })])))
+      .toThrow(/skb-b1.*for 0\.2\.2/)
+    // the reverse direction needs a well-formed 0.2.1 payload (placement,
+    // not plane) so the POLICY check is what fires, not the key set
+    const p021 = v22payload({ branch_policy: 'skb-b1' }) as Record<string, unknown>
+    expect(() =>
+      decodeInspectedPart(view([{
+        id: 'feat_0001', feature_type: 'sketch', engine: 'mechanical',
+        adapter_schema_version: '0.2.1', adapter_payload: p021,
+      }])),
+    ).toThrow(/skb-b0.*for 0\.2\.1/)
+  })
+
+  it('a reference-only 0.2.2 graph refuses — that is a skb-b0 record', () => {
+    const payload = v22payload()
+    const entities = (payload.entities as Record<string, unknown>[]).filter(
+      (e) => e.construction === true)
+    const constraints = (payload.constraints as Record<string, unknown>[]).filter(
+      (c) => c.id !== 'c04')
+    expect(() => decodeInspectedPart(view([v22sketch({
+      entities, constraints,
+      weak_completion: [weak(1, 'skp_0002', 'x', 20), weak(2, 'skp_0003', 'y', 20)],
+    })]))).toThrow(/non-empty profile block/)
+  })
+
+  it('two axis facts on one segment refuse at THIS surface too', () => {
+    const payload = v22payload()
+    const constraints = [...(payload.constraints as Record<string, unknown>[]),
+      { id: 'c05', kind: 'vertical', args: ['skp_0008'] }]
+    expect(() => decodeInspectedPart(view([v22sketch({ constraints })])))
+      .toThrow(/more than one axis fact/)
+  })
+
+  it('a wrong weak CARDINALITY refuses (magnitudes stay engine-side)', () => {
+    expect(() => decodeInspectedPart(view([v22sketch({
+      weak_completion: [weak(1, 'skp_0002', 'x', 20)],
+    })]))).toThrow(/canonical completion for this graph has 5/)
+  })
+
+  it('a cross-block segment refuses', () => {
+    const payload = v22payload()
+    const entities = (payload.entities as Record<string, unknown>[]).map((e) =>
+      e.id === 'skp_0008' ? { ...e, start: 'skp_0001' } : e)
+    expect(() => decodeInspectedPart(view([v22sketch({ entities })])))
+      .toThrow(/across the reference\/profile block boundary/)
   })
 })

@@ -84,8 +84,9 @@ export function SketchRibbon({
    *  lanes share this ribbon but never each other's state. */
   profile?: {
     active: boolean
+    /** True while the Close commit is in flight (single-flight terminal). */
+    closing: boolean
     refusal: string | null
-    open(): void
     close(): void
     cancel(): void
     setTool(kind: 'line' | 'polyline' | 'rectangle' | 'circle'): void
@@ -100,6 +101,7 @@ export function SketchRibbon({
   // pure invocation code over this persistent owner.
   const lifecycle = useMemo(() => createSessionLifecycle(backend), [backend])
   const inSketch = st.mode === 'sketch'
+  const inProfile = profile?.active === true
 
   // The ONE sketch keyboard owner (moved with the lifecycle): Escape=cancel
   // (lifecycle-guarded), Enter=close a valid drawing contour, Backspace=undo.
@@ -126,6 +128,72 @@ export function SketchRibbon({
     return () => window.removeEventListener('keydown', onKey)
   }, [inSketch, lifecycle, store, onClose])
 
+  // Codex6 B2: EXACTLY ONE terminal owner. While a profile session is live
+  // the v1 store is idle (the entries never nest), so this ribbon renders the
+  // profile grammar ALONE — the legacy groups and their OK/Cancel do not
+  // exist on screen, and cannot end a session they do not own.
+  if (inProfile && profile) {
+    const ptool = (label: string, active: boolean, title: string, onClick: () => void, disabled = false) => (
+      <button
+        type="button"
+        className={`rb-btn${active ? ' rb-active' : ''}`}
+        disabled={disabled || profile.closing}
+        title={title}
+        onClick={onClick}
+      >
+        {glyph(label)}
+        <span className="rb-lbl">{label}</span>
+      </button>
+    )
+    return (
+      <div className="ribbon-groups">
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            {ptool('Line', profile.toolKind === 'line', 'Draw a line (two clicks)', () => profile.setTool('line'))}
+            {ptool('Contour', profile.toolKind === 'polyline', 'Draw a chain of lines; Enter ends it', () => profile.setTool('polyline'))}
+            {ptool('Rectangle', profile.toolKind === 'rectangle', 'Draw a rectangle (two clicks) — four segments with asserted right angles', () => profile.setTool('rectangle'))}
+            {ptool('Circle', profile.toolKind === 'circle', 'Draw a circle (center + rim)', () => profile.setTool('circle'))}
+            {ptool('Undo', false, 'Remove the last drawn shape', () => profile.undo())}
+          </div>
+          <div className="ribbon-group-title">Profile</div>
+        </div>
+        {profile.refusal && (
+          <div className="ribbon-group">
+            <div className="ribbon-btns">
+              <span className="rb-lbl" title={profile.refusal} style={{ maxWidth: 260, color: '#b0453a' }}>
+                {profile.refusal}
+              </span>
+            </div>
+            <div className="ribbon-group-title">Engine</div>
+          </div>
+        )}
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            <button
+              type="button"
+              className="rb-btn rb-ok"
+              disabled={profile.closing}
+              title="OK — commit the constrained profile"
+              onClick={() => profile.close()}
+            >
+              {glyph('OK')}
+              <span className="rb-lbl">{profile.closing ? '…' : 'OK'}</span>
+            </button>
+            <button
+              type="button"
+              className="rb-btn"
+              disabled={profile.closing}
+              title="Cancel — nothing is written"
+              onClick={() => profile.cancel()}
+            >
+              <span className="rb-lbl">Cancel</span>
+            </button>
+          </div>
+          <div className="ribbon-group-title">Close</div>
+        </div>
+      </div>
+    )
+  }
   if (st.mode !== 'sketch') return null
   const s = st
   const { ct, rt, ci, problem, done, busy } = sketchDerived(s)
@@ -225,63 +293,6 @@ export function SketchRibbon({
         </div>
         <div className="ribbon-group-title">Dimension</div>
       </div>
-      {profile && (
-        <div className="ribbon-group">
-          <div className="ribbon-btns">
-            {!profile.active ? (
-              tool(
-                'Profile',
-                false,
-                'Draw a CONSTRAINED profile: the engine solves, snaps and auto-dimensions it (ADR/0044 A4)',
-                () => profile.open(),
-              )
-            ) : (
-              <>
-                {tool('Line', profile.toolKind === 'line', 'Draw a line (two clicks)', () => profile.setTool('line'))}
-                {tool('Contour', profile.toolKind === 'polyline', 'Draw a chain of lines; Enter ends it', () => profile.setTool('polyline'))}
-                {tool('Rectangle', profile.toolKind === 'rectangle', 'Draw a rectangle (two clicks) — four segments with asserted right angles', () => profile.setTool('rectangle'))}
-                {tool('Circle', profile.toolKind === 'circle', 'Draw a circle (center + rim)', () => profile.setTool('circle'))}
-                {tool('Undo', false, 'Remove the last drawn shape', () => profile.undo())}
-              </>
-            )}
-          </div>
-          <div className="ribbon-group-title">Profile</div>
-        </div>
-      )}
-      {profile?.active && (
-        <div className="ribbon-group">
-          <div className="ribbon-btns">
-            <button
-              type="button"
-              className="rb-btn rb-ok"
-              title="OK — commit the constrained profile"
-              onClick={() => profile.close()}
-            >
-              {glyph('OK')}
-              <span className="rb-lbl">OK</span>
-            </button>
-            <button
-              type="button"
-              className="rb-btn"
-              title="Cancel — nothing is written"
-              onClick={() => profile.cancel()}
-            >
-              <span className="rb-lbl">Cancel</span>
-            </button>
-          </div>
-          <div className="ribbon-group-title">Close</div>
-        </div>
-      )}
-      {profile?.refusal && (
-        <div className="ribbon-group">
-          <div className="ribbon-btns">
-            <span className="rb-lbl" title={profile.refusal} style={{ maxWidth: 260, color: '#b0453a' }}>
-              {profile.refusal}
-            </span>
-          </div>
-          <div className="ribbon-group-title">Engine</div>
-        </div>
-      )}
       {/* increment 2 (SR-03): the terminal commit/cancel — ONE lifecycle
           owner; OK runs the verbatim stepwise commit or the chained
           hand-back; Cancel is lifecycle-guarded (refused mid-terminal). */}

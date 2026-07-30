@@ -270,6 +270,11 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // Gate F2b (ADR/0044 A2): the slice-1 REFERENCES sketch — the first v2
   // (adapter 0.2.0) writer. One-shot op; needs a READY Part like sketch.
   { key: 'references-sketch', label: 'References', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 1) },
+  // ADR/0044 A4 (arc 20260730-1, Codex6 B2): the TEMPORARY Profile Sketch
+  // CREATE entry — plane pick → the v2 profile drawing session, with the v1
+  // authoring store idle throughout (the lifecycles never nest). I3 routes
+  // ordinary Sketch here and retires this command.
+  { key: 'profile-sketch', label: 'Profile', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 2) },
   // Shapes
   { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
   { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },

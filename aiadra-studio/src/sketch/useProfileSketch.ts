@@ -43,8 +43,6 @@ import type { DrawnPoint } from './snapProposal'
 export interface ProfileSketchDeps {
   workspaceId: string | null
   partNumber: string | null
-  /** The engine-resolved drawing plane for the OPEN session. */
-  frame: PlaneFrameTS | null
   snapAngleToleranceDeg: number
   minDragPx: number
   /** The engine that owns this sketch. Codex6 B3: carried EXPLICITLY from
@@ -68,20 +66,29 @@ export interface ProfileSketchDeps {
 export interface ProfileSketchLane {
   active: boolean
   session: ProfileSessionState | null
+  /** True while a Close's commit round trip is in flight (single-flight). */
+  closing: boolean
   /** The engine's typed refusal of the CURRENT graph, if any. */
   refusal: string | null
   /** Null unless a session is open — merge into the Workbench's mode memo. */
   mode: SketchInteractionMode | null
-  openCreateSession(placement: SketchPlacementInput): void
-  openEditSession(sketchFeatureId: string, baseline: ProfilePayload): void
+  openCreateSession(placement: SketchPlacementInput, frame: PlaneFrameTS): void
+  openEditSession(sketchFeatureId: string, baseline: ProfilePayload, frame: PlaneFrameTS): void
   setTool(kind: ProfileToolKind): void
   place(uv: { u: number; v: number }): void
   cursor(uv: { u: number; v: number } | null): void
   /** End an open-ended tool (the polyline's Enter / double-click). */
   finishTool(opts?: { closed?: boolean }): void
   undo(): void
-  /** Close: hands the commit intent to the shell, then ends the session. */
+  /** Close: hands the commit intent to the shell. The session STAYS OPEN
+   *  until the shell reports the outcome — a failed commit must leave a
+   *  recoverable drawing, not a cleared one (Codex6 B2). */
   close(): void
+  /** The shell's success report: the commit landed; end the session. */
+  confirmClosed(): void
+  /** The shell's failure report: the draft was rolled back; the session
+   *  survives with the refusal surfaced, fully recoverable. */
+  commitFailed(message: string): void
   /** Cancel: writes nothing, by construction. */
   cancel(): { wrote: false; preservedFeatureId: string | null }
 }
@@ -197,11 +204,14 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
 
   useEffect(() => () => requester.cancel(), [requester])
 
+  const [closing, setClosing] = useState(false)
+
   const openCreateSession = useCallback(
-    (placement: SketchPlacementInput) => {
+    (placement: SketchPlacementInput, frame: PlaneFrameTS) => {
       const d = depsRef.current
+      setClosing(false)
       setSession(
-        openCreate(placement, nextCandidateKey(), {
+        openCreate(placement, nextCandidateKey(), frame, {
           snapAngleToleranceDeg: d.snapAngleToleranceDeg,
           minDragPx: d.minDragPx,
         }),
@@ -210,15 +220,19 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     [],
   )
 
-  const openEditSession = useCallback((sketchFeatureId: string, baseline: ProfilePayload) => {
-    const d = depsRef.current
-    setSession(
-      openEdit(sketchFeatureId, baseline, {
-        snapAngleToleranceDeg: d.snapAngleToleranceDeg,
-        minDragPx: d.minDragPx,
-      }),
-    )
-  }, [])
+  const openEditSession = useCallback(
+    (sketchFeatureId: string, baseline: ProfilePayload, frame: PlaneFrameTS) => {
+      const d = depsRef.current
+      setClosing(false)
+      setSession(
+        openEdit(sketchFeatureId, baseline, frame, {
+          snapAngleToleranceDeg: d.snapAngleToleranceDeg,
+          minDragPx: d.minDragPx,
+        }),
+      )
+    },
+    [],
+  )
 
   const place = useCallback((uv: DrawnPoint) => {
     setSession((s) => (s === null ? s : commitPoint(s, uv)))
@@ -240,36 +254,71 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     setSession((s) => (s === null ? s : undoLastPart(s)))
   }, [])
 
+  const closingRef = useRef(false)
   const close = useCallback(() => {
     const d = depsRef.current
+    if (closingRef.current) return // single-flight: one terminal in motion
     setSession((s) => {
-      if (s !== null && d.partNumber) {
-        const intent = commitIntent(s, d.partNumber)
+      if (s === null) return s
+      if (!d.partNumber) return s
+      const intent = commitIntent(s, d.partNumber)
+      if (intent === null) {
         // A create session with nothing drawn has no transaction at all —
-        // Close and Cancel coincide, which is the correct behaviour, not a
-        // missed case.
-        if (intent) d.onCommit?.(intent)
+        // Close and Cancel coincide, which is the correct behaviour.
+        requester.cancel()
+        return null
       }
-      return null
+      // The session SURVIVES the round trip: only confirmClosed()/
+      // commitFailed() resolve it (Codex6 B2 — a failed commit must leave a
+      // recoverable drawing, and a cleared session cannot be recovered).
+      closingRef.current = true
+      setClosing(true)
+      d.onCommit?.(intent)
+      return s
     })
+  }, [requester])
+
+  const confirmClosed = useCallback(() => {
+    closingRef.current = false
+    setClosing(false)
+    setSession(null)
     requester.cancel()
   }, [requester])
 
+  const commitFailed = useCallback((message: string) => {
+    closingRef.current = false
+    setClosing(false)
+    setSession((s) =>
+      s === null ? s : applyPreview(s, { preview: null, refusal: { message } }),
+    )
+  }, [])
+
   const cancel = useCallback(() => {
     const outcome = session === null ? { wrote: false as const, preservedFeatureId: null } : cancelSession(session)
+    closingRef.current = false
+    setClosing(false)
     setSession(null)
     requester.cancel()
     return outcome
   }, [session, requester])
 
   const mode = useMemo<SketchInteractionMode | null>(() => {
-    if (session === null || deps.frame === null) return null
-    return { kind: 'profile', frame: deps.frame, geometry: previewGeometry(session.preview) }
-  }, [session, deps.frame])
+    if (session === null) return null
+    return {
+      kind: 'profile',
+      frame: session.frame,
+      geometry: previewGeometry(session.preview),
+      // An EDIT session owns its committed feature: the viewport suppresses
+      // that feature's committed overlay while the live preview replaces it,
+      // and restores it the moment the session ends (Codex6 B1).
+      ownedFeatureId: session.owner.kind === 'edit' ? session.owner.sketchFeatureId : null,
+    }
+  }, [session])
 
   return {
     active: session !== null,
     session,
+    closing,
     refusal: session?.refusal ?? null,
     mode,
     openCreateSession,
@@ -280,6 +329,8 @@ export function useProfileSketch(deps: ProfileSketchDeps): ProfileSketchLane {
     finishTool,
     undo,
     close,
+    confirmClosed,
+    commitFailed,
     cancel,
   }
 }

@@ -26,6 +26,7 @@ import type { ProfileGraphPreview } from '../display/contract'
 import type { ProfilePayload } from './profileTypes'
 import type { SketchPlacementInput } from './profileTypes'
 import { isDrag, type DrawnPoint } from './snapProposal'
+import type { PlaneFrameTS } from './planeFrame'
 
 export type ProfileToolKind = 'line' | 'polyline' | 'rectangle' | 'circle'
 
@@ -54,6 +55,10 @@ export type ProfileOwner =
 
 export interface ProfileSessionState {
   owner: ProfileOwner
+  /** The engine-resolved drawing plane, captured at OPEN. Codex6 B2: the
+   *  session owns its frame — no other lifecycle's death can take it away
+   *  from an active drawing. */
+  frame: PlaneFrameTS
   tool: ToolState
   /** Completed drawings this session, in order. */
   parts: ProfilePayload[]
@@ -77,10 +82,12 @@ const freshTool = (kind: ProfileToolKind): ToolState => ({ kind, pending: [], cu
 export function openCreate(
   placement: SketchPlacementInput,
   candidateKey: string,
+  frame: PlaneFrameTS,
   opts: OpenOptions,
 ): ProfileSessionState {
   return {
     owner: { kind: 'create', placement, candidateKey },
+    frame,
     tool: freshTool(opts.tool ?? 'line'),
     parts: [],
     preview: null,
@@ -93,10 +100,12 @@ export function openCreate(
 export function openEdit(
   sketchFeatureId: string,
   baseline: ProfilePayload,
+  frame: PlaneFrameTS,
   opts: OpenOptions,
 ): ProfileSessionState {
   return {
     owner: { kind: 'edit', sketchFeatureId, baseline },
+    frame,
     tool: freshTool(opts.tool ?? 'line'),
     parts: [],
     preview: null,

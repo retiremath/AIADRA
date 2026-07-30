@@ -1,6 +1,8 @@
 import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import Viewport, { type SketchInteractionMode, type ViewportApi } from './Viewport'
 import { useProfileSketch } from './sketch/useProfileSketch'
+import { runProfileClose } from './sketch/profileCloseRunner'
+import { deriveFrame as derivePlacementFrame } from './authoring/placementFrame'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
 import { createOperationStore, useOperation, type OperationStore } from './operation/store'
@@ -964,6 +966,21 @@ function Workbench({
       // A3.6.2 (Petre's SP-06 ruling): the ✎ on a PLACED v2 sketch opens the
       // placement session seeded from its persisted record; a 0.2.0 legacy
       // sketch refuses honestly (its frame is immortal history per A3.1).
+      if (feat && feat.kind === 'sketchV2' && feat.version === '0.2.2') {
+        // ADR/0044 A4: the ✎ on a committed PROFILE sketch opens the Edit
+        // session — baseline from the inspected record (id-form, byte-exact),
+        // frame from the persisted placement via the A3.5 TS mirror (the
+        // engine re-derives at commit; the preview echoes its own frame).
+        if (!feat.placement || !feat.profile) {
+          setShellNote('this profile sketch is missing its placement or profile block — refresh the Part')
+          return
+        }
+        const { u, v, n } = derivePlacementFrame(feat.placement)
+        profileLane.openEditSession(featureId, feat.profile, {
+          origin: [0, 0, 0], u, v, normal: n,
+        })
+        return
+      }
       if (feat && feat.kind === 'sketchV2') {
         if (feat.version !== '0.2.1' || !feat.placement) {
           setShellNote('this is a legacy (0.2.0) references sketch — its frame is fixed history; placement redefine applies to placed (0.2.1) sketches')
@@ -1050,6 +1067,16 @@ function Workbench({
           partContext.getSnapshot().generation,
         )
       }
+    } else if (kind === 'profile-sketch') {
+      // ADR/0044 A4 (Codex6 B2): the temporary CREATE entry. Enters the
+      // shared plane-pick surface with the v1 store idle; the pick opens the
+      // profile session directly — one lifecycle, never nested.
+      const target = partFacts.readyPart
+      if (!target) {
+        setShellNote('Commit a Part first (New…) — a profile sketch draws on a Part')
+        return
+      }
+      setProfilePick(true)
     } else if (kind === 'references-sketch') {
       // A3.6.1 / Codex1 B4 (pass sketch-place-1): References enters the ONE
       // placement session — support pick → the engine-default confirm panel
@@ -1465,37 +1492,57 @@ function Workbench({
   // is three lines rather than another six pieces of coupled state.
   const [snapAngleToleranceDeg] = useSetting('sketch.snapAngleToleranceDeg')
   const [minDragPx] = useSetting('sketch.minDragPx')
+  // Codex6 B2: the profile session OWNS its frame (captured at open), and its
+  // terminal is the ONE close runner — a failed commit rolls back and leaves
+  // the drawing recoverable; a generation change never installs stale success.
+  const profileLaneRef = useRef<ReturnType<typeof useProfileSketch> | null>(null)
   const profileLane = useProfileSketch({
     workspaceId: currentWs?.workspaceId ?? null,
     partNumber: pc.partNumber,
-    frame: authoringSession.mode === 'sketch' ? supportFrame(authoringSession.support) : null,
     snapAngleToleranceDeg: Number(snapAngleToleranceDeg),
     minDragPx: Number(minDragPx),
     onCommit: (intent) => {
-      // ONE authoring transaction through the existing ADR/0043 verbs: the
-      // lane decides WHAT to send, the shell owns the session lifecycle.
       const partNumber = pc.partNumber
-      if (!partNumber) return
-      void (async () => {
-        // Codex6 B1: the ONE shared lifecycle owns begin→commit, so a
-        // half-open draft can never be orphaned by a failure here.
-        const begun = await featureBackend.begin([
-          { kind: intent.kind, params: intent.params } as never,
-        ])
-        try {
-          const done = await featureBackend.commit(begun.sessionId, partNumber)
-          adoptPart(currentWs?.workspaceId ?? null, partNumber, done.display)
-        } catch {
-          await featureBackend.rollback(begun.sessionId)
-        }
-      })()
+      const lane = profileLaneRef.current
+      if (!partNumber || !lane) return
+      void runProfileClose(intent, {
+        backend: {
+          begin: (ops) => featureBackend.begin(ops as never).then((r) => ({ sessionId: r.sessionId })),
+          commit: (sid, ref) => featureBackend.commit(sid, ref),
+          rollback: (sid) => featureBackend.rollback(sid),
+        },
+        lane,
+        partNumber,
+        generation: () => partContext.getSnapshot().generation,
+        adopt: (display) => adoptPart(currentWs?.workspaceId ?? null, partNumber, display),
+      })
     },
   })
+  profileLaneRef.current = profileLane
+  // The temporary Profile Sketch CREATE entry (ADR/0044 A4): plane pick →
+  // profile session, with the v1 authoring store IDLE throughout — the two
+  // lifecycles are never nested (Codex6 B2).
+  const [profilePick, setProfilePick] = useState(false)
+  useEffect(() => {
+    if (!profilePick) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setProfilePick(false)
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [profilePick])
 
   const interactionMode = useMemo<SketchInteractionMode | null>(() => {
     // The profile session takes the surface while it is open — it is the one
     // mode that owns both the drawing plane and what is rendered on it.
     if (profileLane.mode !== null) return profileLane.mode
+    // The Profile Sketch pick reuses the ONE planePick surface with the v1
+    // store idle — the pick resolves into the profile lane, never into a
+    // nested v1 session (Codex6 B2).
+    if (profilePick) return { kind: 'planePick' }
     if (authoringSession.mode === 'planePick') return { kind: 'planePick' }
     if (
       authoringSession.mode === 'extrude'
@@ -1518,7 +1565,7 @@ function Workbench({
       }
     }
     return null
-  }, [authoringSession, solicitEligibleIds, profileLane.mode])
+  }, [authoringSession, solicitEligibleIds, profileLane.mode, profilePick])
 
   // A generation change INVALIDATES the whole pick→sketch interaction
   // FAIL-CLOSED (Codex4 B2) — a DISTINCT transition from user Escape/cancel:
@@ -1782,19 +1829,9 @@ function Workbench({
           context={partContext}
           profile={{
             active: profileLane.active,
+            closing: profileLane.closing,
             refusal: profileLane.refusal,
             toolKind: profileLane.session?.tool.kind ?? null,
-            open: () =>
-              profileLane.openCreateSession({
-                support: {
-                  kind: 'principal',
-                  orientation:
-                    authoringSession.mode === 'sketch'
-                    && authoringSession.support.kind === 'principal'
-                      ? authoringSession.support.orientation
-                      : 'xy',
-                },
-              }),
             close: () => profileLane.close(),
             cancel: () => void profileLane.cancel(),
             setTool: (k) => profileLane.setTool(k),
@@ -1902,6 +1939,19 @@ function Workbench({
                     : new Set<string>()
                 }
                 onPlanePick={(hit) => {
+                  if (profilePick) {
+                    // BS-1 principal-only domain: a face pick is not offered
+                    // to the profile lane in I1 (same rule as placement).
+                    if (hit.kind !== 'datum') return
+                    setProfilePick(false)
+                    const placement = {
+                      support: { kind: 'principal' as const, orientation: hit.orientation },
+                    }
+                    profileLane.openCreateSession(placement, supportFrame({
+                      kind: 'principal', orientation: hit.orientation,
+                    }))
+                    return
+                  }
                   if (hit.kind === 'datum') authoringStore.resolvePlanePick(hit.orientation)
                   else authoringStore.resolvePlanePick({ faceId: hit.faceId, frame: hit.frame })
                 }}

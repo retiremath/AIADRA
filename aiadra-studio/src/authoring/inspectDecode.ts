@@ -33,6 +33,9 @@ const KNOWN_ADAPTER_SERIES = '0.1.'
 const SKETCH_V2_SERIES = '0.2.'
 const SKETCH_V2_VERSION = '0.2.0'
 const SKETCH_V21_VERSION = '0.2.1'
+// ADR/0044 A4 (arc 20260730-1): the PROFILE writer — 0.2.1's closed key
+// set with skb-b1 content (the closed version×policy dispatch matrix).
+const SKETCH_V22_VERSION = '0.2.2'
 // skb-b0 constants (Docs/SolverContracts/skb-b0.md §1; the engine module is
 // the parity-tested implementation — these mirror it at the decode surface).
 const SKB_B0_L_MIN_MM = 1e-9
@@ -106,11 +109,15 @@ export interface InspectedSketchV2 {
   branchPolicy: string
   entityCount: number
   constraintCount: number
-  /** ADR/0044 A3: the literal writer version ('0.2.0' legacy | '0.2.1' placed). */
-  version: '0.2.0' | '0.2.1'
-  /** Present iff version is 0.2.1 — the persisted placement facts (the tree's
-   *  ✎ redefine entry seeds its session from these). */
+  /** ADR/0044 A3/A4: the literal writer version. */
+  version: '0.2.0' | '0.2.1' | '0.2.2'
+  /** Present iff version is 0.2.1/0.2.2 — the persisted placement facts (the
+   *  tree's ✎ entries seed their sessions from these). */
   placement?: import('./placementFrame').PlacementRecord
+  /** 0.2.2 only: the committed PROFILE block in id-form — the byte-exact
+   *  baseline an Edit session re-sends for records the user does not touch,
+   *  which is what gives the engine's survival law something to preserve. */
+  profile?: import('../sketch/profileTypes').ProfilePayload
 }
 
 export interface InspectedSketch {
@@ -270,7 +277,7 @@ function v2fail(id: string, msg: string): never {
 function decodeSketchV2(
   payload: Record<string, unknown>,
   id: string,
-  version: '0.2.0' | '0.2.1' = '0.2.0',
+  version: '0.2.0' | '0.2.1' | '0.2.2' = '0.2.0',
 ): InspectedSketchV2 {
   // A3.1/A3.2 mirror: per-version closed key sets — 0.2.1 replaces `plane`
   // with the 4-member `placement` record; dispatch is explicit, never guessed.
@@ -284,9 +291,13 @@ function decodeSketchV2(
   const solverContract = payload.solver_contract
   const weakPolicy = payload.weak_policy
   const branchPolicy = payload.branch_policy
-  if (solverContract !== 'skb-c0' || weakPolicy !== 'skb-0' || branchPolicy !== 'skb-b0') {
+  // The version×policy dispatch matrix is CLOSED (A4): 0.2.0/0.2.1 pair with
+  // skb-b0 ONLY; 0.2.2 pairs with skb-b1 ONLY. An unknown pairing refuses in
+  // both directions rather than being reinterpreted.
+  const wantPolicy = version === SKETCH_V22_VERSION ? 'skb-b1' : 'skb-b0'
+  if (solverContract !== 'skb-c0' || weakPolicy !== 'skb-0' || branchPolicy !== wantPolicy) {
     v2fail(id, `contract ids (${JSON.stringify(solverContract)}, ${JSON.stringify(weakPolicy)}, ` +
-      `${JSON.stringify(branchPolicy)}) are not the supported (skb-c0, skb-0, skb-b0)`)
+      `${JSON.stringify(branchPolicy)}) are not the supported (skb-c0, skb-0, ${wantPolicy}) for ${version}`)
   }
   let plane: SketchPlaneBinding
   let placement: PlacementRecord | undefined
@@ -316,21 +327,214 @@ function decodeSketchV2(
   const references = arr('references')
   const weak = arr('weak_completion')
   const witnesses = arr('witnesses')
-  if (dimensions.length > 0) v2fail(id, 'skb-b0 admits no dimensions')
-  if (references.length > 0) v2fail(id, 'references must be empty under skb-b0 (SK-E territory)')
+  if (dimensions.length > 0) v2fail(id, `${branchPolicy} admits no dimensions`)
+  if (references.length > 0) v2fail(id, `references must be empty under ${branchPolicy} (SK-E territory)`)
   if (witnesses.length > 0) {
-    v2fail(id, `witness set mismatch: ${witnesses.length} present; the skb-b0 catalog derives ` +
+    v2fail(id, `witness set mismatch: ${witnesses.length} present; the ${branchPolicy} catalog derives ` +
       'exactly 0 for every admitted shape — extra witnesses are rejected (exact-set rule)')
+  }
+
+  if (version === SKETCH_V22_VERSION) {
+    const { shape, profile } = admitSkbB1Structure(entities, constraints, weak,
+      (m) => v2fail(id, m))
+    return {
+      kind: 'sketchV2', id, plane, shape,
+      // narrowed by the closed-matrix check above; the comparison against a
+      // computed wantPolicy defeats TS narrowing, so restate the literals
+      solverContract: 'skb-c0', weakPolicy: 'skb-0', branchPolicy: 'skb-b1',
+      entityCount: entities.length, constraintCount: constraints.length,
+      version, placement, profile,
+    }
   }
 
   const shape = admitSkbB0Graph(entities, constraints, weak, (m) => v2fail(id, m),
     { solverContract, weakPolicy })
   return {
     kind: 'sketchV2', id, plane, shape,
-    solverContract, weakPolicy, branchPolicy,
+    solverContract: 'skb-c0', weakPolicy: 'skb-0', branchPolicy: 'skb-b0',
     entityCount: entities.length, constraintCount: constraints.length,
     version, placement,
   }
+}
+
+/** The skb-b1 STRUCTURAL mirror (TS projection of the engine's
+ *  `admit_structure` — the weak-independent prefix of `admit_graph`). The
+ *  decoder is an enforcement surface for STRUCTURE; the value-dependent
+ *  guards (non-collapse lengths/radii, exact weak magnitudes) stay with the
+ *  engine's regenerate lifecycle, which is the numeric authority. Returns
+ *  the REFERENCE shape plus the id-form profile baseline for Edit. */
+function admitSkbB1Structure(
+  entities: Record<string, unknown>[],
+  constraints: Record<string, unknown>[],
+  weak: Record<string, unknown>[],
+  bad: (msg: string) => never,
+): { shape: string; profile: import('../sketch/profileTypes').ProfilePayload } {
+  type Ent = { type: 'point' | 'line' | 'circle'; construction: boolean; rec: Record<string, unknown> }
+  const ents = new Map<string, Ent>()
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+  for (const e of entities) {
+    const eid = e.id
+    if (typeof eid !== 'string' || eid.length === 0) bad('entity without a non-empty string id')
+    if (ents.has(eid)) bad(`duplicate entity id ${JSON.stringify(eid)}`)
+    if (typeof e.construction !== 'boolean') bad(`entity ${eid} must carry an explicit boolean construction flag`)
+    if (e.type !== 'point' && e.type !== 'line' && e.type !== 'circle') {
+      bad(`entity ${eid} type ${JSON.stringify(e.type)} is outside the skb-b1 local table`)
+    }
+    const want = e.type === 'point'
+      ? ['id', 'type', 'construction', 'nominal']
+      : e.type === 'line'
+        ? ['id', 'type', 'construction', 'start', 'end']
+        : ['id', 'type', 'construction', 'center', 'nominal']
+    for (const k of Object.keys(e)) {
+      if (!want.includes(k)) bad(`entity ${eid} carries unknown field ${JSON.stringify(k)} (closed shapes)`)
+    }
+    if (e.type === 'point') {
+      const n = e.nominal as Record<string, unknown> | null
+      if (!n || typeof n !== 'object' || Object.keys(n).length !== 2 || !num(n.x) || !num(n.y)) {
+        bad(`point ${eid} nominal must be exactly {x, y} with finite numbers`)
+      }
+    }
+    if (e.type === 'line' && (typeof e.start !== 'string' || typeof e.end !== 'string')) {
+      bad(`line ${eid} start/end must be entity-id strings`)
+    }
+    if (e.type === 'circle') {
+      const n = e.nominal as Record<string, unknown> | null
+      if (typeof e.center !== 'string') bad(`circle ${eid} center must be an entity-id string`)
+      if (!n || typeof n !== 'object' || Object.keys(n).length !== 1 || !num(n.radius)) {
+        bad(`circle ${eid} nominal must be exactly {radius} with a finite number`)
+      }
+    }
+    ents.set(eid, { type: e.type, construction: e.construction as boolean, rec: e })
+  }
+
+  const conIds = new Set<string>()
+  for (const c of constraints) {
+    const cid = c.id
+    if (typeof cid !== 'string' || cid.length === 0 || conIds.has(cid)) bad('constraint without a unique non-empty string id')
+    conIds.add(cid)
+    if (c.kind !== 'fix' && c.kind !== 'horizontal' && c.kind !== 'vertical') {
+      bad(`constraint ${cid} kind ${JSON.stringify(c.kind)} is outside the skb-b1 local table`)
+    }
+    const args = c.args
+    if (!Array.isArray(args) || args.length !== 1 || typeof args[0] !== 'string' || !ents.has(args[0])) {
+      bad(`constraint ${cid} args must name one known entity`)
+    }
+  }
+
+  // block split + in-block reference integrity
+  const blockOf = (eid: string) => (ents.get(eid)!.construction ? 'reference' : 'profile')
+  for (const [eid, e] of ents) {
+    const refs = e.type === 'line'
+      ? [e.rec.start as string, e.rec.end as string]
+      : e.type === 'circle' ? [e.rec.center as string] : []
+    for (const r of refs) {
+      if (!ents.has(r)) bad(`entity ${eid} references unknown entity ${JSON.stringify(r)}`)
+      if (blockOf(r) !== blockOf(eid)) bad(`entity ${eid} references ${r} across the reference/profile block boundary`)
+    }
+  }
+
+  // reference block: exactly G0 | G1 | G2, no circles
+  const refPts = [...ents].filter(([, e]) => e.construction && e.type === 'point').map(([i]) => i)
+  const refLns = [...ents].filter(([, e]) => e.construction && e.type === 'line').map(([i]) => i)
+  if ([...ents].some(([, e]) => e.construction && e.type === 'circle')) bad('the reference block admits no circles')
+  const fixes = constraints.filter((c) => c.kind === 'fix')
+  if (fixes.length !== 1) bad('exactly one fix(point) anchor is required in the whole graph')
+  const origin = (fixes[0].args as string[])[0]
+  if (!ents.get(origin)?.construction || ents.get(origin)?.type !== 'point') bad('fix must name a reference point')
+  const shape = refPts.length === 1 && refLns.length === 0 ? 'G0'
+    : refPts.length === 2 && refLns.length === 1 ? 'G1'
+      : refPts.length === 3 && refLns.length === 2 ? 'G2' : null
+  if (shape === null) bad(`the reference block is neither G0, G1 nor G2 (${refPts.length} point(s), ${refLns.length} line(s))`)
+
+  // profile block rules (presence, distinctness, dup edges, orphans, fact cap)
+  const proPts = [...ents].filter(([, e]) => !e.construction && e.type === 'point').map(([i]) => i)
+  const proSegs = [...ents].filter(([, e]) => !e.construction && e.type === 'line')
+  const proCircles = [...ents].filter(([, e]) => !e.construction && e.type === 'circle')
+  if (proSegs.length + proCircles.length < 1) {
+    bad('skb-b1 requires a non-empty profile block (M + C >= 1); a reference-only graph is a skb-b0 record')
+  }
+  const incident = new Map(proPts.map((pid) => [pid, 0]))
+  const edges = new Set<string>()
+  for (const [sid, e] of proSegs) {
+    const a = e.rec.start as string
+    const b = e.rec.end as string
+    if (!incident.has(a) || !incident.has(b)) bad(`segment ${sid} endpoints must be profile points`)
+    if (a === b) bad(`segment ${sid} start and end are the same entity (topological distinctness)`)
+    const key = [a, b].sort().join('~')
+    if (edges.has(key)) bad(`segment ${sid} duplicates an existing edge (reversed duplicates refuse too)`)
+    edges.add(key)
+    incident.set(a, incident.get(a)! + 1)
+    incident.set(b, incident.get(b)! + 1)
+  }
+  for (const [cid, e] of proCircles) {
+    const ctr = e.rec.center as string
+    if (!incident.has(ctr)) bad(`circle ${cid} center must be a profile point`)
+    incident.set(ctr, incident.get(ctr)! + 1)
+  }
+  for (const [pid, n] of incident) if (n === 0) bad(`orphan profile point ${pid} — every profile point must be a segment endpoint or a circle centre`)
+  const perSegment = new Map<string, number>()
+  const proSegIds = new Set(proSegs.map(([i]) => i))
+  for (const c of constraints) {
+    if (c.kind !== 'horizontal' && c.kind !== 'vertical') continue
+    const tgt = (c.args as string[])[0]
+    if (ents.get(tgt)!.construction) continue
+    if (!proSegIds.has(tgt)) bad(`axis fact ${c.id} targets ${tgt}, which is not a profile segment`)
+    const n = (perSegment.get(tgt) ?? 0) + 1
+    if (n > 1) bad(`segment ${tgt} carries more than one axis fact`)
+    perSegment.set(tgt, n)
+  }
+
+  // weak CARDINALITY (structure-decidable): reference shape count + one per
+  // profile equality class. Magnitude validation stays engine-side.
+  const parent = new Map<string, string>()
+  const find = (x: string): string => {
+    let r = x
+    while (parent.get(r) !== r) r = parent.get(r)!
+    return r
+  }
+  const union = (a: string, b: string) => {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb)
+  }
+  for (const pid of proPts) for (const prm of ['x', 'y']) parent.set(`${pid}.${prm}`, `${pid}.${prm}`)
+  for (const [cid] of proCircles) parent.set(`${cid}.radius`, `${cid}.radius`)
+  for (const c of constraints) {
+    if (c.kind !== 'horizontal' && c.kind !== 'vertical') continue
+    const tgt = (c.args as string[])[0]
+    if (!proSegIds.has(tgt)) continue
+    const seg = ents.get(tgt)!.rec
+    const prm = c.kind === 'horizontal' ? 'y' : 'x'
+    union(`${seg.start as string}.${prm}`, `${seg.end as string}.${prm}`)
+  }
+  const classes = new Set([...parent.keys()].map(find)).size
+  const refWeak = shape === 'G0' ? 0 : shape === 'G1' ? 1 : 2
+  if (weak.length !== classes + refWeak) {
+    bad(`weak completion has ${weak.length} record(s); the exact canonical completion for this graph has ${classes + refWeak}`)
+  }
+
+  // the id-form profile baseline (what an Edit session re-sends verbatim)
+  const profile: import('../sketch/profileTypes').ProfilePayload = {
+    points: proPts.map((pid) => {
+      const n = ents.get(pid)!.rec.nominal as { x: number; y: number }
+      return { id: pid, x: n.x, y: n.y }
+    }),
+    segments: proSegs.map(([sid, e]) => ({
+      id: sid, start: { id: e.rec.start as string }, end: { id: e.rec.end as string },
+    })),
+    circles: proCircles.map(([cid, e]) => ({
+      id: cid, center: { id: e.rec.center as string },
+      radius_mm: (e.rec.nominal as { radius: number }).radius,
+    })),
+    facts: constraints
+      .filter((c) => (c.kind === 'horizontal' || c.kind === 'vertical') && proSegIds.has((c.args as string[])[0]))
+      .map((c) => ({
+        id: c.id as string, kind: c.kind as 'horizontal' | 'vertical',
+        target: { id: (c.args as string[])[0] },
+      })),
+  }
+  return { shape, profile }
 }
 
 /** The skb-b0 whole-fact-graph admission predicate (TS mirror of
@@ -662,15 +866,16 @@ export function decodeInspectedPart(view: unknown): InspectedPart {
               `family has defined 0.2 semantics (ADR/0044 A2.4) — refuse`,
           )
         }
-        if (v2v !== SKETCH_V2_VERSION && v2v !== SKETCH_V21_VERSION) {
+        if (v2v !== SKETCH_V2_VERSION && v2v !== SKETCH_V21_VERSION && v2v !== SKETCH_V22_VERSION) {
           fail(
             `v2 sketch ${id} carries ${v2v}; the defined v2 writer versions are ` +
-              `${SKETCH_V2_VERSION} and ${SKETCH_V21_VERSION} (an unknown 0.2.x minor refuses rather than guessing)`,
+              `${SKETCH_V2_VERSION}, ${SKETCH_V21_VERSION} and ${SKETCH_V22_VERSION} ` +
+              `(an unknown 0.2.x minor refuses rather than guessing)`,
           )
         }
         features.push(decodeSketchV2(
           (raw.adapter_payload ?? {}) as Record<string, unknown>, id,
-          v2v as '0.2.0' | '0.2.1'))
+          v2v as '0.2.0' | '0.2.1' | '0.2.2'))
         continue
       }
     }
