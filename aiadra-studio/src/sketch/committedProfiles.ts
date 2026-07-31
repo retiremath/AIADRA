@@ -14,14 +14,16 @@
  * forbids. We throw; the caller treats it like any other malformed display.
  */
 import type { DisplayRepresentation, SketchFrame } from '../display/contract'
+import type { PlaneFrameTS } from './planeFrame'
 import type { ProfileGeometry } from './profileOverlay'
 
 export interface CommittedProfile {
   sketchFeatureId: string
   geometry: ProfileGeometry
-  /** The engine-resolved frame normal — the overlay needs it only to keep a
-   *  circle's tessellation in the sketch plane. */
-  frameNormal: readonly [number, number, number]
+  /** The engine-resolved FULL frame (W-4): the furniture builder lays
+   *  dimensions out in plane-local coordinates, so the overlay needs the
+   *  axes and origin, not just the normal. */
+  frame: PlaneFrameTS
 }
 
 export class ProfileJoinError extends Error {}
@@ -55,6 +57,7 @@ export function committedProfiles(display: DisplayRepresentation): CommittedProf
         `committed profile ${p.sketch_feature_id} joins ${bucket.length} frames — ambiguous`,
       )
     }
+    const f = bucket[0]
     return {
       sketchFeatureId: p.sketch_feature_id,
       geometry: {
@@ -64,7 +67,7 @@ export function committedProfiles(display: DisplayRepresentation): CommittedProf
         annotations: p.annotations,
         constraint_glyphs: p.constraint_glyphs,
       },
-      frameNormal: bucket[0].normal,
+      frame: { origin: f.origin_mm, u: f.u_axis, v: f.v_axis, normal: f.normal },
     }
   })
 }

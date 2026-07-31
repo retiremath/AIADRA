@@ -10,7 +10,7 @@ import {
 } from './profileOverlay'
 import { SKETCH_LIFT_MM, principalFrame } from './planeFrame'
 
-const XY: [number, number, number] = [0, 0, 1]
+const FRAME_XY = principalFrame('xy')
 
 const rectangle = (): ProfileGeometry => ({
   points: [
@@ -71,13 +71,15 @@ describe('dimension formatting is a RENDERING of engine output', () => {
 })
 
 describe('the overlay renders what the engine handed it', () => {
-  it('a rectangle yields four segment lines, its points, a dimension and a glyph', () => {
+  it('a rectangle yields its segments/points + dimension FURNITURE and a glyph (W-4)', () => {
     const o = createProfileOverlay()
-    o.update(rectangle(), XY)
+    o.update(rectangle(), FRAME_XY, 0.5)
     const lines = o.group.children.filter((c) => c instanceof THREE.Line)
     const sprites = o.group.children.filter((c) => c instanceof THREE.Sprite)
     const points = o.group.children.filter((c) => c instanceof THREE.Points)
-    expect(lines).toHaveLength(5) // 4 segments + 1 dimension witness line
+    // 4 profile segments + the length dim's furniture (extension lines, the
+    // offset dimension line, arrowhead strokes) — never a bare witness line
+    expect(lines.length).toBeGreaterThan(4)
     expect(points).toHaveLength(4)
     expect(sprites).toHaveLength(2) // the value + the H glyph
     o.dispose()
@@ -93,7 +95,8 @@ describe('the overlay renders what the engine handed it', () => {
         annotations: [],
         constraint_glyphs: [],
       },
-      XY,
+      FRAME_XY,
+      0.5,
     )
     const line = o.group.children.find((c) => c instanceof THREE.Line) as THREE.Line
     const pos = line.geometry.getAttribute('position')
@@ -116,7 +119,8 @@ describe('the overlay renders what the engine handed it', () => {
         annotations: [],
         constraint_glyphs: [],
       },
-      [1, 0, 0], // the YZ plane
+      principalFrame('yz'),
+      0.5,
     )
     const line = o.group.children.find((c) => c instanceof THREE.Line) as THREE.Line
     const pos = line.geometry.getAttribute('position')
@@ -128,26 +132,48 @@ describe('the overlay renders what the engine handed it', () => {
     const g = rectangle()
     g.segments.push({ id: 's5', start: 'a', end: 'nope' })
     const o = createProfileOverlay()
-    o.update(g, XY)
-    expect(o.group.children.filter((c) => c instanceof THREE.Line)).toHaveLength(5)
+    o.update(g, FRAME_XY, 0.5)
+    const reference = createProfileOverlay()
+    reference.update(rectangle(), FRAME_XY, 0.5)
+    // the dangling segment adds NOTHING — same primitive count as without it
+    expect(o.group.children.length).toBe(reference.group.children.length)
     o.dispose()
+    reference.dispose()
   })
 
   it('null clears the overlay', () => {
     const o = createProfileOverlay()
-    o.update(rectangle(), XY)
+    o.update(rectangle(), FRAME_XY, 0.5)
     expect(o.group.children.length).toBeGreaterThan(0)
-    o.update(null, XY)
+    o.update(null, null, 0)
     expect(o.group.children).toHaveLength(0)
     o.dispose()
   })
 
   it('re-updating replaces rather than accumulates', () => {
     const o = createProfileOverlay()
-    o.update(rectangle(), XY)
+    o.update(rectangle(), FRAME_XY, 0.5)
     const first = o.group.children.length
-    o.update(rectangle(), XY)
+    o.update(rectangle(), FRAME_XY, 0.5)
     expect(o.group.children.length).toBe(first)
+    o.dispose()
+  })
+
+  it('setViewScale re-renders the LAST inputs at the new scale (W-4)', () => {
+    const o = createProfileOverlay()
+    o.update(rectangle(), FRAME_XY, 0.5)
+    const sprite = o.group.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
+    const before = sprite.scale.y
+    o.setViewScale(1.0) // zoom out 2× — text must re-rasterize larger
+    const after = (
+      o.group.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
+    ).scale.y
+    expect(after).toBeCloseTo(before * 2, 6)
+    // below the 2% threshold: no rebuild (same object identity)
+    const s1 = o.group.children.find((c) => c instanceof THREE.Sprite)
+    o.setViewScale(1.005)
+    const s2 = o.group.children.find((c) => c instanceof THREE.Sprite)
+    expect(s2).toBe(s1)
     o.dispose()
   })
 
@@ -198,7 +224,7 @@ describe('the overlay renders what the engine handed it', () => {
       constraint_glyphs: [],
     }
     const o = createProfileOverlay()
-    o.update(preview, XY)
+    o.update(preview, FRAME_XY, 0.5)
     expect(o.group.children.filter((c) => c instanceof THREE.Line)).toHaveLength(1)
     o.dispose()
   })

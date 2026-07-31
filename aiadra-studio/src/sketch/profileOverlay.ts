@@ -20,6 +20,12 @@
 import * as THREE from 'three'
 import type { ConstraintGlyph, ProfileAnnotation } from '../display/contract'
 import { frameToWorld, SKETCH_LIFT_MM, type PlaneFrameTS } from './planeFrame'
+import { buildDimensionFurniture } from './dimensionFurniture'
+import { formatAnnotation } from './annotationFormat'
+
+// Back-compat re-export: the formatter moved to `annotationFormat` (W-4) so
+// the furniture builder shares it without a module cycle.
+export { formatAnnotation }
 
 /** The geometry members shared by a live preview and a committed profile. */
 export interface ProfileGeometry {
@@ -32,8 +38,12 @@ export interface ProfileGeometry {
 
 export interface ProfileOverlay {
   group: THREE.Group
-  /** Re-render from an engine result. `null` clears without disposing. */
-  update(geometry: ProfileGeometry | null, frameNormal: readonly [number, number, number]): void
+  /** Re-render from an engine result. `null` clears without disposing.
+   *  `worldPerPixel` drives the furniture's screen-constant sizing (W-4). */
+  update(geometry: ProfileGeometry | null, frame: PlaneFrameTS | null, worldPerPixel: number): void
+  /** Camera zoom / canvas resize: re-render the LAST inputs at the new
+   *  scale (no-op below a 2% delta or with nothing rendered). */
+  setViewScale(worldPerPixel: number): void
   dispose(): void
 }
 
@@ -65,15 +75,6 @@ function labelSprite(text: string, color: number): THREE.Sprite {
   const sprite = new THREE.Sprite(mat)
   sprite.renderOrder = 10
   return sprite
-}
-
-/**
- * How a dimension VALUE is written. `length`/`position` are millimetres to
- * three decimals (Creo's default), `angle` is degrees to two — the units come
- * from the engine, never from a guess about the kind.
- */
-export function formatAnnotation(a: Pick<ProfileAnnotation, 'value' | 'unit'>): string {
-  return a.unit === 'deg' ? `${a.value.toFixed(2)}°` : a.value.toFixed(3)
 }
 
 /** The two-character marker Creo shows for a constraint. */
@@ -108,17 +109,18 @@ export function createProfileOverlay(): ProfileOverlay {
     disposables.push(sprite.material, (sprite.material as THREE.SpriteMaterial).map as THREE.Texture)
   }
 
-  const update = (geometry: ProfileGeometry | null, frameNormal: readonly [number, number, number]) => {
-    clear()
-    if (geometry === null) return
-    const byId = new Map(geometry.points.map((p) => [p.id, v3(p.world)]))
+  // The LAST inputs, so a zoom/resize can re-render at the new scale
+  // without a fresh engine result (W-4 setViewScale).
+  let lastGeometry: ProfileGeometry | null = null
+  let lastFrame: PlaneFrameTS | null = null
+  let lastWpp = 0
 
-    // Label size scales with the drawing, so a 5mm sketch and a 500mm one
-    // both read — an absolute size would be illegible at one of them.
-    const box = new THREE.Box3()
-    for (const p of byId.values()) box.expandByPoint(p)
-    const span = box.isEmpty() ? 20 : Math.max(box.getSize(new THREE.Vector3()).length(), 1)
-    const labelScale = span * 0.06
+  const render = () => {
+    clear()
+    const geometry = lastGeometry
+    const frame = lastFrame
+    if (geometry === null || frame === null) return
+    const byId = new Map(geometry.points.map((p) => [p.id, v3(p.world)]))
 
     for (const s of geometry.segments) {
       const a = byId.get(s.start)
@@ -126,7 +128,7 @@ export function createProfileOverlay(): ProfileOverlay {
       if (a && b) addLine([a, b], COLOR_PROFILE, 2)
     }
 
-    const n = new THREE.Vector3(...frameNormal).normalize()
+    const n = new THREE.Vector3(...frame.normal).normalize()
     for (const c of geometry.circles) {
       const centre = byId.get(c.center)
       if (!centre) continue
@@ -156,25 +158,44 @@ export function createProfileOverlay(): ProfileOverlay {
       disposables.push(geom, mat)
     }
 
-    // Weak dimensions: the witness line between the engine's two anchors, and
-    // the value at its midpoint. Both anchors are engine output.
-    for (const a of geometry.annotations) {
-      if (a.anchors.length !== 2) continue
-      const p0 = v3(a.anchors[0])
-      const p1 = v3(a.anchors[1])
-      addLine([p0, p1], COLOR_WEAK_DIM)
-      const mid = p0.clone().add(p1).multiplyScalar(0.5)
-      addLabel(formatAnnotation(a), mid, COLOR_WEAK_DIM, labelScale)
+    // W-4: dimension FURNITURE — the batch module owns bbox/side/lane
+    // policy and pixel→world sizing; this overlay only installs what it
+    // returns. The raw anchor-segment drawing (the walk's "vector to the
+    // origin") is gone.
+    const furniture = buildDimensionFurniture(geometry, frame, lastWpp)
+    for (const pts of furniture.lines) {
+      addLine(pts.map((p) => v3(p)), COLOR_WEAK_DIM)
     }
+    for (const l of furniture.labels) {
+      addLabel(l.text, v3(l.at), COLOR_WEAK_DIM, l.heightMm)
+    }
+    for (const g of furniture.glyphs) {
+      addLabel(g.text, v3(g.at), COLOR_GLYPH, g.heightMm)
+    }
+  }
 
-    for (const g of geometry.constraint_glyphs) {
-      addLabel(glyphLabel(g.kind), v3(g.anchor), COLOR_GLYPH, labelScale * 0.8)
-    }
+  const update = (
+    geometry: ProfileGeometry | null,
+    frame: PlaneFrameTS | null,
+    worldPerPixel: number,
+  ) => {
+    lastGeometry = geometry
+    lastFrame = frame
+    if (worldPerPixel > 0) lastWpp = worldPerPixel
+    render()
+  }
+
+  const setViewScale = (worldPerPixel: number) => {
+    if (!(worldPerPixel > 0) || lastGeometry === null) return
+    if (lastWpp > 0 && Math.abs(worldPerPixel - lastWpp) / lastWpp < 0.02) return
+    lastWpp = worldPerPixel
+    render()
   }
 
   return {
     group,
     update,
+    setViewScale,
     dispose() {
       clear()
     },

@@ -27,11 +27,15 @@ const display = (profiles: unknown[], frames: unknown[]): DisplayRepresentation 
   ({ v2_profiles: profiles, sketch_frames: frames }) as unknown as DisplayRepresentation
 
 describe('the committed profile→frame join (Codex6 B1)', () => {
-  it('a joined profile yields overlay geometry plus its frame normal', () => {
+  it('a joined profile yields overlay geometry plus its FULL frame (W-4)', () => {
     const [cp] = committedProfiles(display([profile('feat_0001')], [frame('feat_0001')]))
     expect(cp.sketchFeatureId).toBe('feat_0001')
     expect(cp.geometry.segments).toHaveLength(1)
-    expect(cp.frameNormal).toEqual([0, 0, 1])
+    // the furniture builder needs axes + origin, not just the normal
+    expect(cp.frame.normal).toEqual([0, 0, 1])
+    expect(cp.frame.u).toEqual([1, 0, 0])
+    expect(cp.frame.v).toEqual([0, 1, 0])
+    expect(cp.frame.origin).toEqual([0, 0, 0])
   })
 
   it('absence is normal: no profiles, no entries — including pre-1.4 packages', () => {

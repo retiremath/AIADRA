@@ -64,13 +64,17 @@ def _line_case(y2=3.4):
 
 
 class TestTheNamedSchemes:
-    def test_free_line_shows_length_angle_and_one_endpoint(self):
+    def test_free_line_shows_the_creo_endpoint_scheme(self):
+        """W-4 (Petre's ruling): {x_start, y_start, angle, x_end} — the pick
+        the Creo 10 benchmark frame shows; no length dim."""
         ents, cons = _line_case()
         c = compile_profile_graph(case_id="feat_0001", entities=ents, constraints=cons)
         assert [a.kind for a in c.annotations] == [
-            "length", "angle", "position_x", "position_y"]
-        assert c.annotations[0].value == pytest.approx(20.004, abs=1e-3)
-        assert c.annotations[1].unit == "deg"
+            "position_x", "position_y", "angle", "position_x"]
+        assert c.annotations[0].value == pytest.approx(2.0)
+        assert c.annotations[1].value == pytest.approx(3.0)
+        assert c.annotations[2].unit == "deg"
+        assert c.annotations[3].value == pytest.approx(22.0)
 
     def test_snapping_is_the_ENGINE_moving_geometry(self):
         """Studio proposes the fact; the engine's solve is what puts the
@@ -79,10 +83,11 @@ class TestTheNamedSchemes:
         cons = cons + [{"id": "c04", "kind": "horizontal", "args": ["skp_0008"]}]
         c = compile_profile_graph(case_id="feat_0001", entities=ents, constraints=cons)
         assert c.solved["skp_0006.y"] == pytest.approx(c.solved["skp_0007.y"])
-        assert c.annotations[0].value == pytest.approx(20.0, abs=1e-9)
-        # the angle is DETERMINED now and leaves the basis on its own
+        # the angle is DETERMINED now and leaves the basis on its own; the
+        # merged y-class rejects y_end — three position coordinates remain
         assert [a.kind for a in c.annotations] == [
-            "length", "position_x", "position_y"]
+            "position_x", "position_y", "position_x"]
+        assert c.annotations[2].value == pytest.approx(22.0, abs=1e-9)
         assert [g["id"] for g in c.glyphs] == ["glyph:horizontal:skp_0008"]
 
     def _rectangle(self, coords):

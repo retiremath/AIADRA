@@ -507,7 +507,28 @@ export default function Viewport({
           })
       },
     })
-    controls.addEventListener('change', () => machine.cameraMoved())
+    // W-4: the ONE view-scale authority — sketch mm per CSS pixel at the
+    // current ortho zoom. The furniture's text/arrows/offsets are pixel
+    // constants converted through THIS, so dims read the same at any zoom.
+    const worldPerPixel = () =>
+      (camera.top - camera.bottom) / (camera.zoom * Math.max(1, h()))
+    // Camera zoom re-renders the furniture at the new scale — rAF-coalesced
+    // (the overlays no-op below a 2% delta, so orbiting costs nothing).
+    let viewScaleRaf = 0
+    const feedViewScale = () => {
+      if (viewScaleRaf) return
+      viewScaleRaf = requestAnimationFrame(() => {
+        viewScaleRaf = 0
+        const wpp = worldPerPixel()
+        profileOverlay.setViewScale(wpp)
+        for (const o of committedOverlays.values()) o.setViewScale(wpp)
+      })
+    }
+
+    controls.addEventListener('change', () => {
+      machine.cameraMoved()
+      feedViewScale()
+    })
     controls.addEventListener('start', () => {
       currentSnapId = null
     })
@@ -923,7 +944,7 @@ export default function Viewport({
       for (const cp of committedProfiles(display)) {
         const o = createProfileOverlay()
         o.group.name = `committed-profile:${cp.sketchFeatureId}`
-        o.update(cp.geometry, cp.frameNormal)
+        o.update(cp.geometry, cp.frame, worldPerPixel())
         scene.add(o.group)
         committedOverlays.set(cp.sketchFeatureId, o)
       }
@@ -1125,7 +1146,7 @@ export default function Viewport({
       if (kind !== 'profile' && modeKind === 'profile') {
         ghostPart(false)
         profileOverlay.group.visible = false
-        profileOverlay.update(null, [0, 0, 1])
+        profileOverlay.update(null, null, 0)
         lastProfileGeometry = null
         chainEcho.group.visible = false
         chainEcho.update(null, null)
@@ -1147,7 +1168,7 @@ export default function Viewport({
         // geometry reference stable per preview) — cursor motion and chain
         // clicks re-enter here constantly and must not re-rasterize sprites.
         if (m.geometry !== lastProfileGeometry) {
-          profileOverlay.update(m.geometry, m.frame.normal)
+          profileOverlay.update(m.geometry, m.frame, worldPerPixel())
           lastProfileGeometry = m.geometry
         }
         chainEcho.update(m.chain, m.frame)
@@ -1458,6 +1479,7 @@ export default function Viewport({
     const onResize = () => {
       applyFrustum()
       renderer.setSize(w(), h())
+      feedViewScale() // canvas resize changes mm-per-pixel (W-4)
     }
     window.addEventListener('resize', onResize)
     // The dock dismiss/drag and sidebar changes reflow the CONTAINER without
@@ -1489,6 +1511,7 @@ export default function Viewport({
     return () => {
       cancelAnimationFrame(rafId)
       if (hoverRaf) cancelAnimationFrame(hoverRaf)
+      if (viewScaleRaf) cancelAnimationFrame(viewScaleRaf)
       unsubStore()
       unsubSelection()
       machine.dispose()

@@ -16,9 +16,12 @@ The algorithm (A4, fully deterministic):
 
 1. `ker(A)` is the union-find equality-class basis handed over by the branch
    policy — an exact integer basis, never an implementation-chosen SVD/QR.
-2. Candidates are enumerated in a FIXED id-based order: per segment
-   `length` then `angle`; per circle `radius`; per point `position_x` then
-   `position_y`.
+2. Candidates are enumerated in a FIXED id-based order — the Creo
+   endpoint-coordinate scheme (W-4, Petre's ruling, arc 20260730-1): per
+   segment its START point's `position_x` then `position_y` (each point
+   once, on first encounter) then the segment's `angle`; per circle
+   `radius`; the REMAINING point positions; per segment `length` strictly
+   LAST-RESORT.
 3. Each candidate's gradient is projected into the class basis (the exact
    chain rule for `x = sum_C t_C * 1_C`), then NORMALIZED — mm, degree and
    dimensionless gradients have different natural scales, so an unnormalized
@@ -29,8 +32,11 @@ The algorithm (A4, fully deterministic):
    class indicators, which span the space.
 
 The named schemes fall out rather than being special-cased: a free line
-gives `length, angle, P.x, P.y`; snapping it horizontal drops the angle
-(its projected row is exactly zero) leaving `length, P.x, P.y`; a bare
+gives `P.x, P.y, angle, Q.x` (the Creo frame's own pick); snapping it
+horizontal drops the angle (its projected row is exactly zero) and the
+merged y-class drops `Q.y`, leaving `P.x, P.y, Q.x`; an EXACTLY-vertical
+free line's `Q.x` is determined by `P.x` + the 90° angle, so `Q.y` is
+selected instead — a property of the rank test, not a special case; a bare
 circle gives `radius, C.x, C.y`.
 """
 from __future__ import annotations
@@ -106,6 +112,27 @@ def build_annotation_basis(
 
     candidates: list[tuple] = []   # (kind, targets, value, unit, grad, anchors)
 
+    def _position_candidates(pid: str) -> list[tuple]:
+        px, py = xy(pid)
+        return [
+            ("position_x", (pid,), px, "mm",
+             {_scalar(pid, "x"): 1.0}, ((0.0, 0.0), (px, py))),
+            ("position_y", (pid,), py, "mm",
+             {_scalar(pid, "y"): 1.0}, ((0.0, 0.0), (px, py))),
+        ]
+
+    # W-4 (Petre's Creo ruling; Codex14-accepted enumeration): the Creo
+    # endpoint-coordinate order — per segment its START point's positions
+    # then the segment's ANGLE; per circle the radius; the REMAINING point
+    # positions; LENGTH strictly last-resort. The named schemes (free line =
+    # {x_start, y_start, angle, x_end}; H/V-snapped = three positions with
+    # the determined angle skipped; the exactly-vertical free line's x_end →
+    # y_end fallout) emerge from THIS order through the unchanged rank
+    # selection — no scheme is special-cased. A point shared by chained
+    # segments contributes its positions once, on first encounter.
+    emitted_points: set[str] = set()
+
+    seg_geo: dict[str, tuple] = {}
     for sid in segments:
         p, q = by_id[sid]["start"], by_id[sid]["end"]
         px, py = xy(p)
@@ -114,14 +141,15 @@ def build_annotation_basis(
         length = math.hypot(dx, dy)
         if length <= 0.0:          # the policy guard already excluded this
             continue
-        ux, uy = dx / length, dy / length
-        # length: d/dP = -u, d/dQ = +u
-        candidates.append((
-            "length", (sid,), length, "mm",
-            {_scalar(p, "x"): -ux, _scalar(p, "y"): -uy,
-             _scalar(q, "x"): ux, _scalar(q, "y"): uy},
-            ((px, py), (qx, qy)),
-        ))
+        seg_geo[sid] = (p, q, px, py, qx, qy, dx, dy, length)
+
+    for sid in segments:
+        if sid not in seg_geo:
+            continue
+        p, q, px, py, qx, qy, dx, dy, length = seg_geo[sid]
+        if p not in emitted_points:
+            emitted_points.add(p)
+            candidates.extend(_position_candidates(p))
         # angle: atan2(dy, dx) in degrees over [0, 360) per the frozen catalogue
         deg = math.degrees(math.atan2(dy, dx)) % 360.0
         l2 = length * length
@@ -145,14 +173,23 @@ def build_annotation_basis(
         ))
 
     for pid in points:
-        px, py = xy(pid)
+        if pid not in emitted_points:
+            emitted_points.add(pid)
+            candidates.extend(_position_candidates(pid))
+
+    for sid in segments:
+        if sid not in seg_geo:
+            continue
+        p, q, px, py, qx, qy, dx, dy, length = seg_geo[sid]
+        # length: d/dP = -u, d/dQ = +u — the LAST-RESORT fallback; it can be
+        # selected only when positions + angle fail to span, and the
+        # termination proof still completes through the position candidates.
+        ux, uy = dx / length, dy / length
         candidates.append((
-            "position_x", (pid,), px, "mm",
-            {_scalar(pid, "x"): 1.0}, ((0.0, 0.0), (px, py)),
-        ))
-        candidates.append((
-            "position_y", (pid,), py, "mm",
-            {_scalar(pid, "y"): 1.0}, ((0.0, 0.0), (px, py)),
+            "length", (sid,), length, "mm",
+            {_scalar(p, "x"): -ux, _scalar(p, "y"): -uy,
+             _scalar(q, "x"): ux, _scalar(q, "y"): uy},
+            ((px, py), (qx, qy)),
         ))
 
     target_rank = len(classes)

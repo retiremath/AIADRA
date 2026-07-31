@@ -255,8 +255,11 @@ class TestPreviewWritesNothing:
             placement=PLACEMENT, candidate_key="draft1")
         ends = {p["id"]: p["world"] for p in out["points"]}
         assert ends["a"][1] == pytest.approx(ends["b"][1])     # snapped level
-        lengths = [a for a in out["annotations"] if a["kind"] == "length"]
-        assert lengths[0]["value"] == pytest.approx(20.0, abs=1e-9)
+        # W-4 scheme: the H-snapped line shows position coordinates; the end
+        # point's x is the determinate 20.0 the commit will also show
+        xs = [a for a in out["annotations"]
+              if a["kind"] == "position_x" and a["entities"] == ["b"]]
+        assert xs[0]["value"] == pytest.approx(20.0, abs=1e-9)
 
     def test_an_edit_preview_is_owned_by_its_feature(self, workspace_with_part):
         ws = workspace_with_part
@@ -272,8 +275,9 @@ class TestPreviewWritesNothing:
                            "target": {"id": "skp_0008"}}],
             })
         assert out["owner"] == {"feature_id": "feat_0001"}
-        lengths = [a for a in out["annotations"] if a["kind"] == "length"]
-        assert lengths[0]["value"] == pytest.approx(40.0, abs=1e-9)
+        xs = [a for a in out["annotations"]
+              if a["kind"] == "position_x" and a["entities"] == ["skp_0007"]]
+        assert xs[0]["value"] == pytest.approx(40.0, abs=1e-9)
 
     def test_naming_both_owners_refuses(self, workspace_with_part):
         ws = workspace_with_part
@@ -366,5 +370,6 @@ class TestPreviewDisplayParity:
             },
         }).commit()
         entry = display_representation(ws, PART).v2_profiles[0]
-        length = [a for a in entry.annotations if a.kind == "length"][0]
-        assert length.value == pytest.approx(55.0, abs=1e-9)
+        x_end = [a for a in entry.annotations
+                 if a.kind == "position_x" and a.entities == ("skp_0007",)][0]
+        assert x_end.value == pytest.approx(55.0, abs=1e-9)
