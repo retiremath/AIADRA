@@ -422,9 +422,26 @@ class ProfileAnnotation:
 
     Class-5 display data: regenerated from committed Truth on every read,
     never persisted, never identity-bearing, and never part of branch
-    identity. `value` is a sketch-LOCAL scalar in `unit`; `anchors` are world
-    points so the renderer places the witness lines without re-deriving the
-    sketch plane.
+    identity. `value` is a sketch-LOCAL scalar in `unit`.
+
+    The PINNED per-kind measurement semantics (W-4, arc 20260730-1 — the
+    validator ENFORCES this table; a renderer builds dimension furniture
+    from it and measures nothing itself):
+
+      kind          entity        unit  value semantics
+      ------------  ------------  ----  ---------------------------------
+      position_x    one point     mm    the point's sketch-u coordinate,
+                                        measured from the v-axis reference
+                                        line through the sketch origin
+      position_y    one point     mm    sketch-v twin, from the u-axis
+      length        one segment   mm    Euclidean, along the segment
+      angle         one segment   deg   CCW from +u, in [0, 360)
+      radius        one circle    mm    the radius
+
+    `id` is the semantic `ann:{kind}:{entity}` (survives value-only
+    regeneration; enforced). `anchors` is a LEGACY engine-suggested label
+    anchor pair — a furniture-building renderer derives its own dimension
+    geometry from kind + entity + the solved coordinates and may ignore it.
     """
 
     id: str
@@ -462,6 +479,16 @@ class V2ProfileSketch:
 
 
 _ANNOTATION_KINDS = ("length", "angle", "radius", "position_x", "position_y")
+# The pinned per-kind semantics (Codex14 B4): kind -> (entity domain, unit).
+# One table drives the validator AND documents the contract — a producer
+# cannot ship `angle(point, mm)` and leave the renderer to guess.
+_ANNOTATION_RULES: dict[str, tuple[str, str]] = {
+    "position_x": ("point", "mm"),
+    "position_y": ("point", "mm"),
+    "length": ("segment", "mm"),
+    "angle": ("segment", "deg"),
+    "radius": ("circle", "mm"),
+}
 _GLYPH_KINDS = ("horizontal", "vertical")
 
 
@@ -553,7 +580,6 @@ def _validate_v2_profiles(raw: Any, version: str) -> tuple[V2ProfileSketch, ...]
                 center=_point_ref(c.get("center"), f"circle {c['id']!r} center"),
                 radius_mm=float(r)))
 
-        entity_ids = pt_ids | seg_ids | circ_ids
         annotations: list[ProfileAnnotation] = []
         ann_ids: set[str] = set()
         for a in item["annotations"]:
@@ -568,10 +594,15 @@ def _validate_v2_profiles(raw: Any, version: str) -> tuple[V2ProfileSketch, ...]
                     f"v2_profiles {sid!r} annotation {a['id']!r} kind "
                     f"{a.get('kind')!r} is outside {list(_ANNOTATION_KINDS)}"
                 )
-            if a.get("unit") not in ("mm", "deg"):
+            # Codex14 B4: the per-kind semantics table is ENFORCED, not
+            # documentation. Each kind measures exactly one entity of its
+            # domain, in its fixed unit, under its semantic id.
+            domain, required_unit = _ANNOTATION_RULES[a["kind"]]
+            if a.get("unit") != required_unit:
                 raise DisplayContractError(
-                    f"v2_profiles {sid!r} annotation {a['id']!r} unit "
-                    f"{a.get('unit')!r} must be 'mm' or 'deg'"
+                    f"v2_profiles {sid!r} annotation {a['id']!r} kind "
+                    f"{a['kind']!r} carries unit {required_unit!r} exactly, "
+                    f"got {a.get('unit')!r}"
                 )
             val = a.get("value")
             if not (isinstance(val, (int, float)) and not isinstance(val, bool)
@@ -580,12 +611,26 @@ def _validate_v2_profiles(raw: Any, version: str) -> tuple[V2ProfileSketch, ...]
                     f"v2_profiles {sid!r} annotation {a['id']!r} value must be "
                     f"a finite number, got {val!r}"
                 )
-            ents = a.get("entities")
-            if not (isinstance(ents, list) and ents
-                    and all(isinstance(e, str) and e in entity_ids for e in ents)):
+            if a["kind"] == "angle" and not (0.0 <= float(val) < 360.0):
                 raise DisplayContractError(
-                    f"v2_profiles {sid!r} annotation {a['id']!r} entities must "
-                    f"be a non-empty list of ids present in this entry"
+                    f"v2_profiles {sid!r} annotation {a['id']!r} angle value "
+                    f"must lie in [0, 360), got {val!r}"
+                )
+            domain_ids = {"point": pt_ids, "segment": seg_ids,
+                          "circle": circ_ids}[domain]
+            ents = a.get("entities")
+            if not (isinstance(ents, list) and len(ents) == 1
+                    and isinstance(ents[0], str) and ents[0] in domain_ids):
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation {a['id']!r} kind "
+                    f"{a['kind']!r} measures exactly one {domain} of this "
+                    f"entry, got {ents!r}"
+                )
+            expected_id = f"ann:{a['kind']}:{ents[0]}"
+            if a["id"] != expected_id:
+                raise DisplayContractError(
+                    f"v2_profiles {sid!r} annotation id {a['id']!r} must be "
+                    f"the semantic {expected_id!r}"
                 )
             anchors = a.get("anchors")
             if not (isinstance(anchors, list) and len(anchors) == 2):

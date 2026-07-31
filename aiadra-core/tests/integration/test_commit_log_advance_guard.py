@@ -1,12 +1,19 @@
-"""The commit log-advance guard (W-3, arc 20260730-1).
+"""The SERIALIZED stale-draft commit guard (W-3, arc 20260730-1; scope per
+Codex14 B3).
 
-Event and transaction ids are allocated at staging time against the event log
-as it then stands. Before this guard, two drafts staged against the same log
-could BOTH commit — the second appending duplicate event ids — after which
-every fold replay refuses and the workspace stops accepting commits entirely
-(observed in the wild: tx_0050 committed twice, evt_0051 duplicated, every
-subsequent transaction refused). The guard refuses the second commit BEFORE
-the first byte is written.
+Event and transaction ids are allocated at staging time against the event
+log as it then stands. Before this guard, a stale draft committing AFTER a
+newer commit had fully landed (the replayed/double-dispatched terminal of
+the W-3 incident) appended duplicate event ids, after which every fold
+replay refuses and the workspace stops accepting commits entirely (observed
+in the wild: tx_0050 committed twice, evt_0051 duplicated, every subsequent
+transaction refused). The guard refuses the stale commit BEFORE the first
+byte is written.
+
+SCOPE: every test here is SERIALIZED — the first commit completes before the
+second begins, which is exactly what the read-then-write check proves. It is
+not an atomic exclusion; simultaneous multi-process commits remain deferred
+per ADR/0026 §8.
 """
 from __future__ import annotations
 
@@ -35,9 +42,10 @@ def _event_ids(workspace: Path) -> list[str]:
         return [json.loads(line)["event_id"] for line in f if line.strip()]
 
 
-def test_second_draft_staged_against_same_log_is_refused(tmp_path: Path):
-    """The exact wild scenario: two drafts staged before either commits.
-    The first commits; the second must refuse with NOTHING written."""
+def test_a_serialized_stale_draft_is_refused(tmp_path: Path):
+    """The exact wild scenario, serialized: two drafts staged against the
+    same log; the first commit fully lands; the second (now stale) must
+    refuse with NOTHING written."""
     workspace = _init_workspace(tmp_path)
     a = _create_part_draft(workspace, "P-000001")
     b = _create_part_draft(workspace, "P-000002")  # staged against the SAME log

@@ -146,12 +146,16 @@ def test_aiadra_core_version_bumped_to_0_15_0():
     1.0/1.1/1.2 compatibility matrix and the standalone-HLR capable set
     {1.1, 1.2}. Additive public behavior → minor bump (prior: 0.14.0,
     arc 20260714-2 EP0 — the empty-Part display state)."""
+    # 0.19.1: the W-3 log-advance guard — `TransactionDraft.commit()` /
+    # `protocol.commit()` now refuse a serialized stale draft with a typed
+    # CommitError before any write (arc 20260730-1 Codex14 B2; the
+    # user-visible-edge-behavior PATCH precedent of arc 20260601-5).
     # 0.19.0: ADR/0044 A4 — Display contract v1.4 (`v2_profiles`) + the new
     # `protocol.preview_sketch_graph` read primitive (arc 20260730-1).
     # 0.18.0 was delete_object + bundle v0.30.0; 0.17.0 was contract v1.3.
     # Keep in lockstep with pyproject — the Studio engine badge reads THIS
     # constant.
-    assert aiadra_version == "0.19.0"
+    assert aiadra_version == "0.19.1"
 
 
 # =============================================================================

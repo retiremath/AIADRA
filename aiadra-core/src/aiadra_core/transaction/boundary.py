@@ -850,17 +850,26 @@ class TransactionDraft:
     # -------------------------------------------------------------------------
 
     def _assert_event_log_unmoved(self) -> None:
-        """The log-advance guard (W-3, arc 20260730-1).
+        """The SERIALIZED stale-draft guard (W-3, arc 20260730-1; scope
+        narrowed per Codex14 B3).
 
         Event and transaction ids are allocated at STAGING time against the
-        event log as it then stood. If the log has advanced since — a
-        concurrent draft on the same workspace, a double-dispatched terminal —
-        appending this draft's events would write DUPLICATE event ids, and
-        every later fold replay refuses them: the workspace stops accepting
-        commits entirely (observed: tx_0050 committed twice, evt_0051
-        duplicated, every subsequent transaction refused). Refuse BEFORE the
-        first byte is written: the draft stays open, disk state untouched,
-        and the caller re-stages against current state.
+        event log as it then stood. If another commit has LANDED since — a
+        replayed/double-dispatched terminal, a stale draft committed after a
+        newer one — appending this draft's events would write DUPLICATE
+        event ids, and every later fold replay refuses them: the workspace
+        stops accepting commits entirely (observed: tx_0050 committed twice,
+        evt_0051 duplicated, every subsequent transaction refused). Refuse
+        BEFORE the first byte is written: the draft stays open, disk state
+        untouched, and the caller re-stages against current state.
+
+        SCOPE — what this guard proves and no more: it is a read-then-write
+        check, not an atomic compare-and-swap. It catches every SERIALIZED
+        stale commit (the earlier commit fully landed before this one runs —
+        the W-3 shape). Two processes committing SIMULTANEOUSLY can both
+        read the same old tail before either writes; true multi-writer
+        contention remains deferred per ADR/0026 §8 and would need a
+        separately designed atomic exclusion, not this check.
 
         The scan is raw (no schema pass): a collision check needs only the
         ids, and a line that cannot parse is a corrupt log — failing loudly
@@ -896,9 +905,9 @@ class TransactionDraft:
             err = CommitError(
                 f"event log advanced under this draft: it staged evt_{first_staged:04d} "
                 f"but the log already holds evt_{max_committed:04d} — another commit landed "
-                f"after this draft staged its operations (concurrent draft or double "
-                f"dispatch). Nothing was written; roll back and re-stage against "
-                f"current state."
+                f"after this draft staged its operations (a stale draft: a replayed or "
+                f"double-dispatched terminal). Nothing was written; roll back and "
+                f"re-stage against current state."
             )
             self._emit_audit_once(
                 reason_text=f"commit refused: {err}",
@@ -915,10 +924,10 @@ class TransactionDraft:
         Raises if the draft is already in a terminal state (committed or
         rolled_back); marks lifecycle state as "committed" on success.
 
-        W-3 (arc 20260730-1): the log-advance guard runs FIRST — before the
-        sidecar writes, not just before the event append — because a stale
-        draft's sidecar writes would clobber the newer commit's state even
-        if the event append were the only thing refused.
+        W-3 (arc 20260730-1): the serialized stale-draft guard runs FIRST —
+        before the sidecar writes, not just before the event append —
+        because a stale draft's sidecar writes would clobber the newer
+        commit's state even if the event append were the only thing refused.
         """
         self._assert_open("commit")
         self._assert_event_log_unmoved()

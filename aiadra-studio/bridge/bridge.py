@@ -331,6 +331,13 @@ def m_authoring_commit(params: dict[str, Any]) -> dict[str, Any]:
     draft = _DRAFTS.get(session_id)  # do NOT pop yet — only on success (Codex2 B1)
     if draft is None:
         raise ValueError(f"no open authoring session: {session_id}")
+    # Codex14 B1 (the delete-endpoint lesson, applied to the general lane):
+    # `protocol.commit` does NOT self-validate, and an earlier `simulate` is a
+    # UX read on a separate IPC call — not an atomic terminal gate (the draft
+    # can be modified after it). Validate HERE, immediately before commit, or
+    # an invalid artifact reaches the immutable log. A refusal raises, the
+    # draft stays open (recoverable), and nothing is written.
+    draft.validate()
     result = commit(draft)
     out: dict[str, Any] = {"session_id": session_id, "commit": _to_jsonable(result)}
     object_ref = params.get("object_ref")

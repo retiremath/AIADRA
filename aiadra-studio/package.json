@@ -12,6 +12,7 @@
     "gen:fixtures": "node scripts/gen-dev-fixtures.mjs",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:bridge": "node scripts/run-bridge-tests.mjs",
     "smoke:step": "node scripts/step-electron-smoke.mjs",
     "shoot": "node scripts/shoot.mjs",
     "preview": "node scripts/dev.mjs preview"
