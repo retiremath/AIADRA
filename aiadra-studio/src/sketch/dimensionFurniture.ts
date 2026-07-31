@@ -169,8 +169,67 @@ export function buildDimensionFurniture(
         const s = Math.sign(point.v) || 1
         arrow(laneU, point.v, 0, s)
         arrow(laneU, 0, 0, -s)
-        label(formatAnnotation(a), laneU, point.v / 2 + px(TEXT_LIFT_PX))
+        // Codex17 B2: the value sits CENTRED along the measured span and is
+        // displaced PERPENDICULAR to the vertical dimension line — outside
+        // it (further from the profile), never along/over it.
+        const outward = key === 'v:left' ? -1 : 1
+        label(formatAnnotation(a), laneU + outward * px(TEXT_LIFT_PX), point.v / 2)
       }
+    })
+  }
+
+  // ---- Length dims: the SAME batch lane policy (Codex17 B3) --------------
+  // A fallback length is still a linear dimension: group by (line
+  // orientation mod 180°, outside-side normal direction) so same-side
+  // parallel/collinear lengths stagger deterministically, exactly like the
+  // position groups — sorted by value, ties by semantic id.
+  type LengthPrep = {
+    a: ProfileAnnotation
+    A: UV; B: UV
+    tU: number; tV: number
+    nU: number; nV: number
+  }
+  const lengthGroups = new Map<string, LengthPrep[]>()
+  for (const a of others) {
+    if (a.kind !== 'length') continue
+    const seg = segById.get(a.entities[0])
+    const A = seg && local.get(seg.start)
+    const B = seg && local.get(seg.end)
+    if (!seg || !A || !B) continue
+    const len = Math.hypot(B.u - A.u, B.v - A.v)
+    if (!(len > 0)) continue
+    const tU = (B.u - A.u) / len, tV = (B.v - A.v) / len
+    let nU = -tV, nV = tU
+    const mU = (A.u + B.u) / 2, mV = (A.v + B.v) / 2
+    if ((midU - mU) * nU + (midV - mV) * nV > 0) { nU = -nU; nV = -nV }
+    const lineAngle = ((Math.atan2(tV, tU) % Math.PI) + Math.PI) % Math.PI
+    const key = `L:${lineAngle.toFixed(6)}:${Math.atan2(nV, nU).toFixed(6)}`
+    const bucket = lengthGroups.get(key)
+    const prep = { a, A, B, tU, tV, nU, nV }
+    if (bucket) bucket.push(prep)
+    else lengthGroups.set(key, [prep])
+  }
+  for (const key of [...lengthGroups.keys()].sort()) {
+    const members = lengthGroups.get(key)!
+    members.sort((x, y) => x.a.value - y.a.value || (x.a.id < y.a.id ? -1 : 1))
+    members.forEach(({ a, A, B, tU, tV, nU, nV }, lane) => {
+      const off = px(BASE_OFFSET_PX) + lane * px(LANE_SPACING_PX)
+      const ext = (P: UV) =>
+        line(
+          { u: P.u + nU * px(GAP_PX), v: P.v + nV * px(GAP_PX) },
+          { u: P.u + nU * (off + px(OVERSHOOT_PX)), v: P.v + nV * (off + px(OVERSHOOT_PX)) },
+        )
+      ext(A); ext(B)
+      const A2 = { u: A.u + nU * off, v: A.v + nV * off }
+      const B2 = { u: B.u + nU * off, v: B.v + nV * off }
+      line(A2, B2)
+      arrow(A2.u, A2.v, -tU, -tV)
+      arrow(B2.u, B2.v, tU, tV)
+      label(
+        formatAnnotation(a),
+        (A2.u + B2.u) / 2 + nU * px(TEXT_LIFT_PX),
+        (A2.v + B2.v) / 2 + nV * px(TEXT_LIFT_PX),
+      )
     })
   }
 
@@ -200,35 +259,6 @@ export function buildDimensionFurniture(
         formatAnnotation(a),
         A.u + (R + px(TEXT_LIFT_PX + 4)) * Math.cos(mid),
         A.v + (R + px(TEXT_LIFT_PX + 4)) * Math.sin(mid),
-      )
-    } else if (a.kind === 'length') {
-      const seg = segById.get(a.entities[0])
-      const A = seg && local.get(seg.start)
-      const B = seg && local.get(seg.end)
-      if (!seg || !A || !B) continue
-      const len = Math.hypot(B.u - A.u, B.v - A.v)
-      if (!(len > 0)) continue
-      const tU = (B.u - A.u) / len, tV = (B.v - A.v) / len
-      // the offset side: the perpendicular pointing AWAY from the bbox centre
-      let nU = -tV, nV = tU
-      const mU = (A.u + B.u) / 2, mV = (A.v + B.v) / 2
-      if ((midU - mU) * nU + (midV - mV) * nV > 0) { nU = -nU; nV = -nV }
-      const off = px(BASE_OFFSET_PX)
-      const ext = (P: UV) =>
-        line(
-          { u: P.u + nU * px(GAP_PX), v: P.v + nV * px(GAP_PX) },
-          { u: P.u + nU * (off + px(OVERSHOOT_PX)), v: P.v + nV * (off + px(OVERSHOOT_PX)) },
-        )
-      ext(A); ext(B)
-      const A2 = { u: A.u + nU * off, v: A.v + nV * off }
-      const B2 = { u: B.u + nU * off, v: B.v + nV * off }
-      line(A2, B2)
-      arrow(A2.u, A2.v, -tU, -tV)
-      arrow(B2.u, B2.v, tU, tV)
-      label(
-        formatAnnotation(a),
-        (A2.u + B2.u) / 2 + nU * px(TEXT_LIFT_PX),
-        (A2.v + B2.v) / 2 + nV * px(TEXT_LIFT_PX),
       )
     } else if (a.kind === 'radius') {
       const circle = circById.get(a.entities[0])

@@ -192,6 +192,98 @@ describe('the batch placement policy (Codex14 B5)', () => {
     expect(JSON.stringify(a)).toBe(JSON.stringify(b))
   })
 
+  it('B2: position_y text is centred along the span and displaced PERPENDICULAR, outside the line', () => {
+    const g: FurnitureGeometry = {
+      ...freeLine(),
+      points: [
+        { id: 'p1', world: [10, 20, 0] },
+        { id: 'p2', world: [50, 45, 0] },
+      ],
+      annotations: [ann('position_y', 'p1', 20)],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    expect(f.labels).toHaveLength(1)
+    const at = f.labels[0].at
+    // centred along the measured span: v = point.v / 2
+    expect(at[1]).toBeCloseTo(10, 6)
+    // displaced in u OUTSIDE the vertical dimension line — p1 is in the left
+    // half, so the lane sits left of the bbox and the text sits further left
+    const laneU = 10 - (26 + 0) * WPP // minU − BASE_OFFSET_PX·wpp, lane 0
+    expect(at[0]).toBeLessThan(laneU)
+  })
+
+  it('B3: same-side parallel length dims stagger into distinct lanes, permutation-stable', () => {
+    // two horizontal segments, one above the other; both dims offset to the
+    // outside of the SAME side (below the lower segment's normal points away
+    // from the bbox centre for the lower one; force one side by stacking
+    // them in the lower half against a tall bbox spacer point)
+    const g: FurnitureGeometry = {
+      points: [
+        { id: 'a1', world: [0, 0, 0] },
+        { id: 'a2', world: [30, 0, 0] },
+        { id: 'b1', world: [0, 4, 0] },
+        { id: 'b2', world: [40, 4, 0] },
+        { id: 'top', world: [20, 100, 0] }, // pushes the bbox centre UP
+      ],
+      segments: [
+        { id: 's1', start: 'a1', end: 'a2' },
+        { id: 's2', start: 'b1', end: 'b2' },
+      ],
+      circles: [],
+      annotations: [ann('length', 's1', 30), ann('length', 's2', 40)],
+      constraint_glyphs: [],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    // both dims offset BELOW (away from the raised centre); their dimension
+    // lines are the horizontals not touching u=0-axis ticks — collect the
+    // distinct v-levels of 2-point horizontal lines longer than 25mm
+    const levels = f.lines
+      .filter(
+        (pts) =>
+          pts.length === 2 &&
+          Math.abs(pts[0][1] - pts[1][1]) < 1e-9 &&
+          Math.abs(pts[0][0] - pts[1][0]) > 25,
+      )
+      .map((pts) => pts[0][1].toFixed(6))
+    expect(new Set(levels).size).toBe(2) // staggered, not overlapping
+    // input permutation changes NOTHING
+    const swapped = buildDimensionFurniture(
+      { ...g, annotations: [...g.annotations].reverse() },
+      XY,
+      WPP,
+    )
+    expect(JSON.stringify(swapped)).toBe(JSON.stringify(f))
+  })
+
+  it('B3: collinear same-side length dims separate the same way', () => {
+    const g: FurnitureGeometry = {
+      points: [
+        { id: 'a1', world: [0, 0, 0] },
+        { id: 'a2', world: [20, 0, 0] },
+        { id: 'b1', world: [25, 0, 0] },
+        { id: 'b2', world: [60, 0, 0] },
+        { id: 'top', world: [30, 80, 0] },
+      ],
+      segments: [
+        { id: 's1', start: 'a1', end: 'a2' },
+        { id: 's2', start: 'b1', end: 'b2' },
+      ],
+      circles: [],
+      annotations: [ann('length', 's1', 20), ann('length', 's2', 35)],
+      constraint_glyphs: [],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    const levels = f.lines
+      .filter(
+        (pts) =>
+          pts.length === 2 &&
+          Math.abs(pts[0][1] - pts[1][1]) < 1e-9 &&
+          Math.abs(pts[0][0] - pts[1][0]) > 15,
+      )
+      .map((pts) => pts[0][1].toFixed(6))
+    expect(new Set(levels).size).toBe(2)
+  })
+
   it('pixel constants scale with worldPerPixel — text height doubles when wpp doubles', () => {
     const a = buildDimensionFurniture(freeLine(), XY, WPP)
     const b = buildDimensionFurniture(freeLine(), XY, WPP * 2)

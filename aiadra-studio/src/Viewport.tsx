@@ -700,10 +700,18 @@ export default function Viewport({
 
     // Stepped ortho zoom (Creo Zoom In/Out): camera.zoom scaling, clamped so a
     // runaway click series can never invert or vanish the frustum.
+    // Codex17 B1: a PROGRAMMATIC zoom never passes through OrbitControls, so
+    // it must announce the scale change itself — the settle machine AND the
+    // furniture view-scale feed ride ONE named exit (cameraScaleChanged),
+    // which the seam regression pins.
+    const cameraScaleChanged = () => {
+      machine.cameraMoved()
+      feedViewScale()
+    }
     const zoomBy = (factor: number) => {
       camera.zoom = Math.min(50, Math.max(0.02, camera.zoom * factor))
       camera.updateProjectionMatrix()
-      machine.cameraMoved()
+      cameraScaleChanged()
     }
 
     const fit = () => {
@@ -715,6 +723,7 @@ export default function Viewport({
         controls.target.copy(HOME_TARGET)
         applyFrustum()
         controls.update()
+        cameraScaleChanged() // B1: frustum/zoom changed without OrbitControls
         return
       }
       const sphere = box.getBoundingSphere(new THREE.Sphere())
@@ -728,6 +737,7 @@ export default function Viewport({
       camera.far = dist + sphere.radius * 8
       applyFrustum()
       controls.update()
+      cameraScaleChanged() // B1
     }
 
     // Codex2 B4: Reset restores the CANONICAL home orientation — direction
@@ -737,6 +747,7 @@ export default function Viewport({
       controls.target.copy(HOME_TARGET)
       camera.zoom = 1
       orientMainCamera(HOME_VIEW)
+      cameraScaleChanged() // B1
     }
 
     const snapToView = (viewId: string) => {
