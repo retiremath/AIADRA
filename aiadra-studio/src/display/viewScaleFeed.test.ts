@@ -21,8 +21,12 @@ const src = readFileSync(
 const bodyOf = (decl: string): string => {
   const start = src.indexOf(decl)
   expect(start, `declaration ${decl} exists`).toBeGreaterThan(-1)
-  // the following ~40 lines bound every one of these small closures
-  return src.slice(start, start + 1400)
+  // Codex18 N1: bound the slice at the NEXT sibling declaration (the mount
+  // effect's 4-space indent) so an assertion can never match text from a
+  // neighbouring function. Nested `const` at deeper indents stay inside.
+  const next = src.indexOf('\n    const ', start + decl.length)
+  expect(next, `a sibling declaration bounds ${decl}`).toBeGreaterThan(-1)
+  return src.slice(start, next)
 }
 
 describe('every programmatic camera-scale change feeds the furniture scale', () => {

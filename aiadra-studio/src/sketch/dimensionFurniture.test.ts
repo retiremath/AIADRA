@@ -212,17 +212,27 @@ describe('the batch placement policy (Codex14 B5)', () => {
     expect(at[0]).toBeLessThan(laneU)
   })
 
-  it('B3: same-side parallel length dims stagger into distinct lanes, permutation-stable', () => {
-    // two horizontal segments, one above the other; both dims offset to the
-    // outside of the SAME side (below the lower segment's normal points away
-    // from the bbox centre for the lower one; force one side by stacking
-    // them in the lower half against a tall bbox spacer point)
+  const dimLevels = (f: ReturnType<typeof buildDimensionFurniture>, minLen: number) =>
+    f.lines
+      .filter(
+        (pts) =>
+          pts.length === 2 &&
+          Math.abs(pts[0][1] - pts[1][1]) < 1e-9 &&
+          Math.abs(pts[0][0] - pts[1][0]) > minLen,
+      )
+      .map((pts) => pts[0][1])
+
+  it('B3 (Codex18): member-relative lane CANCELLATION is dead — one bbox support', () => {
+    // Codex18's exact counterexample: WPP 0.5 ⇒ base 13mm, spacing 12mm.
+    // Segments at v=0 (lane 0) and v=12 (lane 1): member-relative offsets
+    // put BOTH dimension lines at v=−13. Group-level support lanes put them
+    // at −13 and −25.
     const g: FurnitureGeometry = {
       points: [
         { id: 'a1', world: [0, 0, 0] },
         { id: 'a2', world: [30, 0, 0] },
-        { id: 'b1', world: [0, 4, 0] },
-        { id: 'b2', world: [40, 4, 0] },
+        { id: 'b1', world: [0, 12, 0] },
+        { id: 'b2', world: [40, 12, 0] },
         { id: 'top', world: [20, 100, 0] }, // pushes the bbox centre UP
       ],
       segments: [
@@ -234,18 +244,9 @@ describe('the batch placement policy (Codex14 B5)', () => {
       constraint_glyphs: [],
     }
     const f = buildDimensionFurniture(g, XY, WPP)
-    // both dims offset BELOW (away from the raised centre); their dimension
-    // lines are the horizontals not touching u=0-axis ticks — collect the
-    // distinct v-levels of 2-point horizontal lines longer than 25mm
-    const levels = f.lines
-      .filter(
-        (pts) =>
-          pts.length === 2 &&
-          Math.abs(pts[0][1] - pts[1][1]) < 1e-9 &&
-          Math.abs(pts[0][0] - pts[1][0]) > 25,
-      )
-      .map((pts) => pts[0][1].toFixed(6))
-    expect(new Set(levels).size).toBe(2) // staggered, not overlapping
+    const levels = dimLevels(f, 25)
+    expect(new Set(levels.map((v) => v.toFixed(6))).size).toBe(2)
+    expect(levels.sort((x, y) => y - x)).toEqual([-13, -25].map((v) => expect.closeTo(v, 6)))
     // input permutation changes NOTHING
     const swapped = buildDimensionFurniture(
       { ...g, annotations: [...g.annotations].reverse() },
@@ -253,6 +254,61 @@ describe('the batch placement policy (Codex14 B5)', () => {
       WPP,
     )
     expect(JSON.stringify(swapped)).toBe(JSON.stringify(f))
+  })
+
+  it('B3 (Codex18): every length dimension line lies STRICTLY OUTSIDE the bbox', () => {
+    // a lower-half segment in a tall bbox: the member-relative offset put
+    // its dim INSIDE (v = 40 − 13 = 27, bbox 0..100); the support lane puts
+    // it below the whole profile.
+    const g: FurnitureGeometry = {
+      points: [
+        { id: 'a1', world: [0, 40, 0] },
+        { id: 'a2', world: [30, 40, 0] },
+        { id: 'lo', world: [10, 0, 0] },
+        { id: 'hi', world: [20, 100, 0] },
+      ],
+      segments: [{ id: 's1', start: 'a1', end: 'a2' }],
+      circles: [],
+      annotations: [ann('length', 's1', 30)],
+      constraint_glyphs: [],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    const levels = dimLevels(f, 25)
+    expect(levels).toHaveLength(1)
+    expect(levels[0]).toBeLessThan(0) // outside: below the bbox minimum
+  })
+
+  it('B3 (Codex18): endpoint REVERSAL keeps the group and its lane levels', () => {
+    const base: FurnitureGeometry = {
+      points: [
+        { id: 'a1', world: [0, 0, 0] },
+        { id: 'a2', world: [30, 0, 0] },
+        { id: 'b1', world: [0, 12, 0] },
+        { id: 'b2', world: [40, 12, 0] },
+        { id: 'top', world: [20, 100, 0] },
+      ],
+      segments: [
+        { id: 's1', start: 'a1', end: 'a2' },
+        { id: 's2', start: 'b1', end: 'b2' },
+      ],
+      circles: [],
+      annotations: [ann('length', 's1', 30), ann('length', 's2', 40)],
+      constraint_glyphs: [],
+    }
+    const reversed: FurnitureGeometry = {
+      ...base,
+      segments: [
+        { id: 's1', start: 'a1', end: 'a2' },
+        { id: 's2', start: 'b2', end: 'b1' }, // the SAME line, walked backward
+      ],
+    }
+    const a = dimLevels(buildDimensionFurniture(base, XY, WPP), 25)
+      .map((v) => v.toFixed(6))
+      .sort()
+    const b = dimLevels(buildDimensionFurniture(reversed, XY, WPP), 25)
+      .map((v) => v.toFixed(6))
+      .sort()
+    expect(b).toEqual(a)
   })
 
   it('B3: collinear same-side length dims separate the same way', () => {

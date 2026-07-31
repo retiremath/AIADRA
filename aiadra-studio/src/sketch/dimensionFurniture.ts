@@ -212,16 +212,33 @@ export function buildDimensionFurniture(
   for (const key of [...lengthGroups.keys()].sort()) {
     const members = lengthGroups.get(key)!
     members.sort((x, y) => x.a.value - y.a.value || (x.a.id < y.a.id ? -1 : 1))
-    members.forEach(({ a, A, B, tU, tV, nU, nV }, lane) => {
-      const off = px(BASE_OFFSET_PX) + lane * px(LANE_SPACING_PX)
-      const ext = (P: UV) =>
+    // Codex18 B3: lanes are built from ONE group-level SUPPORT — the whole
+    // profile bbox projected onto the group's canonical outward normal —
+    // never from each member's own segment. Member-relative offsets let two
+    // parallel segments at different heights CANCEL onto the same absolute
+    // line (v=0 at lane 0 and v=12 at lane 1 both landing at −13), and let
+    // a dim line sit INSIDE a tall bbox. A shared support makes every lane
+    // an absolute outside line: support + base + lane·spacing.
+    const { nU, nV } = members[0] // canonical for the group (the key pins it)
+    const support = Math.max(
+      minU * nU + minV * nV,
+      maxU * nU + minV * nV,
+      maxU * nU + maxV * nV,
+      minU * nU + maxV * nV,
+    )
+    members.forEach(({ a, A, B, tU, tV }, lane) => {
+      const level = support + px(BASE_OFFSET_PX) + lane * px(LANE_SPACING_PX)
+      // shift each endpoint ALONG the group normal onto the shared lane line
+      const dA = level - (A.u * nU + A.v * nV)
+      const dB = level - (B.u * nU + B.v * nV)
+      const ext = (P: UV, d: number) =>
         line(
           { u: P.u + nU * px(GAP_PX), v: P.v + nV * px(GAP_PX) },
-          { u: P.u + nU * (off + px(OVERSHOOT_PX)), v: P.v + nV * (off + px(OVERSHOOT_PX)) },
+          { u: P.u + nU * (d + px(OVERSHOOT_PX)), v: P.v + nV * (d + px(OVERSHOOT_PX)) },
         )
-      ext(A); ext(B)
-      const A2 = { u: A.u + nU * off, v: A.v + nV * off }
-      const B2 = { u: B.u + nU * off, v: B.v + nV * off }
+      ext(A, dA); ext(B, dB)
+      const A2 = { u: A.u + nU * dA, v: A.v + nV * dA }
+      const B2 = { u: B.u + nU * dB, v: B.v + nV * dB }
       line(A2, B2)
       arrow(A2.u, A2.v, -tU, -tV)
       arrow(B2.u, B2.v, tU, tV)
