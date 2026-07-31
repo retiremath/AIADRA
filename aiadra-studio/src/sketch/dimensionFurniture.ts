@@ -201,7 +201,17 @@ export function buildDimensionFurniture(
     const tU = (B.u - A.u) / len, tV = (B.v - A.v) / len
     let nU = -tV, nV = tU
     const mU = (A.u + B.u) / 2, mV = (A.v + B.v) / 2
-    if ((midU - mU) * nU + (midV - mV) * nV > 0) { nU = -nU; nV = -nV }
+    const centreDot = (midU - mU) * nU + (midV - mV) * nV
+    // Codex19 B1: a segment ON the bbox centre line has centreDot = 0, and
+    // the directed left normal would make the SIDE depend on drawing
+    // direction (reversal flips above↔below). At a tie — within a pinned
+    // scale-relative tolerance — the normal is canonicalized from the
+    // UNDIRECTED orientation instead: positive v, or positive u for exact
+    // verticals. Direction-independent by construction.
+    const tieTol = 1e-9 * Math.max(1, Math.hypot(maxU - minU, maxV - minV))
+    if (Math.abs(centreDot) <= tieTol) {
+      if (nV < 0 || (nV === 0 && nU < 0)) { nU = -nU; nV = -nV }
+    } else if (centreDot > 0) { nU = -nU; nV = -nV }
     const lineAngle = ((Math.atan2(tV, tU) % Math.PI) + Math.PI) % Math.PI
     const key = `L:${lineAngle.toFixed(6)}:${Math.atan2(nV, nU).toFixed(6)}`
     const bucket = lengthGroups.get(key)

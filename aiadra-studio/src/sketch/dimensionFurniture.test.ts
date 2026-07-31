@@ -278,6 +278,30 @@ describe('the batch placement policy (Codex14 B5)', () => {
     expect(levels[0]).toBeLessThan(0) // outside: below the bbox minimum
   })
 
+  it('B1 (Codex19): a segment EXACTLY on the bbox centre line keeps its side under reversal', () => {
+    // centreDot = 0 — the away-flip never fires, and the directed left
+    // normal would put A→B above but B→A below. The canonicalized tie
+    // normal (undirected orientation, positive v) makes both agree: ABOVE.
+    const mk = (start: string, end: string): FurnitureGeometry => ({
+      points: [
+        { id: 'a1', world: [0, 50, 0] },
+        { id: 'a2', world: [30, 50, 0] },
+        { id: 'lo', world: [10, 0, 0] },
+        { id: 'hi', world: [20, 100, 0] }, // bbox centre v = 50 — the midline
+      ],
+      segments: [{ id: 's1', start, end }],
+      circles: [],
+      annotations: [ann('length', 's1', 30)],
+      constraint_glyphs: [],
+    })
+    const fwd = dimLevels(buildDimensionFurniture(mk('a1', 'a2'), XY, WPP), 25)
+    const rev = dimLevels(buildDimensionFurniture(mk('a2', 'a1'), XY, WPP), 25)
+    expect(fwd).toHaveLength(1)
+    expect(rev).toHaveLength(1)
+    expect(rev[0]).toBeCloseTo(fwd[0], 9)
+    expect(fwd[0]).toBeGreaterThan(100) // the canonical side: ABOVE the bbox
+  })
+
   it('B3 (Codex18): endpoint REVERSAL keeps the group and its lane levels', () => {
     const base: FurnitureGeometry = {
       points: [
