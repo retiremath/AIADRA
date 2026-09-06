@@ -226,13 +226,16 @@ export function supportFrame(support: SketchSupport): PlaneFrameTS {
   return support.kind === 'face' ? support.frame : principalFrame(support.orientation)
 }
 
-/** The three principal sketch planes (EP2). Studio labels follow the Creo
- *  convention; the ENGINE speaks geometry — labels never cross the wire. */
+/** The three principal sketch planes (EP2). Studio labels are Z-UP (Petre
+ *  2026-09-05): the plane each standard view sees face-on carries that view's
+ *  name — TOP = xy (horizontal), FRONT = zx, RIGHT = yz — the same law the
+ *  nav cube's faces follow. The ENGINE speaks geometry (`xy`/`yz`/`zx`);
+ *  labels never cross the wire. */
 export type PlaneOrientation = 'xy' | 'yz' | 'zx'
 export const PLANE_LABELS: Record<PlaneOrientation, string> = {
-  xy: 'FRONT',
+  xy: 'TOP',
   yz: 'RIGHT',
-  zx: 'TOP',
+  zx: 'FRONT',
 }
 /** Stable overlay-lane ids (arc 20260714-2 Codex1 — never leaked into Truth). */
 export const INTRINSIC_PLANE_IDS: Record<PlaneOrientation, string> = {

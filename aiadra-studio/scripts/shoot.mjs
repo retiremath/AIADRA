@@ -44,7 +44,10 @@ try {
 // that vitest fixture is the drift gate; this list is the runtime probe).
 const COMMANDS = [
   'Regenerate', 'Get Data', 'Boolean Operations', 'Split/Trim Body', 'New Body',
-  'Plane', 'Axis', 'Point', 'Coordinate System', 'Sketch',
+  'Plane', 'Axis', 'Point', 'Coordinate System',
+  // I3 (arc 20260905-1): the Creo seat IS `Sketch` (the v2 placement + drawing
+  // lane); the v1 lane is labeled 'Sketch (legacy)' until I4.
+  'Sketch',
   'Extrude', 'Revolve', 'Sweep', 'Swept Blend',
   'Hole', 'Round', 'Chamfer', 'Shell', 'Draft', 'Rib',
   'Pattern', 'Mirror', 'Trim', 'Offset', 'Extend', 'Project', 'Thicken',

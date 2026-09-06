@@ -201,7 +201,18 @@ describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
     // the legacy grammar is ABSENT — one terminal owner
     expect(screen.queryByRole('button', { name: 'Close ring' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Constr.' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Sketch view' })).toBeNull()
+    // I3 (arc 20260905-1; Claude2 D5'): Creo's Setup group leads EVERY sketch
+    // lane — the camera-only Sketch view is present here too (it was absent
+    // from the profile lane before I3: the button Petre expects top-left).
+    expect(screen.getByRole('button', { name: 'Sketch view' })).toBeTruthy()
+  })
+
+  it('the profile lane’s Sketch view dispatches the camera callback (I3)', () => {
+    const store = createAuthoringSessionStore()
+    const onSketchView = vi.fn()
+    render(<SketchRibbon {...harness(store)} onSketchView={onSketchView} profile={profileProp()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sketch view' }))
+    expect(onSketchView).toHaveBeenCalledTimes(1)
   })
 
   it('the profile grammar WINS even if a legacy session exists (defense in depth)', () => {
@@ -223,6 +234,12 @@ describe('the EXCLUSIVE profile grammar (Codex7 B1)', () => {
       />,
     )
     for (const btn of screen.getAllByRole('button')) {
+      if (btn.textContent?.trim() === 'Sketch view') {
+        // camera-only: stays available during a busy terminal — the same
+        // rule the v1 lane pins (Codex1 N1); it writes nothing.
+        expect((btn as HTMLButtonElement).disabled).toBe(false)
+        continue
+      }
       expect((btn as HTMLButtonElement).disabled).toBe(true)
     }
   })

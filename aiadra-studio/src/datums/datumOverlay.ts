@@ -10,7 +10,8 @@
  * lives outside the canonical part group); in-viewport click-to-pick is a
  * later polish — the pick surface today is the plane chooser.
  *
- * Studio labels follow the Creo convention: FRONT=xy · RIGHT=yz · TOP=zx.
+ * Studio labels are Z-up (Petre 2026-09-05): TOP = xy, FRONT = zx, RIGHT = yz —
+ * the plane each standard view sees face-on carries that view's name.
  */
 import * as THREE from 'three'
 import {
@@ -38,9 +39,9 @@ export interface DatumOverlay {
 }
 
 const PLANE_COLORS: Record<PlaneOrientation, number> = {
-  xy: 0x6b9bd1, // FRONT — the accent blue
+  xy: 0x7bbf7b, // TOP (the horizontal plane) — green
   yz: 0xc98f6b, // RIGHT — warm
-  zx: 0x7bbf7b, // TOP — green
+  zx: 0x6b9bd1, // FRONT — the accent blue
 }
 
 /** The plane quad's local basis per orientation: (u, v) → global. */
@@ -121,21 +122,33 @@ export function createDatumOverlay(halfSize = 60): DatumOverlay {
     }
   }
 
-  // The origin coordinate-system triad.
-  const triad = new THREE.AxesHelper(halfSize * 0.35)
+  // The origin coordinate-system triad — Creo's csys look (Petre 2026-09-05):
+  // three ARROWS (shaft + head), X red / Y green / Z blue, labeled at the
+  // tips. THIS is the coordinate system — at 0,0,0, the datum intersection
+  // (Petre round 2 replaced the old floating corner gnomon with it).
+  const AXES: Array<[string, number, THREE.Vector3]> = [
+    ['X', 0xb03333, new THREE.Vector3(1, 0, 0)],
+    ['Y', 0x2e8b2e, new THREE.Vector3(0, 1, 0)],
+    ['Z', 0x2e5db0, new THREE.Vector3(0, 0, 1)],
+  ]
+  const axisLength = halfSize * 0.35
+  const triad = new THREE.Group()
   triad.name = INTRINSIC_CSYS_ID
   triad.userData = { kind: 'intrinsic-csys', intrinsicId: INTRINSIC_CSYS_ID }
   kinds.origin.add(triad)
-  disposables.push(triad.geometry, triad.material as THREE.Material)
-  // X/Y/Z axis labels at the triad tips (Petre round 2): THIS is the
-  // coordinate system — at 0,0,0, the datum intersection — replacing the
-  // old floating corner gnomon.
-  const AXIS_TIPS: Array<[string, number, THREE.Vector3]> = [
-    ['X', 0xb03333, new THREE.Vector3(1, 0, 0)], // AxesHelper x = red
-    ['Y', 0x2e8b2e, new THREE.Vector3(0, 1, 0)], // y = green
-    ['Z', 0x2e5db0, new THREE.Vector3(0, 0, 1)], // z = blue
-  ]
-  for (const [text, color, dir] of AXIS_TIPS) {
+  for (const [text, color, dir] of AXES) {
+    const arrow = new THREE.ArrowHelper(
+      dir,
+      new THREE.Vector3(0, 0, 0),
+      axisLength,
+      color,
+      axisLength * 0.24, // head length
+      axisLength * 0.11, // head width
+    )
+    arrow.name = `${INTRINSIC_CSYS_ID}:${text}`
+    arrow.userData = { kind: 'intrinsic-csys-axis', intrinsicId: INTRINSIC_CSYS_ID, axis: text }
+    triad.add(arrow)
+    disposables.push(arrow) // ArrowHelper.dispose() releases shaft + head
     const tip = makeLabelSprite(text, color)
     if (!tip) continue
     tip.position.copy(dir.clone().multiplyScalar(halfSize * 0.42))

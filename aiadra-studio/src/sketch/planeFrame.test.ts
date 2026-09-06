@@ -127,14 +127,22 @@ describe('projectedExtent — ONE derivation for sheet AND camera (Codex5 B1.1)'
 
 describe('arbitratePlanePick — face-over-datum, ONE rule', () => {
   const planar = new Set(['feat_0002:face:cap_hi'])
-  it('an eligible planar face beats a datum; ineligible faces do not', () => {
-    expect(arbitratePlanePick('feat_0002:face:cap_hi', 'xy', planar)).toEqual({ kind: 'face', faceId: 'feat_0002:face:cap_hi' })
-    expect(arbitratePlanePick('feat_0002:face:outer_wall', 'xy', planar)).toEqual({ kind: 'datum', orientation: 'xy' })
+  it('an eligible planar face beats a datum; an UNSUPPORTED face in front is reported for refusal (I3 Codex3 B2)', () => {
+    const cap = { faceId: 'feat_0002:face:cap_hi', distance: 10 }
+    const wall = { faceId: 'feat_0002:face:outer_wall', distance: 10 }
+    const xy = { orientation: 'xy' as const, distance: 30 }
+    expect(arbitratePlanePick(cap, xy, planar)).toEqual({ kind: 'face', faceId: 'feat_0002:face:cap_hi' })
+    // the wall is not planar: it is what was clicked, so the datum behind it never wins
+    expect(arbitratePlanePick(wall, xy, planar)).toEqual({ kind: 'unsupported-face', faceId: 'feat_0002:face:outer_wall' })
+    // a datum IN FRONT of an unsupported face still wins
+    expect(arbitratePlanePick({ ...wall, distance: 50 }, xy, planar)).toEqual({ kind: 'datum', orientation: 'xy' })
   })
-  it('datum alone picks the datum; nothing yields null; S1 empty set = datum-only', () => {
-    expect(arbitratePlanePick(null, 'yz', planar)).toEqual({ kind: 'datum', orientation: 'yz' })
+  it('datum alone picks the datum; nothing yields null; an EMPTY eligibility set (principal-only) reports a clicked face as unsupported', () => {
+    expect(arbitratePlanePick(null, { orientation: 'yz', distance: 5 }, planar)).toEqual({ kind: 'datum', orientation: 'yz' })
     expect(arbitratePlanePick(null, null, planar)).toBeNull()
-    expect(arbitratePlanePick('feat_0002:face:cap_hi', 'zx', new Set())).toEqual({ kind: 'datum', orientation: 'zx' })
+    const cap = { faceId: 'feat_0002:face:cap_hi', distance: 1 }
+    expect(arbitratePlanePick(cap, { orientation: 'zx', distance: 2 }, new Set())).toEqual({ kind: 'unsupported-face', faceId: 'feat_0002:face:cap_hi' })
+    expect(arbitratePlanePick(cap, null, new Set())).toEqual({ kind: 'unsupported-face', faceId: 'feat_0002:face:cap_hi' })
   })
 })
 

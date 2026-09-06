@@ -6,6 +6,7 @@ import {
   createProfileOverlay,
   formatAnnotation,
   glyphLabel,
+  labelAnchor,
   type ProfileGeometry,
 } from './profileOverlay'
 import { SKETCH_LIFT_MM, principalFrame } from './planeFrame'
@@ -226,6 +227,47 @@ describe('the overlay renders what the engine handed it', () => {
     const o = createProfileOverlay()
     o.update(preview, FRAME_XY, 0.5)
     expect(o.group.children.filter((c) => c instanceof THREE.Line)).toHaveLength(1)
+    o.dispose()
+  })
+})
+
+describe('Codex21 B1/B2: label textures are sRGB; labels anchor their near ink edge outward', () => {
+  it('every label texture carries the sRGB colour space (B1)', () => {
+    const o = createProfileOverlay()
+    o.update(rectangle(), FRAME_XY, 0.5)
+    const sprites = o.group.children.filter((c) => c instanceof THREE.Sprite) as THREE.Sprite[]
+    expect(sprites.length).toBeGreaterThan(0)
+    for (const s of sprites) {
+      expect(((s.material as THREE.SpriteMaterial).map as THREE.Texture).colorSpace).toBe(THREE.SRGBColorSpace)
+    }
+    o.dispose()
+  })
+
+  it('the pure anchor law: edge for an axis outward, corner for a diagonal, centre for none or a negligible component', () => {
+    const l = { w: 200, h: 84, em: 64 } // a 64 px font in an 84 px texture with 10 px side pads
+    const padX = 10 / 200
+    const padY = (84 - 64) / 2 / 84
+    expect(labelAnchor(undefined, l)).toEqual({ x: 0.5, y: 0.5 })
+    expect(labelAnchor([1, 0], l)).toEqual({ x: padX, y: 0.5 }) // text to the RIGHT: its left ink edge on the anchor
+    expect(labelAnchor([-1, 0], l)).toEqual({ x: 1 - padX, y: 0.5 }) // text to the LEFT: its right ink edge
+    expect(labelAnchor([0, 1], l)).toEqual({ x: 0.5, y: padY }) // text ABOVE: its bottom em edge
+    expect(labelAnchor([0, -1], l)).toEqual({ x: 0.5, y: 1 - padY })
+    expect(labelAnchor([Math.SQRT1_2, Math.SQRT1_2], l)).toEqual({ x: padX, y: padY }) // the near corner
+    expect(labelAnchor([0.999, 0.01], l)).toEqual({ x: padX, y: 0.5 }) // a negligible component stays centred
+  })
+
+  it('a rendered label takes the anchor its furniture outward dictates (B2)', () => {
+    // the rectangle's single length annotation lies on a HORIZONTAL segment:
+    // its outward is ±v, so the sprite anchors an em edge, centred in x
+    const o = createProfileOverlay()
+    o.update(rectangle(), FRAME_XY, 0.5)
+    const label = o.group.children.find((c) => c instanceof THREE.Sprite) as THREE.Sprite
+    expect(label.center.x).toBeCloseTo(0.5, 9)
+    expect(label.center.y === 0.5).toBe(false)
+    // the H glyph marker (added after the labels) stays centred
+    const glyph = (o.group.children.filter((c) => c instanceof THREE.Sprite) as THREE.Sprite[]).at(-1)!
+    expect(glyph.center.x).toBeCloseTo(0.5, 9)
+    expect(glyph.center.y).toBeCloseTo(0.5, 9)
     o.dispose()
   })
 })

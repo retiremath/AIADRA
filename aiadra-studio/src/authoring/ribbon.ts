@@ -125,6 +125,9 @@ export interface RibbonCommand {
    *  (the default); 'reference-import' opens the user-mediated import picker
    *  — the ONE semantic exception, named here, no renderer special-casing. */
   dispatch?: 'reference-import'
+  /** I3 (Codex1 N3): a product-facing one-liner for the WORKING tooltip
+   *  (capability copy), never internals. */
+  hint?: string
 }
 
 const ROADMAP = (reason: string) => (): CommandState => ({ state: 'roadmap-disabled', reason })
@@ -270,7 +273,14 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // so — small cell, "(legacy)" label — while Profile Sketch holds the Datum
   // anchor, so the natural click lands in the I1 drawing lane. I3 migrates
   // ordinary Sketch onto the profile session and retires this pair.
-  { key: 'sketch', label: 'Sketch (legacy)', group: 'Datum', derive: sketchDerive, presentation: P('sketch', 'small', 2, 2) },
+  {
+    key: 'sketch',
+    label: 'Sketch (legacy)',
+    group: 'Datum',
+    derive: sketchDerive,
+    presentation: P('sketch', 'small', 2, 2),
+    hint: 'one-reference sketch on a datum plane or a flat face (rectangle, contour, circle, arc); no placement dialog',
+  },
   // Gate F2b (ADR/0044 A2): the slice-1 REFERENCES sketch — the first v2
   // (adapter 0.2.0) writer. One-shot op; needs a READY Part like sketch.
   { key: 'references-sketch', label: 'References', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'small', 2, 1) },
@@ -278,7 +288,17 @@ export const RIBBON_COMMANDS: RibbonCommand[] = [
   // CREATE entry — plane pick → the v2 profile drawing session, with the v1
   // authoring store idle throughout (the lifecycles never nest). I3 routes
   // ordinary Sketch here and retires this command.
-  { key: 'profile-sketch', label: 'Profile Sketch', group: 'Datum', derive: referencesSketchDerive, presentation: P('sketch', 'anchor', 0) },
+  // I3 (arc 20260905-1): the Creo seat IS `Sketch` — the v2 two-reference
+  // placement dialog + the drawing session (SL-03). The v1 pair above stays
+  // the labeled legacy lane until I4.
+  {
+    key: 'profile-sketch',
+    label: 'Sketch',
+    group: 'Datum',
+    derive: referencesSketchDerive,
+    presentation: P('sketch', 'anchor', 0),
+    hint: 'pick a plane, set the orientation reference and view direction, then draw',
+  },
   // Shapes
   { key: 'extrude', label: 'Extrude', group: 'Shapes', derive: extrudeDerive, presentation: P('extrude', 'anchor', 0) },
   { key: 'revolve', label: 'Revolve', group: 'Shapes', derive: revolveDerive, presentation: P('revolve', 'anchor', 1) },

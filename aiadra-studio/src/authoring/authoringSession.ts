@@ -23,6 +23,7 @@ import type { Pt } from '../sketch/contour'
 import type { CircleDims, PlaneOrientation, RectDims, SketchSupport } from './backend'
 import { normalizeCircle, normalizeRectangle } from './backend'
 import type { AuthoringTarget, SelectorCapture } from './partContext'
+import type { PlacementRecord } from './placementFrame'
 import type { EditableParameter } from './inspectDecode'
 
 export type SketchPhase = 'drawing' | 'closed' | 'busy' | 'committed' | 'error'
@@ -172,7 +173,16 @@ export type PlanePickContinuation =
   | { type: 'chained'; captured: ExtrudeSubstate; selectedSketchId: string | null; tool: SketchTool['kind']; targetPart: { number: string; name: string } | null }
   // ADR/0044 A3 / pass sketch-place-1 (Codex1 B4): the References PLACEMENT
   // session — the support pick flows into the placement-confirm substate.
-  | { type: 'placement'; targetPart: { number: string; name: string } | null }
+  | {
+      type: 'placement'
+      targetPart: { number: string; name: string } | null
+      /** I3 (arc 20260905-1): what Accept does after the dialog — References
+       *  commits a construction sketch; Sketch opens the drawing session. */
+      accept: 'create' | 'sketch'
+      /** The drawing session's target, CAPTURED at Sketch start and carried
+       *  through the dialog — never recaptured at accept (Codex1 N2). */
+      capturedTarget: PlacementTarget | null
+    }
 
 /** The placement-confirm substate (A3.6.1/A3.6.2): the Creo two-reference
  *  dialog — support picked, the engine's canonical default completed, the
@@ -180,6 +190,18 @@ export type PlanePickContinuation =
  *  substate serves CREATE (References) and REDEFINE (the tree's ✎). */
 /** The four placement facts in session vocabulary (the persisted record's
  *  camelCase twin — the op builder maps back to wire names). */
+/** The placement dialog's accept continuation (I3). */
+export type PlacementAccept = 'create' | 'sketch' | 'redefine'
+/** The dialog's ACTIVE collector — the viewport pick fills it (Creo's
+ *  collector focus model; Codex1 Q2). */
+export type PlacementCollector = 'plane' | 'reference'
+/** The profile drawing session's target tuple (the lane's `SessionTarget`). */
+export interface PlacementTarget {
+  workspaceId: string | null
+  partNumber: string
+  generation: number
+}
+
 export interface PlacementFacts {
   support: PlaneOrientation
   orientationRef: PlaneOrientation
@@ -192,6 +214,9 @@ export interface PlacementSubstate extends PlacementFacts {
   /** null = CREATE; else REDEFINE of this committed 0.2.1 sketch (seeded
    *  from its persisted record — omission-keeps is derived by diffing). */
   redefineOf: { featureId: string; current: PlacementFacts } | null
+  accept: PlacementAccept
+  activeCollector: PlacementCollector | null
+  capturedTarget: PlacementTarget | null
   targetPart: { number: string; name: string } | null
   generation: number
   busy: boolean
@@ -205,6 +230,44 @@ export const PLACEMENT_DEFAULT_REF: Record<PlaneOrientation, PlaneOrientation> =
   yz: 'zx',
   zx: 'xy',
 }
+
+/** ONE member setter for every input route — list, tree, viewport pick
+ *  (Codex1 N2): a colliding support change auto-repairs the reference to the
+ *  engine default; a colliding reference change is refused (null). Orientation
+ *  and Flip are retained across a support change. */
+export function applyPlacementMember(
+  facts: PlacementFacts,
+  member: 'support' | 'orientationRef' | 'orientation' | 'normalSide',
+  value: string,
+): PlacementFacts | null {
+  const next = { ...facts, [member]: value } as PlacementFacts
+  if (member === 'support' && next.orientationRef === next.support) {
+    next.orientationRef = PLACEMENT_DEFAULT_REF[next.support]
+  }
+  if (member === 'orientationRef' && next.orientationRef === next.support) return null
+  return next
+}
+
+/** The session's placement facts as the A3.2 record shape (the mirror's input;
+ *  the same four members the op builders send). */
+export function placementRecordOf(f: PlacementFacts): PlacementRecord {
+  return {
+    support: { kind: 'principal', orientation: f.support },
+    orientation_ref: { kind: 'principal', orientation: f.orientationRef },
+    orientation: f.orientation,
+    normal_side: f.normalSide,
+  }
+}
+
+/** I3: the honest refusal when a FACE is offered to a placement collector
+ *  (the 0.2.x placement record is principal-only; product-facing copy). */
+export const PLACEMENT_FACE_REFUSAL =
+  'Only the three datum planes can place a sketch here; a flat face as the sketch plane arrives in a later step (the legacy Sketch keeps face support).'
+/** A chained base profile never lies on a face (the engine refuses it). */
+export const CHAINED_FACE_REFUSAL =
+  'A base profile must lie on a datum plane (TOP, FRONT or RIGHT); faces are not offered for a chained sketch.'
+/** The legacy lane accepts FLAT faces only; a non-planar face says so. */
+export const LEGACY_FACE_REFUSAL = 'That face is not flat — pick a datum plane or a flat face of the Part.'
 
 /** The in-viewport sketch-plane pick (SK-C1.0 S1): a FIRST-CLASS state of the
  *  ONE session — entered synchronously when Sketch starts, so every global
@@ -246,14 +309,20 @@ export interface AuthoringSessionStore {
   startChainedPlanePick(generation: number, tool?: SketchTool['kind'], targetPart?: { number: string; name: string } | null): void
   /** A plane was picked (viewport quad / tree row / list dialog) — flow into
    *  the continuation. S1 resolves principal planes; face targets are S3. */
-  resolvePlanePick(target: PlaneOrientation | { faceId: string; frame: import('../sketch/planeFrame').PlaneFrameTS }): void
+  /** I3 (Codex3 B2): a face WITHOUT a frame is an unsupported face the
+   *  viewport delivered for refusal; every continuation answers with copy. */
+  resolvePlanePick(target: PlaneOrientation | { faceId: string; frame?: import('../sketch/planeFrame').PlaneFrameTS }): void
   /** Escape/cancel: standalone → idle; chained → the captured base-feature
    *  session restored verbatim (Codex1 B4.6). */
   cancelPlanePick(): void
   // -- the placement session (A3; pass sketch-place-1) --
   /** References: enter the support pick whose resolution flows into the
    *  placement-confirm substate. */
-  startPlacementPick(generation: number, targetPart: { number: string; name: string } | null): void
+  startPlacementPick(
+    generation: number,
+    targetPart: { number: string; name: string } | null,
+    opts?: { accept?: 'create' | 'sketch'; capturedTarget?: PlacementTarget | null },
+  ): void
   /** The tree's ✎ on a committed 0.2.1 sketch: open the confirm substate
    *  seeded from the PERSISTED placement (redefine; keep-on-omission is
    *  derived by diffing at accept). */
@@ -267,6 +336,16 @@ export interface AuthoringSessionStore {
    *  reference auto-repairs the reference to the engine's default for the
    *  new support — the UI never holds a parallel (invalid) pair. */
   setPlacementMember(member: 'support' | 'orientationRef' | 'orientation' | 'normalSide', value: string): void
+  /** I3: the dialog's active collector (null = none); the viewport pick route
+   *  is live only while one is active. */
+  setPlacementCollector(collector: PlacementCollector | null): void
+  /** I3: a viewport pick while a collector is active — the SAME member
+   *  setter the list uses; a face never mutates anything and surfaces the
+   *  principal-only copy. The collector deactivates on a successful pick. */
+  resolvePlacementPick(target: PlaneOrientation | { faceId: string }): void
+  /** I3: Sketch accept — retire the placement owner exactly once (the
+   *  drawing session takes over; nothing is written here). */
+  completePlacement(): void
   setPlacementBusy(busy: boolean): void
   failPlacement(message: string): void
   cancelPlacement(): void
@@ -399,10 +478,21 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       if (state.mode !== 'planePick') return
       const c = state.continuation
       const isFace = typeof target !== 'string'
-      // the CHAINED and PLACEMENT continuations are principal-only (the pick
-      // surfaces never offer faces there; this guard keeps it true — A3.2's
-      // BS-1 domain for placement)
-      if (isFace && (c.type === 'chained' || c.type === 'placement')) return
+      // I3 (Codex3 B2): a FACE reaching a principal-only continuation, or a
+      // non-planar face reaching the standalone pick, is REFUSED with copy —
+      // the pick stays open, nothing is applied, no datum behind it wins.
+      if (isFace && c.type === 'placement') {
+        emit({ ...state, message: PLACEMENT_FACE_REFUSAL })
+        return
+      }
+      if (isFace && c.type === 'chained') {
+        emit({ ...state, message: CHAINED_FACE_REFUSAL })
+        return
+      }
+      if (isFace && target.frame === undefined) {
+        emit({ ...state, message: LEGACY_FACE_REFUSAL })
+        return
+      }
       if (c.type === 'placement') {
         const support = target as PlaneOrientation
         emit({
@@ -412,6 +502,9 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
           orientation: 'right',
           normalSide: 'positive',
           redefineOf: null,
+          accept: c.accept,
+          activeCollector: null,
+          capturedTarget: c.capturedTarget,
           targetPart: c.targetPart,
           generation: state.generation,
           busy: false,
@@ -422,7 +515,7 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       }
       const plane: PlaneOrientation = isFace ? 'xy' : target
       const support: SketchSupport = isFace
-        ? { kind: 'face', faceId: target.faceId, frame: target.frame }
+        ? { kind: 'face', faceId: target.faceId, frame: target.frame as import('../sketch/planeFrame').PlaneFrameTS }
         : { kind: 'principal', orientation: target }
       if (c.type === 'sketch') {
         emit({
@@ -479,11 +572,16 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
       emit({ mode: 'idle', selectedSketchId: state.selectedSketchId })
     },
 
-    startPlacementPick: (generation, targetPart) => {
+    startPlacementPick: (generation, targetPart, opts) => {
       if (state.mode !== 'idle') return
       emit({
         mode: 'planePick',
-        continuation: { type: 'placement', targetPart },
+        continuation: {
+          type: 'placement',
+          targetPart,
+          accept: opts?.accept ?? 'create',
+          capturedTarget: opts?.capturedTarget ?? null,
+        },
         generation,
         message: null,
         selectedSketchId: state.selectedSketchId,
@@ -495,6 +593,9 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
         mode: 'placement',
         ...current,
         redefineOf: { featureId, current },
+        accept: 'redefine',
+        activeCollector: null,
+        capturedTarget: null,
         targetPart,
         generation,
         busy: false,
@@ -504,14 +605,32 @@ export function createAuthoringSessionStore(): AuthoringSessionStore {
     },
     setPlacementMember: (member, value) => {
       if (state.mode !== 'placement' || state.busy) return
-      const next = { ...state, [member]: value } as typeof state
-      // never hold the invalid parallel pair: a colliding support change
-      // auto-repairs the reference to the ENGINE default for that support
-      if (member === 'support' && next.orientationRef === next.support) {
-        next.orientationRef = PLACEMENT_DEFAULT_REF[next.support]
+      const next = applyPlacementMember(state, member, value)
+      if (next === null) return
+      emit({ ...state, ...next, message: null })
+    },
+    setPlacementCollector: (collector) => {
+      if (state.mode !== 'placement' || state.busy) return
+      emit({ ...state, activeCollector: collector, message: null })
+    },
+    resolvePlacementPick: (target) => {
+      if (state.mode !== 'placement' || state.busy || state.activeCollector === null) return
+      if (typeof target !== 'string') {
+        // a rejected face never mutates selection or placement (Codex1 N2)
+        emit({ ...state, message: PLACEMENT_FACE_REFUSAL })
+        return
       }
-      if (member === 'orientationRef' && next.orientationRef === next.support) return
-      emit({ ...next, message: null })
+      const member = state.activeCollector === 'plane' ? 'support' : 'orientationRef'
+      const next = applyPlacementMember(state, member, target)
+      if (next === null) {
+        emit({ ...state, activeCollector: null, message: 'the orientation reference must differ from the sketch plane' })
+        return
+      }
+      emit({ ...state, ...next, activeCollector: null, message: null })
+    },
+    completePlacement: () => {
+      if (state.mode !== 'placement' || state.busy) return
+      emit({ mode: 'idle', selectedSketchId: state.selectedSketchId })
     },
     setPlacementBusy: (busy) => {
       if (state.mode !== 'placement') return

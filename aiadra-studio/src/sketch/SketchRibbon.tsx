@@ -182,7 +182,24 @@ export function SketchRibbon({
       </button>
     )
     return (
-      <div className="ribbon-groups">
+      <div className="ribbon" role="toolbar" aria-label="Sketch ribbon">
+        {/* I3 (arc 20260905-1; Claude2 D5'): Creo's Setup group leads the
+            Sketch ribbon in EVERY lane — Sketch view returns to the session's
+            frame (the profile lane had no such button before I3). */}
+        <div className="ribbon-group">
+          <div className="ribbon-btns">
+            <button
+              type="button"
+              className="rb-btn"
+              title="Sketch view — orient the sketching plane parallel to the screen (camera only)"
+              onClick={onSketchView}
+            >
+              {glyph('Sketch view')}
+              <span className="rb-lbl">Sketch view</span>
+            </button>
+          </div>
+          <div className="ribbon-group-title">Setup</div>
+        </div>
         <div className="ribbon-group">
           <div className="ribbon-btns">
             {ptool('Line', profile.toolKind === 'line', 'Line chain — each click chains a segment; middle-click ends it; click the first point to close; Esc abandons the run', () => profile.setTool('line'))}

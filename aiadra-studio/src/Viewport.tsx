@@ -18,6 +18,7 @@ import { checkAttachHlr } from './display/attachHlr'
 import { buildHlrOverlay, disposeOverlay } from './display/overlay'
 import { createSettleMachine, type SettleMachine } from './display/settle'
 import { createDatumOverlay } from './datums/datumOverlay'
+import { createPlacementGlyph } from './datums/placementGlyph'
 import { createSketchEditOverlay } from './sketch/sketchEditOverlay'
 import { createChainEcho, createProfileOverlay, type ChainEchoState, type ProfileGeometry, type ProfileOverlay } from './sketch/profileOverlay'
 import { midPairDown, midPairIsClick, type MidPair } from './sketch/middleClick'
@@ -29,6 +30,7 @@ import {
   rayPlaneUV,
   sketchViewOrientation,
   type PlaneFrameTS,
+  type Vec3 as FrameVec3,
 } from './sketch/planeFrame'
 import type { SketchTool } from './authoring/authoringSession'
 import { createSketchWireOverlay } from './sketch/sketchWireOverlay'
@@ -36,8 +38,11 @@ import type { InspectedSketch } from './authoring/inspectDecode'
 import type { DisplaySource } from './display/displaySource'
 import { modeFlags, type DisplayMode } from './display/modes'
 import {
+  datumFrameExtent,
+  homeOrientation,
   standardViewOrientation,
   rollUp,
+  TRIMETRIC_ANGLES,
   type StandardViewId,
   type ViewOrientation,
 } from './display/viewOrientation'
@@ -100,6 +105,10 @@ export type ViewportApi = {
  *  every imperative three.js consequence (Codex3 bar 2). */
 export type SketchInteractionMode =
   | { kind: 'planePick' }
+  /** I3 (arc 20260905-1): the placement dialog is open — Creo's view-direction
+   *  arrow stands on the support plane; `picking` = an ACTIVE collector,
+   *  which reuses the planePick surface (datum exposure + raycast). */
+  | { kind: 'placement'; picking: boolean; glyph: { origin: FrameVec3; direction: FrameVec3 } }
   | { kind: 'sketch'; frame: PlaneFrameTS; tool: SketchTool; construction: boolean }
   | { kind: 'sketchSolicit'; eligibleIds: ReadonlySet<string> }
   /** ADR/0044 A4 (arc 20260730-1): the v2 PROFILE drawing mode. `geometry` is
@@ -124,6 +133,10 @@ export type SketchInteractionMode =
 export type ResolvedPlanePick =
   | { kind: 'datum'; orientation: 'xy' | 'yz' | 'zx' }
   | { kind: 'face'; faceId: string; frame: PlaneFrameTS }
+  /** I3 (Codex3 B2): the canonical face the user actually clicked but the
+   *  mode cannot accept — delivered so the owner refuses with its copy instead
+   *  of the datum behind it silently winning. */
+  | { kind: 'unsupported-face'; faceId: string }
 
 /**
  * AIADRA Studio viewport (arc 20260610-1 canonical lane live; 20260619-1 / 6a
@@ -138,10 +151,14 @@ export type ResolvedPlanePick =
 
 type Menu = { x: number; y: number } | null
 
+/** The built-in home when the shell passes none: Creo's trimetric default. */
+const DEFAULT_HOME_VIEW = homeOrientation('trimetric', TRIMETRIC_ANGLES)
+
 export default function Viewport({
   apiRef: externalApi,
   theme,
   settleMs = 200,
+  homeView = DEFAULT_HOME_VIEW,
   viewStore,
   selectionStore,
   commandActions,
@@ -157,6 +174,10 @@ export default function Viewport({
   apiRef?: MutableRefObject<ViewportApi | null>
   theme: Theme
   settleMs?: number
+  /** Creo's Default Orientation (the Reset / new-part view), resolved by the
+   *  shell from the settings registry through the ONE orientation authority;
+   *  read live, so Reset follows a changed setting without a remount. */
+  homeView?: ViewOrientation
   viewStore: ViewStateStore
   selectionStore: SelectionStore
   commandActions: CommandActions
@@ -193,6 +214,12 @@ export default function Viewport({
   planarFaceIdsRef.current = planarFaceIds ?? new Set()
   const interactionModeRef = useRef(interactionMode)
   interactionModeRef.current = interactionMode
+  // The home orientation, read live by the mount-once effect (Reset follows a
+  // changed Default Orientation setting without a remount).
+  const homeViewRef = useRef(homeView)
+  useEffect(() => {
+    homeViewRef.current = homeView
+  }, [homeView])
   const applyInteractionRef = useRef<((m: SketchInteractionMode | null) => void) | null>(null)
   const [snapIds, setSnapIds] = useState<string[]>([])
   const selState = useSelectionState(selectionStore)
@@ -218,8 +245,16 @@ export default function Viewport({
     // ---- Orthographic, Z-up (engine space). ----
     // Petre round 2: the canvas comes up FRAMING the datum scaffold (+/-60 mm
     // planes) — all three principal planes visible, never zoomed into nothing.
-    const DATUM_FRAME_HALF = 80
-    let frustumHalf = DATUM_FRAME_HALF
+    // 2026-09-05: DERIVED from the scaffold's screen extent under the current
+    // home orientation (the trimetric's tall RIGHT plane needs ~9% more height
+    // than the isometric did; a pinned 80 clipped it), 25% margin, aspect-aware.
+    const DATUM_HALF_SIZE = 60
+    const datumFrameHalf = () => {
+      const extent = datumFrameExtent(homeViewRef.current, DATUM_HALF_SIZE)
+      const aspect = h() > 0 ? w() / h() : 1
+      return Math.max(extent.up, extent.right / aspect) * 1.25
+    }
+    let frustumHalf = datumFrameHalf()
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000)
     camera.up.set(0, 0, 1)
     const applyFrustum = () => {
@@ -230,14 +265,18 @@ export default function Viewport({
       camera.bottom = -frustumHalf
       camera.updateProjectionMatrix()
     }
-    // Codex2 B4: home = the ISO row of the ONE orientation authority
-    // (viewOrientation.ts) — direction AND canonical up, shared with the nav
-    // cube and the standard views. Reset restores BOTH.
-    const HOME_VIEW = standardViewOrientation('iso')
-    const HOME_DIR = new THREE.Vector3(HOME_VIEW.direction[0], HOME_VIEW.direction[1], HOME_VIEW.direction[2])
+    // Codex2 B4: home = the ONE orientation authority (viewOrientation.ts) —
+    // direction AND canonical up, shared with the nav cube and the standard
+    // views. Since 2026-09-05 the home row is Creo's Default Orientation
+    // SETTING (trimetric by default), read live so Reset follows a change.
     const HOME_TARGET = new THREE.Vector3(0, 0, 0) // the datum intersection
-    camera.up.set(HOME_VIEW.up[0], HOME_VIEW.up[1], HOME_VIEW.up[2])
-    camera.position.copy(HOME_TARGET).addScaledVector(HOME_DIR, -120)
+    {
+      const home = homeViewRef.current
+      camera.up.set(home.up[0], home.up[1], home.up[2])
+      camera.position
+        .copy(HOME_TARGET)
+        .addScaledVector(new THREE.Vector3(home.direction[0], home.direction[1], home.direction[2]), -120)
+    }
     applyFrustum()
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -324,7 +363,13 @@ export default function Viewport({
     // labeled translucent principal planes — the Creo-paradigm empty-part
     // scaffold. An OVERLAY lane: intrinsic ids only, never canonical identity,
     // never a pick target (it lives outside the canonical part group).
-    const datums = createDatumOverlay()
+    const datums = createDatumOverlay(DATUM_HALF_SIZE)
+    // I3: Creo's sketch view-direction arrow — a SEPARATE overlay owned by the
+    // placement dialog's lifetime (Codex1 Q1), never a pick target.
+    const PLACEMENT_GLYPH_MM = DATUM_HALF_SIZE * 0.4
+    const placementGlyph = createPlacementGlyph()
+    placementGlyph.group.visible = false
+    scene.add(placementGlyph.group)
     datums.setVisible(viewStore.getSnapshot().datumsVisible)
     scene.add(datums.group)
 
@@ -718,7 +763,7 @@ export default function Viewport({
       const box = sceneBox()
       if (box.isEmpty()) {
         // empty part: fit = frame the datum scaffold (all three planes)
-        frustumHalf = DATUM_FRAME_HALF
+        frustumHalf = datumFrameHalf()
         camera.zoom = 1
         controls.target.copy(HOME_TARGET)
         applyFrustum()
@@ -746,7 +791,7 @@ export default function Viewport({
     const reset = () => {
       controls.target.copy(HOME_TARGET)
       camera.zoom = 1
-      orientMainCamera(HOME_VIEW)
+      orientMainCamera(homeViewRef.current)
       cameraScaleChanged() // B1
     }
 
@@ -961,7 +1006,10 @@ export default function Viewport({
       }
       applyCommittedSuppression()
     }
-    let modeKind: 'none' | 'planePick' | 'sketch' | 'sketchSolicit' | 'profile' = 'none'
+    let modeKind: 'none' | 'planePick' | 'placement' | 'sketch' | 'sketchSolicit' | 'profile' = 'none'
+    // I3: the pick SURFACE (datum exposure + raycast) is live for the
+    // planePick mode AND the placement dialog's active collector (Codex1 N2).
+    let pickActive = false
     let sketchFrame: PlaneFrameTS | null = null
     let hoveredQuad: THREE.Mesh | null = null
     let datumsPriorVisible: boolean | null = null
@@ -973,7 +1021,7 @@ export default function Viewport({
       hoveredQuad = quad
       if (hoveredQuad) (hoveredQuad.material as THREE.MeshBasicMaterial).opacity = 0.22
     }
-    const datumQuadAt = (clientX: number, clientY: number): THREE.Mesh | null => {
+    const datumQuadAt = (clientX: number, clientY: number): { mesh: THREE.Mesh; distance: number } | null => {
       const r = canvas.getBoundingClientRect()
       ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
@@ -981,34 +1029,52 @@ export default function Viewport({
       // (the sub-lane restructure silently killed a non-recursive raycast)
       const hits = raycaster.intersectObjects(datums.pickTargets(), false)
       const hit = hits.find((h) => (h.object.userData as { kind?: string }).kind === 'intrinsic-plane')
-      return (hit?.object as THREE.Mesh) ?? null
+      return hit ? { mesh: hit.object as THREE.Mesh, distance: hit.distance } : null
     }
     // S3: the ELIGIBLE planar-face hit in pick mode — canonical faces only,
     // filtered by the engine's planarFaceIds; the hit carries the TRANSIENT
     // mirror frame derived from the engine-provided normal attribute + point.
-    const planarFaceAt = (
+    // I3 (Codex3 B2): the NEAREST canonical face under the cursor, eligible or
+    // not — eligibility is the arbitration's business (an unsupported face the
+    // user clicked is refused by the owner, never replaced by the datum behind
+    // it). The frame is the S3 transient mirror when the normal allows one.
+    const faceAt = (
       clientX: number,
       clientY: number,
-    ): { faceId: string; frame: PlaneFrameTS } | null => {
+    ): { faceId: string; distance: number; frame: PlaneFrameTS | null } | null => {
       if (!part) return null
       const r = canvas.getBoundingClientRect()
       ndc.set(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
       raycaster.setFromCamera(ndc, camera)
-      const hits = raycaster.intersectObjects(part.faces, false)
-      const hit = hits.find((h) =>
-        planarFaceIdsRef.current.has((h.object.userData as { displayId?: string }).displayId ?? ''))
-      if (!hit || !hit.face) return null
-      const faceId = (hit.object.userData as { displayId: string }).displayId
-      // the ENGINE's true normal attribute at the hit triangle (outward)
-      const geom = (hit.object as THREE.Mesh).geometry as THREE.BufferGeometry
-      const na = geom.getAttribute('normal') as THREE.BufferAttribute
-      const i = hit.face.a
-      const frame = frameFromNormalAndPoint(
-        [na.getX(i), na.getY(i), na.getZ(i)],
-        [hit.point.x, hit.point.y, hit.point.z],
+      const hit = raycaster.intersectObjects(part.faces, false)[0]
+      if (!hit) return null
+      const faceId = (hit.object.userData as { displayId?: string }).displayId ?? null
+      if (faceId === null) return null
+      let frame: PlaneFrameTS | null = null
+      if (hit.face) {
+        // the ENGINE's true normal attribute at the hit triangle (outward)
+        const geom = (hit.object as THREE.Mesh).geometry as THREE.BufferGeometry
+        const na = geom.getAttribute('normal') as THREE.BufferAttribute
+        const i = hit.face.a
+        frame = frameFromNormalAndPoint(
+          [na.getX(i), na.getY(i), na.getZ(i)],
+          [hit.point.x, hit.point.y, hit.point.z],
+        )
+      }
+      return { faceId, distance: hit.distance, frame }
+    }
+    const pickWinner = (clientX: number, clientY: number) => {
+      const face = faceAt(clientX, clientY)
+      const quad = datumQuadAt(clientX, clientY)
+      const orientation = quad
+        ? ((quad.mesh.userData as { orientation?: 'xy' | 'yz' | 'zx' }).orientation ?? null)
+        : null
+      const winner = arbitratePlanePick(
+        face ? { faceId: face.faceId, distance: face.distance } : null,
+        quad && orientation !== null ? { orientation, distance: quad.distance } : null,
+        planarFaceIdsRef.current,
       )
-      if (!frame) return null
-      return { faceId, frame }
+      return { face, quad, winner }
     }
 
     // P (arc 20260717-2): the ELIGIBLE sketch wire under the cursor —
@@ -1114,15 +1180,18 @@ export default function Viewport({
 
     const applyInteraction = (m: SketchInteractionMode | null) => {
       const kind = m?.kind ?? 'none'
-      if (kind !== 'planePick' && modeKind === 'planePick') {
+      const wantPick = kind === 'planePick' || (m?.kind === 'placement' && m.picking)
+      if (!wantPick && pickActive) {
         setQuadHover(null)
+        canvas.style.cursor = ''
         if (datumsPriorVisible !== null) {
           datums.setVisible(datumsPriorVisible)
           datumsPriorVisible = null
         }
         applyDatumFilters() // restore the user's datum-display filters
+        pickActive = false
       }
-      if (kind === 'planePick' && modeKind !== 'planePick') {
+      if (wantPick && !pickActive) {
         // mode-scoped datum exposure (Codex1 B4.4) — restored on exit above.
         // The pick surface is the plane QUADS — force fill + borders visible
         // for the pick regardless of the user's display filters.
@@ -1130,6 +1199,15 @@ export default function Viewport({
         datums.setVisible(true)
         datums.setKindVisible('fill', true)
         datums.setKindVisible('planes', true)
+        pickActive = true
+      }
+      // Creo's view-direction arrow while the placement dialog is open —
+      // updated from the signed frame on every member change (Flip reverses it).
+      if (m?.kind === 'placement') {
+        placementGlyph.update(m.glyph.origin, m.glyph.direction, PLACEMENT_GLYPH_MM)
+        placementGlyph.group.visible = true
+      } else if (placementGlyph.group.visible) {
+        placementGlyph.group.visible = false
       }
       if (kind === 'sketch' && modeKind !== 'sketch' && m?.kind === 'sketch') {
         ghostPart(true)
@@ -1221,18 +1299,17 @@ export default function Viewport({
         }
         return // never canonical selection from the solicit mode
       }
-      if (modeKind === 'planePick') {
+      if (pickActive) {
         // ONE arbitration rule (hover = click winner): an ELIGIBLE planar
         // canonical face wins over a datum quad (S3 — planarFaceIds is the
-        // engine's authority); otherwise the datum decides.
-        const face = planarFaceAt(e.clientX, e.clientY)
-        const quad = datumQuadAt(e.clientX, e.clientY)
-        const orientation = quad
-          ? ((quad.userData as { orientation?: 'xy' | 'yz' | 'zx' }).orientation ?? null)
-          : null
-        const winner = arbitratePlanePick(face?.faceId ?? null, orientation, planarFaceIdsRef.current)
-        if (winner?.kind === 'face' && face) {
-          sketchCbRef.current.onPlanePick?.({ kind: 'face', faceId: face.faceId, frame: face.frame })
+        // engine's authority); an UNSUPPORTED face in front is delivered for
+        // the owner's refusal (I3, Codex3 B2); otherwise the datum decides.
+        const { face, winner } = pickWinner(e.clientX, e.clientY)
+        if (winner?.kind === 'face' && face?.frame) {
+          sketchCbRef.current.onPlanePick?.({ kind: 'face', faceId: winner.faceId, frame: face.frame })
+        } else if (winner?.kind === 'face' || winner?.kind === 'unsupported-face') {
+          // an eligible face whose frame cannot be derived is refused too
+          sketchCbRef.current.onPlanePick?.({ kind: 'unsupported-face', faceId: winner.faceId })
         } else if (winner?.kind === 'datum') {
           sketchCbRef.current.onPlanePick?.(winner)
         }
@@ -1293,19 +1370,29 @@ export default function Viewport({
         canvas.style.cursor = id ? 'pointer' : ''
         return
       }
-      if (modeKind === 'planePick') {
+      if (pickActive) {
         // the SAME winner as click (Codex1 B4.3): an eligible planar face
-        // highlights through the canonical hover; else the datum quad
-        const face = planarFaceAt(e.clientX, e.clientY)
-        if (face) {
+        // highlights through the canonical hover; an unsupported face shows
+        // nothing pickable (not-allowed cursor); else the datum quad
+        const { quad, winner } = pickWinner(e.clientX, e.clientY)
+        if (winner?.kind === 'face') {
           setQuadHover(null)
-          const next: SelId = { kind: 'face', id: face.faceId }
+          canvas.style.cursor = ''
+          const next: SelId = { kind: 'face', id: winner.faceId }
           if (!sameId(next, hovId)) {
             hovId = next
             repaintHighlights()
           }
+        } else if (winner?.kind === 'unsupported-face') {
+          setQuadHover(null)
+          canvas.style.cursor = 'not-allowed'
+          if (hovId) {
+            hovId = null
+            repaintHighlights()
+          }
         } else {
-          setQuadHover(datumQuadAt(e.clientX, e.clientY))
+          setQuadHover(quad?.mesh ?? null)
+          canvas.style.cursor = ''
           if (hovId) {
             hovId = null
             repaintHighlights()
@@ -1547,6 +1634,8 @@ export default function Viewport({
       importGroups.clear()
       scene.remove(datums.group)
       datums.dispose()
+      scene.remove(placementGlyph.group)
+      placementGlyph.dispose()
       scene.remove(sketchWires.group)
       sketchWires.dispose()
       paperMaterial.dispose()

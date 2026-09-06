@@ -373,3 +373,119 @@ class TestPreviewDisplayParity:
         x_end = [a for a in entry.annotations
                  if a.kind == "position_x" and a.entities == ("skp_0007",)][0]
         assert x_end.value == pytest.approx(55.0, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# I3 (arc 20260905-1; Claude2 floors 1 + 8): the DRAWN-profile route carries the
+# COMPLETE A3 placement through the real protocol + solver -- the corrected
+# acceptance scenario (Codex1 B2): TOP (xy) -> reference FRONT (zx),
+# Orientation Top, Flip on => u = -X, v = +Y, n = -Z.
+# ---------------------------------------------------------------------------
+SCENARIO = {
+    "support": {"kind": "principal", "orientation": "xy"},
+    "orientation_ref": {"kind": "principal", "orientation": "zx"},
+    "orientation": "top",
+    "normal_side": "negative",
+}
+
+
+def _near(vec, expected, eps=1e-9):
+    return all(abs(a - b) <= eps for a, b in zip(vec, expected))
+
+
+class TestPlacementThroughTheProfileWriter:
+    def test_the_record_is_022_with_the_exact_nested_placement(self, workspace_with_part):
+        ws = workspace_with_part
+        propose(ws, kind="mechanical.author_profile_sketch", params={
+            "part_number": PART, "placement": SCENARIO, "profile": _line(),
+        }).commit()
+        feat = _sketch(ws)
+        assert feat["adapter_schema_version"] == "0.2.2"
+        payload = feat["adapter_payload"]
+        assert payload["placement"] == SCENARIO
+        assert payload["branch_policy"] == "skb-b1"
+
+    def test_the_frame_and_the_world_geometry_follow_the_placement(self, workspace_with_part):
+        """Floor 8 (Codex1 Q4): H/V is sketch-local. A near-horizontal LOCAL line
+        under a nondefault reference, orientation and negative side solves to
+        the horizontal fact in the u/v frame, and its world geometry maps
+        through THAT frame (sketch +u runs along world -X)."""
+        ws = workspace_with_part
+        propose(ws, kind="mechanical.author_profile_sketch", params={
+            "part_number": PART, "placement": SCENARIO, "profile": _line(),
+        }).commit()
+        pkg = display_representation(ws, PART)
+        frame = [f for f in pkg.sketch_frames if f.sketch_feature_id == "feat_0001"][0]
+        assert _near(frame.u_axis, (-1.0, 0.0, 0.0))
+        assert _near(frame.v_axis, (0.0, 1.0, 0.0))
+        assert _near(frame.normal, (0.0, 0.0, -1.0))
+        entry = [e for e in pkg.v2_profiles if e.sketch_feature_id == "feat_0001"][0]
+        a, b = entry.points[0].world, entry.points[1].world
+        # solved horizontal in the u/v frame: equal v -> equal world Y
+        assert a[1] == pytest.approx(b[1], abs=1e-9)
+        # world mapping through THIS frame: sketch +u is world -X
+        assert b[0] == pytest.approx(-20.0, abs=1e-9)
+        assert a[2] == pytest.approx(0.0, abs=1e-9)
+        assert b[2] == pytest.approx(0.0, abs=1e-9)
+        assert any(g.kind == "horizontal" for g in entry.constraint_glyphs)
+
+    def test_the_references_route_still_writes_021_with_the_same_facts(self, workspace_with_part):
+        ws = workspace_with_part
+        propose(ws, kind="mechanical.add_reference_sketch", params={
+            "part_number": PART, "placement": SCENARIO,
+        }).commit()
+        feat = _sketch(ws)
+        assert feat["adapter_schema_version"] == "0.2.1"
+        assert feat["adapter_payload"]["placement"] == SCENARIO
+
+
+class TestGoldenRecipePlacement:
+    """Docs/KB/golden-recipes/sketch-placement-flipped-line.md, step by step:
+    the candidate is previewed FIRST (a read: no draft, no write), inspected,
+    then committed with the same input, and the reopened display agrees with
+    the preview point for point (Codex3 B4 — a reusable candidate-before-
+    acceptance workflow through the existing public surface)."""
+
+    def test_preview_then_commit_then_reopen_agree(self, workspace_with_part):
+        ws = workspace_with_part
+        events_before = (ws / "events.jsonl").read_text(encoding="utf-8")
+        preview = preview_sketch_graph(
+            ws, PART, engine_id="mechanical", profile=_line(),
+            placement=SCENARIO, candidate_key="draft1")
+        # the read wrote nothing
+        assert (ws / "events.jsonl").read_text(encoding="utf-8") == events_before
+        # the evaluated candidate: solved horizontal in u/v, mapped through the frame
+        a, b = preview["points"][0]["world"], preview["points"][1]["world"]
+        assert a[1] == pytest.approx(b[1], abs=1e-9)
+        assert b[0] == pytest.approx(-20.0, abs=1e-9)
+        assert any(g["kind"] == "horizontal" for g in preview["constraint_glyphs"])
+        assert preview["annotations"], "the derived weak dimensions are readable"
+        # the acceptance: the SAME input commits; reopen = the display
+        propose(ws, kind="mechanical.author_profile_sketch", params={
+            "part_number": PART, "placement": SCENARIO, "profile": _line(),
+        }).commit()
+        entry = [e for e in display_representation(ws, PART).v2_profiles
+                 if e.sketch_feature_id == "feat_0001"][0]
+        assert [p["world"] for p in preview["points"]] == [list(p.world) for p in entry.points]
+        assert [(g["kind"],) for g in preview["constraint_glyphs"]] == \
+            [(g.kind,) for g in entry.constraint_glyphs]
+
+    def test_the_parallel_reference_refuses_before_solving_and_the_repair_succeeds(self, workspace_with_part):
+        """Docs/KB/traces/sketch-placement-parallel-repair.md, failure 1 + repair."""
+        ws = workspace_with_part
+        parallel = dict(SCENARIO, orientation_ref={"kind": "principal", "orientation": "xy"})
+        with pytest.raises(Exception) as exc:
+            preview_sketch_graph(ws, PART, engine_id="mechanical", profile=_line(),
+                                 placement=parallel, candidate_key="draft1")
+        assert "must differ from support" in str(exc.value)
+        with pytest.raises(TransactionError) as exc2:
+            propose(ws, kind="mechanical.author_profile_sketch", params={
+                "part_number": PART, "placement": parallel, "profile": _line(),
+            }).commit()
+        assert "must differ from support" in str(exc2.value)
+        assert not part_sidecar(ws).get("feature", [])  # nothing written
+        # the caller's repair: a non-parallel reference
+        propose(ws, kind="mechanical.author_profile_sketch", params={
+            "part_number": PART, "placement": SCENARIO, "profile": _line(),
+        }).commit()
+        assert _sketch(ws)["adapter_payload"]["placement"] == SCENARIO

@@ -15,6 +15,8 @@
     "test:bridge": "node scripts/run-bridge-tests.mjs",
     "smoke:step": "node scripts/step-electron-smoke.mjs",
     "shoot": "node scripts/shoot.mjs",
+    "walk:i3": "node scripts/walk-i3-placement.mjs && node scripts/walk-i3-face-refusal.mjs",
+    "walk:w6": "node scripts/walk-w6-labels.mjs",
     "preview": "node scripts/dev.mjs preview"
   },
   "dependencies": {

@@ -12,13 +12,34 @@
 # engine feature semantics version with their engine (adapter schema), Ring 2
 # command semantics version with core.
 
-kb_version: "0.7.0"   # + sketch-on-face (the face-plane binding, adapter 0.1.10 / Display v1.2 / core 0.15.0); prior 0.6.0: the sketch-plane binding (principal planes + normal± directions,
+kb_version: "0.8.0"   # + sketch-placement page + golden recipe (flipped line: preview -> commit -> reopen) + parallel-reference repair trace; compatibility reconciled to the current runtime with the two record families named (arc 20260905-1 I3, Codex3 B4); prior 0.7.0: sketch-on-face (the face-plane binding, adapter 0.1.10 / Display v1.2 / core 0.15.0); prior 0.6.0: the sketch-plane binding (principal planes + normal± directions,
                       #   arc 20260714-2 EP2); 0.5.0 = contour; 0.4.0 = revolve;
                       #   0.3.0 = chamfer; 0.2.0 = hole; 0.1.0 = fillet
 
 compatible:
-  aiadra_core: ">=0.15.0,<0.16.0"
+  # Reconciled 2026-09-05 (arc 20260905-1, Codex3 B4): the KB as a whole is
+  # validated against the CURRENT runtime by the `tests:` below (the full
+  # mechanical suite passes on it). Two record families coexist:
+  aiadra_core: ">=0.19.1,<0.20.0"
+  # (1) the v1 recipe family (extrude/revolve/fillet/hole/chamfer/contour/
+  #     sketch-plane/sketch-on-face pages): adapter 0.1.x records; authored at
+  #     0.1.7–0.1.10, still valid at the current 0.1.11 — each page's tests
+  #     pass unchanged, and the v1 writer keeps every pre-existing record's
+  #     bytes (the pages' own `source_context` states the version they were
+  #     written against).
   aiadra_mechanical_adapter_schema_version: ">=0.1.10,<0.2.0"
+  # (2) the v2 constrained-sketch series (sketch-placement page + recipe +
+  #     trace): explicit literal versions, never a range — 0.2.0 is immortal
+  #     history, 0.2.1 = placed references sketches, 0.2.2 = drawn profiles.
+  aiadra_mechanical_sketch_v2_series: ["0.2.1", "0.2.2"]
+
+families:
+  v1_recipe:
+    pages: [features/fillet.md, features/hole.md, features/chamfer.md, features/revolve.md, features/contour.md, features/sketch-plane.md, features/sketch-on-face.md]
+    persisted_as: "adapter_schema_version 0.1.x feature records"
+  v2_sketch_series:
+    pages: [features/sketch-placement.md, golden-recipes/sketch-placement-flipped-line.md, traces/sketch-placement-parallel-repair.md]
+    persisted_as: "adapter_schema_version 0.2.1 / 0.2.2 sketch records (closed placement member)"
 
 source_refs:
   adrs: ["ADR/0037", "ADR/0038", "ADR/0035", "ADR/0031", "ADR/0029", "ADR/0044"]
@@ -31,6 +52,9 @@ source_refs:
     - "aiadra-mechanical/tests/test_contour_extrude.py"
     - "aiadra-mechanical/tests/test_sketch_plane_matrix.py"
     - "aiadra-mechanical/tests/test_face_frame.py"
+    - "aiadra-mechanical/tests/test_sketch_placement.py"
+    - "aiadra-mechanical/tests/test_profile_sketch_ops.py"
+    - "aiadra-studio/bridge/test_i3_placement_requests.py"
 
 contents:
   feature_semantics:
@@ -41,6 +65,7 @@ contents:
     - features/contour.md
     - features/sketch-plane.md
     - features/sketch-on-face.md
+    - features/sketch-placement.md
   golden_recipes:
     - golden-recipes/fillet-box.md
     - golden-recipes/hole-box.md
@@ -49,6 +74,7 @@ contents:
     - golden-recipes/contour-l-bracket.md
     - golden-recipes/sketch-yz-plate.md
     - golden-recipes/sketch-on-box-top.md
+    - golden-recipes/sketch-placement-flipped-line.md
   traces:
     - traces/fillet-negative-repair.md
     - traces/hole-negative-repair.md
@@ -57,8 +83,9 @@ contents:
     - traces/contour-negative-repair.md
     - traces/sketch-plane-negative.md
     - traces/sketch-on-face-negative-repair.md
+    - traces/sketch-placement-parallel-repair.md
 
-retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, contour, closed-ring, profile, segment, sketch-plane, principal-plane, frame, normal, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm]
+retrieval_tags: [mechanical, feature, fillet, round, hole, chamfer, bevel, revolve, surface-of-revolution, tube, contour, closed-ring, profile, segment, sketch-plane, principal-plane, frame, normal, creation, face-reference, edge-reference, reference-identity, regeneration, paradigm, sketch-placement, orientation-reference, flip, normal-side, sketch-view, v2]
 
 firewall:
   # ADR/0037 D3 — original-content discipline (clean-room-style). Every shippable

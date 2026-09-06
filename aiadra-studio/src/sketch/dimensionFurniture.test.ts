@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProfileAnnotation } from '../display/contract'
 import { formatAnnotation } from './annotationFormat'
-import { buildDimensionFurniture, type FurnitureGeometry } from './dimensionFurniture'
+import { buildDimensionFurniture, type FurnitureGeometry, type FurniturePrimitives } from './dimensionFurniture'
 import { principalFrame } from './planeFrame'
 
 const XY = principalFrame('xy')
@@ -46,6 +46,9 @@ const freeLine = (): FurnitureGeometry => ({
   constraint_glyphs: [],
 })
 
+/** the bare polylines (the tests below reason about geometry; owner/role are tested separately) */
+const polylines = (f: FurniturePrimitives) => f.lines.map((l) => l.points)
+
 const near = (a: [number, number, number], b: [number, number, number], tol = 1e-6) =>
   Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) <= tol
 
@@ -60,7 +63,7 @@ describe('the W-4 no-origin-vector regression', () => {
       [50, 45, 0.05],
     ]
     const origin: [number, number, number] = [0, 0, 0.05]
-    for (const pts of f.lines) {
+    for (const pts of polylines(f)) {
       const touchesVertex = pts.some((p) => vertices.some((v) => near(p, v, 1e-3)))
       const touchesOrigin = pts.some((p) => near(p, origin, 1e-3))
       expect(touchesVertex && touchesOrigin).toBe(false)
@@ -99,12 +102,12 @@ describe('per-kind furniture inventory', () => {
     const f = buildDimensionFurniture(freeLine(), XY, WPP)
     // the +u reference ray starts AT the start vertex
     const start: [number, number, number] = [10, 20, 0.05]
-    const ray = f.lines.find(
+    const ray = polylines(f).find(
       (pts) => pts.length === 2 && near(pts[0], start, 1e-6) && pts[1][1] === start[1],
     )
     expect(ray).toBeTruthy()
     // the arc's first sample lies on the +u ray at radius R from the start
-    const arc = f.lines.find((pts) => pts.length > 8)
+    const arc = polylines(f).find((pts) => pts.length > 8)
     expect(arc).toBeTruthy()
     expect(arc![0][1]).toBeCloseTo(20, 6) // v of the start vertex ⇒ angle 0
     expect(arc![0][0]).toBeGreaterThan(10)
@@ -127,7 +130,7 @@ describe('per-kind furniture inventory', () => {
       ],
     }
     const f = buildDimensionFurniture(g, XY, WPP)
-    expect(f.lines.some((pts) => pts.length > 8)).toBe(false) // no arc
+    expect(polylines(f).some((pts) => pts.length > 8)).toBe(false) // no arc
     expect(f.glyphs).toEqual([
       { text: 'H', at: [30, 20, 0], heightMm: 12 * WPP },
     ])
@@ -167,7 +170,7 @@ describe('the batch placement policy (Codex14 B5)', () => {
     const one = buildDimensionFurniture(g, XY, WPP)
     // dimension lines are the horizontals ending at u=0 with a tick partner;
     // find distinct v-levels of horizontal lines starting at u≈0
-    const dimLevels = one.lines
+    const dimLevels = polylines(one)
       .filter((pts) => pts.length === 2 && Math.abs(pts[0][0]) < 1e-6 && pts[0][1] === pts[1][1])
       .map((pts) => pts[0][1])
     expect(new Set(dimLevels.map((v) => v.toFixed(6))).size).toBe(2)
@@ -213,7 +216,7 @@ describe('the batch placement policy (Codex14 B5)', () => {
   })
 
   const dimLevels = (f: ReturnType<typeof buildDimensionFurniture>, minLen: number) =>
-    f.lines
+    polylines(f)
       .filter(
         (pts) =>
           pts.length === 2 &&
@@ -353,7 +356,7 @@ describe('the batch placement policy (Codex14 B5)', () => {
       constraint_glyphs: [],
     }
     const f = buildDimensionFurniture(g, XY, WPP)
-    const levels = f.lines
+    const levels = polylines(f)
       .filter(
         (pts) =>
           pts.length === 2 &&
@@ -383,8 +386,67 @@ describe('the batch placement policy (Codex14 B5)', () => {
     }
     const f = buildDimensionFurniture(remapped, yz, WPP)
     // every primitive lies in the YZ plane (x = lift along the normal)
-    for (const pts of f.lines) {
+    for (const pts of polylines(f)) {
       for (const p of pts) expect(p[0]).toBeCloseTo(0.05, 6)
     }
+  })
+})
+
+describe('Codex21 B2: every primitive names its annotation; labels carry an OUTWARD anchor', () => {
+  it('lines carry owner + role; labels carry owner + a unit outward direction per kind', () => {
+    const f = buildDimensionFurniture(freeLine(), XY, WPP)
+    for (const l of f.lines) {
+      expect(l.owner.startsWith('ann:')).toBe(true)
+      expect(['ext', 'dim', 'arrow', 'tick', 'arc', 'ray', 'leader']).toContain(l.role)
+    }
+    const by = (id: string) => f.labels.find((l) => l.owner === id)!
+    // exactly one measured line ('dim' / 'arc' / 'ray' / 'leader') family per label
+    for (const l of f.labels) {
+      expect(f.lines.some((x) => x.owner === l.owner && (x.role === 'dim' || x.role === 'arc'))).toBe(true)
+      expect(l.outward).toBeDefined()
+      expect(Math.hypot(l.outward![0], l.outward![1])).toBeCloseTo(1, 9)
+    }
+    expect(by('ann:position_x:p1').outward).toEqual([0, 1]) // above its horizontal line
+    expect(by('ann:position_y:p1').outward).toEqual([-1, 0]) // p1 is in the left half → the lane is left, text further left
+    const angle = by('ann:angle:s1').outward!
+    const mid = (32.01 / 2) * (Math.PI / 180)
+    expect(angle[0]).toBeCloseTo(Math.cos(mid), 9)
+    expect(angle[1]).toBeCloseTo(Math.sin(mid), 9)
+  })
+
+  it('a right-half point puts its position_y lane and text to the RIGHT (outward +u)', () => {
+    const g: FurnitureGeometry = {
+      ...freeLine(),
+      points: [
+        { id: 'p1', world: [50, 45, 0] },
+        { id: 'p2', world: [10, 20, 0] },
+      ],
+      annotations: [ann('position_y', 'p1', 45)],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    expect(f.labels[0].outward).toEqual([1, 0])
+    const dim = f.lines.find((l) => l.owner === 'ann:position_y:p1' && l.role === 'dim')!
+    expect(f.labels[0].at[0]).toBeGreaterThan(dim.points[0][0]) // the anchor is outside the line
+  })
+
+  it('a length label is anchored along the group normal; a radius label along its leader', () => {
+    const g: FurnitureGeometry = {
+      ...freeLine(),
+      points: [
+        { id: 'a', world: [0, 0, 0] },
+        { id: 'b', world: [0, 30, 0] }, // a VERTICAL segment: its length text must clear a vertical line
+        { id: 'c', world: [40, 10, 0] },
+      ],
+      segments: [{ id: 's1', start: 'a', end: 'b' }],
+      circles: [{ id: 'o1', center: 'c', radius_mm: 3 }],
+      annotations: [ann('length', 's1', 30), ann('radius', 'o1', 3)],
+    }
+    const f = buildDimensionFurniture(g, XY, WPP)
+    const len = f.labels.find((l) => l.owner === 'ann:length:s1')!
+    expect(Math.abs(len.outward![0])).toBeCloseTo(1, 9) // the normal of a vertical segment is ±u
+    expect(Math.abs(len.outward![1])).toBeCloseTo(0, 9)
+    const rad = f.labels.find((l) => l.owner === 'ann:radius:o1')!
+    expect(rad.outward![0]).toBeCloseTo(Math.SQRT1_2, 9)
+    expect(rad.outward![1]).toBeCloseTo(Math.SQRT1_2, 9)
   })
 })

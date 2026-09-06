@@ -29,12 +29,41 @@ export interface FurnitureGeometry {
   constraint_glyphs: ConstraintGlyph[]
 }
 
+/** What a furniture line IS — the overlay draws them all alike; the pick
+ *  surface (I5) and the clearance law (Codex21 B2) read the role. `dim` is
+ *  the measured line proper (an offset dimension line, the angle arc's
+ *  reference ray, the radius leader); the rest is scaffolding. */
+export type FurnitureLineRole = 'ext' | 'dim' | 'arrow' | 'tick' | 'arc' | 'ray' | 'leader'
+
+export interface FurnitureLine {
+  points: [number, number, number][]
+  /** the annotation this line belongs to */
+  owner: string
+  role: FurnitureLineRole
+}
+
+export interface FurnitureLabel {
+  text: string
+  /** The ANCHOR: with `outward`, the point the label's near INK edge sits on
+   *  (TEXT_LIFT_PX outside the line, on the outward side); without it, the
+   *  label's centre. Codex21 B2: a centre offset cannot keep a label of
+   *  unknown width off its line — the overlay, which knows the rendered
+   *  extent, anchors the edge. */
+  at: [number, number, number]
+  /** the screen-constant text height (em) */
+  heightMm: number
+  /** the annotation this label values */
+  owner: string
+  /** unit direction, sketch (u, v) — away from the label's own dimension line */
+  outward?: [number, number]
+}
+
 /** World-space primitives the overlay installs verbatim. */
 export interface FurniturePrimitives {
   /** Polylines (extension lines, dimension lines, arcs, arrowheads, ticks). */
-  lines: [number, number, number][][]
+  lines: FurnitureLine[]
   /** Weak-dim value labels; `heightMm` is the screen-constant text height. */
-  labels: { text: string; at: [number, number, number]; heightMm: number }[]
+  labels: FurnitureLabel[]
   /** Constraint glyph labels (H/V), same sizing authority. */
   glyphs: { text: string; at: [number, number, number]; heightMm: number }[]
 }
@@ -42,7 +71,7 @@ export interface FurniturePrimitives {
 // Pixel constants — every one crosses to mm through worldPerPixel, so the
 // furniture reads the same at every zoom (the model-scaled sprites were the
 // illegibility half of W-4).
-const TEXT_PX = 14
+const TEXT_PX = 16 // W-6: Creo's dimension text reads at the ribbon-label size; Petre's side-by-side rules
 const GLYPH_PX = 12
 const ARROW_PX = 7
 const GAP_PX = 4
@@ -82,7 +111,10 @@ export function buildDimensionFurniture(
 
   const W = (u: number, v: number): [number, number, number] =>
     frameToWorld(frame, u, v, SKETCH_LIFT_MM)
-  const line = (...pts: UV[]) => out.lines.push(pts.map((p) => W(p.u, p.v)))
+  // every primitive names its annotation (owner) and its role
+  let owner = ''
+  const line = (role: FurnitureLineRole, ...pts: UV[]) =>
+    out.lines.push({ points: pts.map((p) => W(p.u, p.v)), owner, role })
 
   // The profile bbox — the outside-side authority. Circles extend it by
   // their radius so a dim never lands inside a drawn circle.
@@ -107,12 +139,12 @@ export function buildDimensionFurniture(
     const bU = tipU - dirU * L
     const bV = tipV - dirV * L
     const pU = -dirV, pV = dirU
-    line({ u: tipU, v: tipV }, { u: bU + pU * L * 0.38, v: bV + pV * L * 0.38 })
-    line({ u: tipU, v: tipV }, { u: bU - pU * L * 0.38, v: bV - pV * L * 0.38 })
+    line('arrow', { u: tipU, v: tipV }, { u: bU + pU * L * 0.38, v: bV + pV * L * 0.38 })
+    line('arrow', { u: tipU, v: tipV }, { u: bU - pU * L * 0.38, v: bV - pV * L * 0.38 })
   }
 
-  const label = (text: string, u: number, v: number) =>
-    out.labels.push({ text, at: W(u, v), heightMm: px(TEXT_PX) })
+  const label = (text: string, u: number, v: number, outward: [number, number]) =>
+    out.labels.push({ text, at: W(u, v), heightMm: px(TEXT_PX), owner, outward })
 
   // ---- Grouping (the batch policy) -------------------------------------
   type Linear = { a: ProfileAnnotation; point: UV }
@@ -140,40 +172,47 @@ export function buildDimensionFurniture(
     const members = groups.get(key)!
     members.sort((x, y) => x.a.value - y.a.value || (x.a.id < y.a.id ? -1 : 1))
     members.forEach(({ a, point }, lane) => {
+      owner = a.id
       const off = px(BASE_OFFSET_PX) + lane * px(LANE_SPACING_PX)
       if (a.kind === 'position_x') {
         const laneV = key === 'h:below' ? minV - off : maxV + off
         const dir = Math.sign(laneV - point.v) || 1
         // extension line from the point toward the lane, with gap + overshoot
         line(
+          'ext',
           { u: point.u, v: point.v + dir * px(GAP_PX) },
           { u: point.u, v: laneV + dir * px(OVERSHOOT_PX) },
         )
         // reference tick where the dim meets the v-axis (u = 0)
-        line({ u: 0, v: laneV - px(TICK_PX) }, { u: 0, v: laneV + px(TICK_PX) })
+        line('tick', { u: 0, v: laneV - px(TICK_PX) }, { u: 0, v: laneV + px(TICK_PX) })
         // dimension line + inward-facing arrowheads at both ends
-        line({ u: 0, v: laneV }, { u: point.u, v: laneV })
+        line('dim', { u: 0, v: laneV }, { u: point.u, v: laneV })
         const s = Math.sign(point.u) || 1
         arrow(point.u, laneV, s, 0)
         arrow(0, laneV, -s, 0)
-        label(formatAnnotation(a), point.u / 2, laneV + px(TEXT_LIFT_PX))
+        // the value sits ABOVE its horizontal dimension line (unchanged side);
+        // the anchor is its near ink edge (Codex21 B2)
+        label(formatAnnotation(a), point.u / 2, laneV + px(TEXT_LIFT_PX), [0, 1])
       } else {
         const laneU = key === 'v:left' ? minU - off : maxU + off
         const dir = Math.sign(laneU - point.u) || 1
         line(
+          'ext',
           { u: point.u + dir * px(GAP_PX), v: point.v },
           { u: laneU + dir * px(OVERSHOOT_PX), v: point.v },
         )
-        line({ u: laneU - px(TICK_PX), v: 0 }, { u: laneU + px(TICK_PX), v: 0 })
-        line({ u: laneU, v: 0 }, { u: laneU, v: point.v })
+        line('tick', { u: laneU - px(TICK_PX), v: 0 }, { u: laneU + px(TICK_PX), v: 0 })
+        line('dim', { u: laneU, v: 0 }, { u: laneU, v: point.v })
         const s = Math.sign(point.v) || 1
         arrow(laneU, point.v, 0, s)
         arrow(laneU, 0, 0, -s)
         // Codex17 B2: the value sits CENTRED along the measured span and is
         // displaced PERPENDICULAR to the vertical dimension line — outside
         // it (further from the profile), never along/over it.
+        // Codex21 B2: the anchor is the label's near ink edge, so the whole
+        // visible value clears the vertical line whatever its width.
         const outward = key === 'v:left' ? -1 : 1
-        label(formatAnnotation(a), laneU + outward * px(TEXT_LIFT_PX), point.v / 2)
+        label(formatAnnotation(a), laneU + outward * px(TEXT_LIFT_PX), point.v / 2, [outward, 0])
       }
     })
   }
@@ -237,31 +276,35 @@ export function buildDimensionFurniture(
       minU * nU + maxV * nV,
     )
     members.forEach(({ a, A, B, tU, tV }, lane) => {
+      owner = a.id
       const level = support + px(BASE_OFFSET_PX) + lane * px(LANE_SPACING_PX)
       // shift each endpoint ALONG the group normal onto the shared lane line
       const dA = level - (A.u * nU + A.v * nV)
       const dB = level - (B.u * nU + B.v * nV)
       const ext = (P: UV, d: number) =>
         line(
+          'ext',
           { u: P.u + nU * px(GAP_PX), v: P.v + nV * px(GAP_PX) },
           { u: P.u + nU * (d + px(OVERSHOOT_PX)), v: P.v + nV * (d + px(OVERSHOOT_PX)) },
         )
       ext(A, dA); ext(B, dB)
       const A2 = { u: A.u + nU * dA, v: A.v + nV * dA }
       const B2 = { u: B.u + nU * dB, v: B.v + nV * dB }
-      line(A2, B2)
+      line('dim', A2, B2)
       arrow(A2.u, A2.v, -tU, -tV)
       arrow(B2.u, B2.v, tU, tV)
       label(
         formatAnnotation(a),
         (A2.u + B2.u) / 2 + nU * px(TEXT_LIFT_PX),
         (A2.v + B2.v) / 2 + nV * px(TEXT_LIFT_PX),
+        [nU, nV],
       )
     })
   }
 
   // ---- Non-linear kinds -------------------------------------------------
   for (const a of others) {
+    owner = a.id
     if (a.kind === 'angle') {
       const seg = segById.get(a.entities[0])
       const A = seg && local.get(seg.start)
@@ -273,19 +316,22 @@ export function buildDimensionFurniture(
       // the engine value (CCW from +u) — never re-measured from geometry.
       const R = Math.min(px(ANGLE_RADIUS_PX), segLen * 0.45)
       const phi = (a.value * Math.PI) / 180
-      line({ u: A.u, v: A.v }, { u: A.u + R + px(GAP_PX), v: A.v }) // the +u ray
+      line('ray', { u: A.u, v: A.v }, { u: A.u + R + px(GAP_PX), v: A.v }) // the +u ray
       const steps = Math.max(8, Math.ceil(a.value / 6))
       const arc: UV[] = []
       for (let i = 0; i <= steps; i++) {
         const t = (phi * i) / steps
         arc.push({ u: A.u + R * Math.cos(t), v: A.v + R * Math.sin(t) })
       }
-      line(...arc)
+      line('arc', ...arc)
       const mid = phi / 2
+      // Codex21 B2: anchored at its near corner along the mid-angle direction,
+      // so a small angle's value clears both the arc and the reference ray
       label(
         formatAnnotation(a),
         A.u + (R + px(TEXT_LIFT_PX + 4)) * Math.cos(mid),
         A.v + (R + px(TEXT_LIFT_PX + 4)) * Math.sin(mid),
+        [Math.cos(mid), Math.sin(mid)],
       )
     } else if (a.kind === 'radius') {
       const circle = circById.get(a.entities[0])
@@ -294,9 +340,9 @@ export function buildDimensionFurniture(
       const d = Math.SQRT1_2 // the 45° leader direction
       const rim = { u: C.u + circle.radius_mm * d, v: C.v + circle.radius_mm * d }
       const end = { u: rim.u + px(LEADER_PX) * d, v: rim.v + px(LEADER_PX) * d }
-      line(rim, end)
+      line('leader', rim, end)
       arrow(rim.u, rim.v, -d, -d)
-      label(`R ${formatAnnotation(a)}`, end.u + px(6), end.v + px(TEXT_LIFT_PX - 3))
+      label(`R ${formatAnnotation(a)}`, end.u + px(6), end.v + px(TEXT_LIFT_PX - 3), [d, d])
     }
   }
 

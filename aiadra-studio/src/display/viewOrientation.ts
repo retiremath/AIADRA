@@ -71,7 +71,9 @@ const STANDARD_LOOK: Record<StandardViewId, Vec3> = {
   left: [1, 0, 0],
   top: [0, 0, -1],
   bottom: [0, 0, 1],
-  iso: [-1, -1, -1],
+  // Iso = the FRONT-right-above diagonal (Creo's isometric octant; it looked
+  // from back-right-above before 2026-09-05).
+  iso: [-1, 1, -1],
 }
 
 export function orientationForLook(look: Vec3): ViewOrientation {
@@ -134,4 +136,74 @@ export function cubeRegions(): CubeRegion[] {
 export function rollUp(direction: Vec3, up: Vec3, sign: 1 | -1): Vec3 {
   const r = cross(norm(direction), norm(up))
   return sign === 1 ? norm(r) : norm([-r[0], -r[1], -r[2]])
+}
+
+const DEG = Math.PI / 180
+
+/**
+ * A look from two angles, Creo's paradigm (`y_angle` = TURN about the
+ * vertical, `x_angle` = TILT about the screen horizontal): 0/0 is the Front
+ * view; a positive turn moves the eye toward +X (the Right side), a positive
+ * tilt lifts it to +Z. Up stays world-Z on screen through `upFor`, as Creo
+ * keeps its vertical upright in every default orientation.
+ */
+export function orientationFromAngles(turnDeg: number, tiltDeg: number): ViewOrientation {
+  const t = turnDeg * DEG
+  const e = tiltDeg * DEG
+  const eye: Vec3 = [Math.sin(t) * Math.cos(e), -Math.cos(t) * Math.cos(e), Math.sin(e)]
+  return orientationForLook([-eye[0], -eye[1], -eye[2]])
+}
+
+/**
+ * Creo 10's trimetric default (Petre's side-by-side, 2026-09-05): 20° turn,
+ * 30° tilt. The three principal planes foreshorten by three DIFFERENT factors
+ * (RIGHT narrowest, FRONT widest), so no two datum-plane edges ever fall on one
+ * screen line — the isometric's hexagon made TOP and RIGHT read as one plane.
+ */
+export const TRIMETRIC_ANGLES = { turnDeg: 20, tiltDeg: 30 } as const
+
+/** Creo's "Default Orientation" (the `defaultOrientation` setting). */
+export type DefaultOrientationKind = 'trimetric' | 'isometric' | 'custom'
+
+/** The home/Reset orientation, resolved through THIS one authority. */
+export function homeOrientation(
+  kind: DefaultOrientationKind,
+  custom: { turnDeg: number; tiltDeg: number },
+): ViewOrientation {
+  switch (kind) {
+    case 'isometric':
+      return standardViewOrientation('iso')
+    case 'custom':
+      return orientationFromAngles(custom.turnDeg, custom.tiltDeg)
+    default:
+      return orientationFromAngles(TRIMETRIC_ANGLES.turnDeg, TRIMETRIC_ANGLES.tiltDeg)
+  }
+}
+
+/**
+ * The screen-space half-extents of the three principal datum planes
+ * (corners at +/-halfSize) under an orientation: the largest |corner . up| and
+ * |corner . right| over the twelve plane corners. The empty-part frame DERIVES
+ * from it (Petre round 2: the canvas comes up framing the scaffold) for ANY
+ * Default Orientation — the trimetric's tall RIGHT plane needs ~9% more height
+ * than the isometric did, which a pinned constant silently clipped.
+ */
+export function datumFrameExtent(o: ViewOrientation, halfSize: number): { up: number; right: number } {
+  const up = norm(o.up)
+  const right = cross(norm(o.direction), up)
+  let maxUp = 0
+  let maxRight = 0
+  for (let n = 0; n < 3; n++) {
+    const [a, b] = [0, 1, 2].filter((i) => i !== n)
+    for (const sa of [-1, 1]) {
+      for (const sb of [-1, 1]) {
+        const corner: Vec3 = [0, 0, 0]
+        corner[a] = sa * halfSize
+        corner[b] = sb * halfSize
+        maxUp = Math.max(maxUp, Math.abs(dot(corner, up)))
+        maxRight = Math.max(maxRight, Math.abs(dot(corner, right)))
+      }
+    }
+  }
+  return { up: maxUp, right: maxRight }
 }

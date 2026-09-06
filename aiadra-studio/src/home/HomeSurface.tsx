@@ -7,6 +7,7 @@
  * (Codex6 guardrail: one surface family, not a second AI mode).
  */
 import { DesignHero } from '../dock/Dock'
+import { NavigatorFrame } from '../ui/NavigatorFrame'
 import { CatalogsStub, WorkspaceStart, type OpenedWorkspace } from './HomeShared'
 
 export function HomeSurface({
@@ -25,10 +26,12 @@ export function HomeSurface({
 }) {
   return (
     <div className="home-surface">
-      <aside className="home-left">
+      {/* Creo's navigator: the SAME resizable/dismissable frame the modeling
+          state hosts its tree in (shell-1 S1-08/S1-15 — one navigator). */}
+      <NavigatorFrame className="home-left">
         <div className="panel-title">Workspaces</div>
         <WorkspaceStart onOpened={onOpened} onOpenSample={onOpenSample} />
-      </aside>
+      </NavigatorFrame>
       <main className="home-main">
         <div className="home-hero">
           <DesignHero onStart={onDesignStart} gate={startGate} />

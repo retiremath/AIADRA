@@ -61,7 +61,7 @@ function familyMembers(id: RibbonMenuFamily['id']): RibbonCommand[] {
 }
 
 const stateTitle = (c: RibbonCommand, st: CommandState): string =>
-  st.state === 'working' ? `${c.label} — start` : st.reason
+  st.state === 'working' ? `${c.label} — ${c.hint ?? 'start'}` : st.reason
 
 function menuItemFor(c: RibbonCommand, inputs: RibbonInputs, labelPrefix = ''): MenuItem {
   const st = c.derive(inputs)

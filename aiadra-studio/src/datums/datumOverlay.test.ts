@@ -78,4 +78,27 @@ describe('the datum overlay (EP1 — the empty-part scaffold)', () => {
     })
     overlay.dispose()
   })
+  it('the origin csys is THREE ARROWS (shaft + head) — X/Y/Z under the csys id (the Creo csys look)', () => {
+    const overlay = createDatumOverlay()
+    const arrows: THREE.ArrowHelper[] = []
+    overlay.group.traverse((o) => {
+      if ((o.userData as { kind?: string }).kind === 'intrinsic-csys-axis') arrows.push(o as THREE.ArrowHelper)
+    })
+    expect(arrows.map((a) => (a.userData as { axis: string }).axis).sort()).toEqual(['X', 'Y', 'Z'])
+    for (const a of arrows) {
+      expect(a).toBeInstanceOf(THREE.ArrowHelper)
+      expect(a.cone).toBeTruthy() // the head
+      expect(a.line).toBeTruthy() // the shaft
+      expect((a.userData as { intrinsicId: string }).intrinsicId).toBe(INTRINSIC_CSYS_ID)
+    }
+    // they live in the origin lane, so the datum-display "origin" filter hides them
+    const originLane = overlay.group.children.find((c) => c.name === 'datum-origin')!
+    let inLane = 0
+    originLane.traverse((o) => {
+      if ((o.userData as { kind?: string }).kind === 'intrinsic-csys-axis') inLane++
+    })
+    expect(inLane).toBe(3)
+    overlay.dispose()
+  })
+
 })

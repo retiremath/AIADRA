@@ -715,6 +715,10 @@ body { background: var(--bg); overflow: hidden; }
 .ai-toggle.off .dot { background: var(--warn); }
 .ai-toggle .dot.live { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 .ai-toggle.session { border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, transparent); cursor: default; }
+/* The navigator toggle (Creo: the status bar's bottom-left navigator button). */
+.nav-toggle { display: inline-flex; align-items: center; padding: 3px 6px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; line-height: 0; }
+.nav-toggle:hover { background: var(--panel-2); color: var(--text); }
+.nav-toggle.on { color: var(--text); }
 .pill-id { color: var(--muted); }
 .pill-name { color: var(--text-h); font-weight: 600; }
 .pill-transient { color: var(--warn); }
@@ -831,6 +835,22 @@ body { background: var(--bg); overflow: hidden; }
 .sp-tools { display: flex; gap: 4px; margin-left: 10px; }
 .extrude-panel .sp-foot { border-top: 0; }
 
+/* The placement dialog (I3, arc 20260905-1): Creo's Placement-tab grammar */
+/* Creo keeps the dialog at the top-RIGHT of the graphics window so the model,
+   the planes and the view-direction arrow stay visible while placing. */
+.placement-panel { inset: 52px 12px auto auto; width: min(620px, 60vw); }
+/* W-5: the title bar is the drag handle (Creo's dialog is a floating window) */
+.placement-panel .pl-drag { cursor: move; user-select: none; touch-action: none; }
+.placement-panel .pl-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.pl-section { display: flex; flex-direction: column; gap: 6px; }
+.pl-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+.pl-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); flex-wrap: wrap; }
+.pl-row .pl-label { min-width: 150px; color: var(--muted); }
+.pl-collector { font: inherit; font-size: 12px; padding: 3px 10px; min-width: 120px; text-align: left; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text-h); cursor: pointer; }
+.pl-collector:hover { border-color: var(--accent); }
+.pl-collector.active { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); background: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
+.btn.pressed { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); color: var(--text-h); }
+
 /* The Home state (arc 20260714-1; D-H1/D-H2 — the Creo-paradigm startup) */
 .home-surface {
   flex: 1;
@@ -838,7 +858,10 @@ body { background: var(--bg); overflow: hidden; }
   min-height: 0;
 }
 .home-left {
-  width: 300px;
+  /* hosted by the shared NavigatorFrame (width + sash live there) */
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 12px 14px;

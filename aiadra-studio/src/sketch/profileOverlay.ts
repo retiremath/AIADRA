@@ -51,30 +51,85 @@ export interface ProfileOverlay {
 // dimensions and constraint markers recede.
 const COLOR_PROFILE = 0x1d4ed8
 const COLOR_POINT = 0x0f2d6b
-const COLOR_WEAK_DIM = 0x8a8f98 // the grey of an auto (weak) dimension
+// W-6 (Petre's walk 2026-09-06): the auto (weak) dimension grey must READ
+// on the sketch plane's fill — dark slate, still visibly not the profile
+// blue that strong intent will take (Creo: weak = grey, strong = the
+// dimension colour).
+const COLOR_WEAK_DIM = 0x4b5563
 const COLOR_GLYPH = 0x2f7d32
 
 const CIRCLE_SEGMENTS = 96
 
-function labelSprite(text: string, color: number): THREE.Sprite {
-  const px = 128
+// W-6: the label texture is sized to ITS text (no fixed 2:1 canvas whose
+// glyphs filled a third of the height), and the caller scales the sprite so
+// the font's em height on screen equals the furniture's pixel size.
+export const LABEL_FONT_PX = 64
+export const LABEL_PAD_PX = 10
+const LABEL_FONT = `600 ${LABEL_FONT_PX}px system-ui, sans-serif`
+
+export interface LabelSprite {
+  sprite: THREE.Sprite
+  /** texture size in texture px */
+  w: number
+  h: number
+  /** the font size in texture px — `h / em` is the sprite-height factor */
+  em: number
+}
+
+function labelSprite(text: string, color: number): LabelSprite {
   const cv = document.createElement('canvas')
-  cv.width = px * 2
-  cv.height = px
+  const measure = cv.getContext('2d')
+  let textW = text.length * LABEL_FONT_PX * 0.6 // jsdom: no 2d context
+  if (measure) {
+    measure.font = LABEL_FONT
+    textW = measure.measureText(text).width
+  }
+  const w = Math.max(8, Math.ceil(textW + LABEL_PAD_PX * 2))
+  const h = Math.ceil(LABEL_FONT_PX * 1.3)
+  cv.width = w // resizing resets the context state — set the font again
+  cv.height = h
   const ctx = cv.getContext('2d')
   if (ctx) {
     ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`
-    ctx.font = '600 46px system-ui, sans-serif'
+    ctx.font = LABEL_FONT
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillText(text, px, px / 2)
+    ctx.fillText(text, w / 2, h / 2)
   }
   const tex = new THREE.CanvasTexture(cv)
+  // Codex21 B1: the canvas holds COLOUR pixels (the CSS grey) — without the
+  // sRGB tag the renderer treats them as linear and the text renders pale.
+  tex.colorSpace = THREE.SRGBColorSpace
   tex.needsUpdate = true
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
   const sprite = new THREE.Sprite(mat)
   sprite.renderOrder = 10
-  return sprite
+  return { sprite, w, h, em: LABEL_FONT_PX }
+}
+
+/** The sprite's anchor (`Sprite.center`, 0..1 in the texture) that puts the
+ *  label's near INK edge on the furniture's anchor point, on the OUTWARD
+ *  side (Codex21 B2): a horizontal outward anchors the left/right ink edge,
+ *  a vertical one the bottom/top em edge, a diagonal one the near corner; a
+ *  negligible component stays centred; no outward = centred (glyphs). Pure. */
+export function labelAnchor(
+  outward: [number, number] | undefined,
+  l: Pick<LabelSprite, 'w' | 'h' | 'em'>,
+): { x: number; y: number } {
+  if (!outward) return { x: 0.5, y: 0.5 }
+  const padX = LABEL_PAD_PX / l.w // the ink starts after the horizontal pad
+  const padY = (l.h - l.em) / 2 / l.h // the em box inside the texture height
+  const EPS = 0.05
+  const x = outward[0] > EPS ? padX : outward[0] < -EPS ? 1 - padX : 0.5
+  const y = outward[1] > EPS ? padY : outward[1] < -EPS ? 1 - padY : 0.5
+  return { x, y }
+}
+
+/** The sprite scale (world units) that puts the label's EM height at
+ *  `heightMm` (= the furniture's pixel size × worldPerPixel). Pure. */
+export function labelScale(l: Pick<LabelSprite, 'w' | 'h' | 'em'>, heightMm: number): { x: number; y: number } {
+  const y = heightMm * (l.h / l.em)
+  return { x: y * (l.w / l.h), y }
 }
 
 /** The two-character marker Creo shows for a constraint. */
@@ -101,10 +156,14 @@ export function createProfileOverlay(): ProfileOverlay {
     disposables.push(geom, mat)
   }
 
-  const addLabel = (text: string, at: THREE.Vector3, color: number, scale: number) => {
-    const sprite = labelSprite(text, color)
+  const addLabel = (text: string, at: THREE.Vector3, color: number, heightMm: number, outward?: [number, number]) => {
+    const l = labelSprite(text, color)
+    const sprite = l.sprite
     sprite.position.copy(at)
-    sprite.scale.set(scale * 2, scale, 1)
+    const sc = labelScale(l, heightMm)
+    sprite.scale.set(sc.x, sc.y, 1)
+    const anchor = labelAnchor(outward, l)
+    sprite.center.set(anchor.x, anchor.y)
     group.add(sprite)
     disposables.push(sprite.material, (sprite.material as THREE.SpriteMaterial).map as THREE.Texture)
   }
@@ -163,11 +222,11 @@ export function createProfileOverlay(): ProfileOverlay {
     // returns. The raw anchor-segment drawing (the walk's "vector to the
     // origin") is gone.
     const furniture = buildDimensionFurniture(geometry, frame, lastWpp)
-    for (const pts of furniture.lines) {
-      addLine(pts.map((p) => v3(p)), COLOR_WEAK_DIM)
+    for (const ln of furniture.lines) {
+      addLine(ln.points.map((p) => v3(p)), COLOR_WEAK_DIM)
     }
     for (const l of furniture.labels) {
-      addLabel(l.text, v3(l.at), COLOR_WEAK_DIM, l.heightMm)
+      addLabel(l.text, v3(l.at), COLOR_WEAK_DIM, l.heightMm, l.outward)
     }
     for (const g of furniture.glyphs) {
       addLabel(g.text, v3(g.at), COLOR_GLYPH, g.heightMm)

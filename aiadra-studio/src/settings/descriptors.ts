@@ -199,6 +199,18 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
     unit: 'px',
     help: 'Also set by dragging the navigator’s right edge.',
   },
+  // The navigator's visibility (Creo: the status bar's bottom-left navigator
+  // button dismisses/restores the whole pane; Petre 2026-09-05 — the Home-state
+  // side-by-side). Persisted like `graphicsToolbarPosition: hidden`; ONE key
+  // for both app states.
+  {
+    key: 'navigatorVisible',
+    type: 'boolean',
+    default: true,
+    label: 'Show navigator',
+    group: 'Behavior',
+    help: 'Also toggled from the status bar’s bottom-left navigator button (Home and Model states alike).',
+  },
   // The graphics toolbar's placement (Creo: movable/dismissable in-graphics
   // toolbar; shell pass 1). Right-click the bar to move/hide it; a small
   // restore handle appears when hidden.
@@ -213,6 +225,47 @@ export const SETTING_DESCRIPTORS: SettingDescriptor[] = [
       { value: 'bottom', label: 'Bottom' },
       { value: 'hidden', label: 'Hidden' },
     ],
+  },
+  // Creo's "Default Orientation" (config `orientation` + `x_angle`/`y_angle`;
+  // Petre 2026-09-05, the datum-plane side-by-side): the Reset / new-part view.
+  // Trimetric = Creo 10's look (three distinct planes); the two angles apply
+  // to Custom only. ONE orientation authority resolves it (viewOrientation.ts).
+  {
+    key: 'defaultOrientation',
+    type: 'enum',
+    default: 'trimetric',
+    label: 'Default orientation',
+    group: 'Behavior',
+    options: [
+      { value: 'trimetric', label: 'Trimetric (Creo default)' },
+      { value: 'isometric', label: 'Isometric' },
+      { value: 'custom', label: 'Custom (angles below)' },
+    ],
+    help: 'The Reset / new-part view. Trimetric matches Creo 10; Custom uses the two angles below.',
+  },
+  {
+    key: 'defaultOrientationTurnDeg',
+    type: 'number',
+    default: 20,
+    label: 'Custom orientation — turn',
+    group: 'Behavior',
+    min: -180,
+    max: 180,
+    step: 1,
+    unit: '°',
+    help: 'Creo’s y_angle: the eye turns about the vertical, from the Front view toward the Right (positive). Custom only; press Reset to see it.',
+  },
+  {
+    key: 'defaultOrientationTiltDeg',
+    type: 'number',
+    default: 30,
+    label: 'Custom orientation — tilt',
+    group: 'Behavior',
+    min: -89,
+    max: 89,
+    step: 1,
+    unit: '°',
+    help: 'Creo’s x_angle: the eye tilts above (positive) or below the model. Custom only; press Reset to see it.',
   },
 ]
 

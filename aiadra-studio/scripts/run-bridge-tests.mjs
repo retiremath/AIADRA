@@ -17,7 +17,7 @@ if (!python) {
   console.error('[test:bridge] aiadra-core venv not found — create it first (see aiadra-core/README.md)')
   process.exit(1)
 }
-const r = spawnSync(python, ['-m', 'pytest', join(root, 'bridge', 'test_bridge.py'), '-q'], {
+const r = spawnSync(python, ['-m', 'pytest', join(root, 'bridge'), '-q'], {
   stdio: 'inherit',
 })
 process.exit(r.status ?? 1)

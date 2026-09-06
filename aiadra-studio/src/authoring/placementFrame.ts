@@ -5,6 +5,8 @@
  * parity-tested against the engine's literal derivation matrix. Nothing
  * derived here ever persists (the engine mints Truth records).
  */
+import type { PlaneFrameTS } from '../sketch/planeFrame'
+
 export type PrincipalOrientation = 'xy' | 'yz' | 'zx'
 export type PlacementOrientation = 'right' | 'top' | 'left' | 'bottom'
 export type NormalSide = 'positive' | 'negative'
@@ -25,7 +27,7 @@ export const PRINCIPALS: readonly PrincipalOrientation[] = ['xy', 'yz', 'zx']
 export const PLACEMENT_ORIENTATIONS: readonly PlacementOrientation[] = ['right', 'top', 'left', 'bottom']
 export const NORMAL_SIDES: readonly NormalSide[] = ['positive', 'negative']
 
-type Vec3 = [number, number, number]
+export type Vec3 = [number, number, number]
 
 const CANONICAL_NORMALS: Record<PrincipalOrientation, Vec3> = {
   xy: [0, 0, 1],
@@ -108,4 +110,20 @@ export function deriveFrame(p: PlacementRecord): { u: Vec3; v: Vec3; n: Vec3 } {
 export function placementToWorld(p: PlacementRecord, x: number, y: number): Vec3 {
   const { u, v } = deriveFrame(p)
   return [u[0] * x + v[0] * y, u[1] * x + v[1] * y, u[2] * x + v[2] * y]
+}
+
+/** I3 (arc 20260905-1): the pre-commit SESSION frame for a create — the
+ *  mirror's {u, v, n} as a `PlaneFrameTS` at the world origin (principal
+ *  supports). After Close the engine's `sketch_frames[]` row governs. */
+export function placementToPlaneFrame(p: PlacementRecord): PlaneFrameTS {
+  const { u, v, n } = deriveFrame(p)
+  return { origin: [0, 0, 0], u, v, normal: n }
+}
+
+/** Creo's sketch view-direction arrow (I3): the sketch view's LOOK direction
+ *  (-n, with n signed by Flip) standing at the support origin. Presentation
+ *  only — it reverses with Flip and never persists. */
+export function placementViewGlyph(p: PlacementRecord): { origin: Vec3; direction: Vec3 } {
+  const { n } = deriveFrame(p)
+  return { origin: [0, 0, 0], direction: scale(n, -1) }
 }

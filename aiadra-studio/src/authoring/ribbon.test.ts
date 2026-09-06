@@ -38,7 +38,8 @@ describe('the three-state ribbon taxonomy (D-R1 — the N3 command-state matrix)
       'Datum:datum-csys:Coordinate System:small@c2r0', 'Datum:sketch:Sketch (legacy):small@c2r2',
       // Gate F2b (arc 20260717-2): the first v2 writer — the references sketch.
       'Datum:references-sketch:References:small@c2r1',
-      'Datum:profile-sketch:Profile Sketch:anchor@c0r0',
+      // I3 (arc 20260905-1): the Creo seat is `Sketch` (the v2 lane).
+      'Datum:profile-sketch:Sketch:anchor@c0r0',
       'Shapes:extrude:Extrude:anchor@c0r0', 'Shapes:revolve:Revolve:anchor@c1r0', 'Shapes:sweep:Sweep:small@c2r0', 'Shapes:swept-blend:Swept Blend:small@c2r1',
       'Engineering:hole:Hole:anchor@c0r0', 'Engineering:round:Round:small@c1r0', 'Engineering:chamfer:Chamfer:small@c1r1',
       'Engineering:shell:Shell:small@c1r2', 'Engineering:draft:Draft:small@c2r0', 'Engineering:rib:Rib:small@c2r1',

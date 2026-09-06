@@ -1,0 +1,108 @@
+[
+  {
+    "label": "near-horizontal",
+    "kind": "mechanical.author_profile_sketch",
+    "params": {
+      "part_number": "P-000001",
+      "placement": {
+        "support": {
+          "kind": "principal",
+          "orientation": "xy"
+        },
+        "orientation_ref": {
+          "kind": "principal",
+          "orientation": "zx"
+        },
+        "orientation": "top",
+        "normal_side": "negative"
+      },
+      "profile": {
+        "points": [
+          {
+            "key": "p1",
+            "x": 0,
+            "y": 0
+          },
+          {
+            "key": "p2",
+            "x": 20,
+            "y": 0.4
+          }
+        ],
+        "segments": [
+          {
+            "key": "s1",
+            "start": {
+              "key": "p1"
+            },
+            "end": {
+              "key": "p2"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "key": "f1",
+            "kind": "horizontal",
+            "target": {
+              "key": "s1"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "label": "near-vertical",
+    "kind": "mechanical.author_profile_sketch",
+    "params": {
+      "part_number": "P-000001",
+      "placement": {
+        "support": {
+          "kind": "principal",
+          "orientation": "xy"
+        },
+        "orientation_ref": {
+          "kind": "principal",
+          "orientation": "zx"
+        },
+        "orientation": "top",
+        "normal_side": "negative"
+      },
+      "profile": {
+        "points": [
+          {
+            "key": "p1",
+            "x": 0,
+            "y": 0
+          },
+          {
+            "key": "p2",
+            "x": 0.3,
+            "y": 15
+          }
+        ],
+        "segments": [
+          {
+            "key": "s1",
+            "start": {
+              "key": "p1"
+            },
+            "end": {
+              "key": "p2"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "key": "f1",
+            "kind": "vertical",
+            "target": {
+              "key": "s1"
+            }
+          }
+        ]
+      }
+    }
+  }
+]

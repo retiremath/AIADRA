@@ -47,7 +47,7 @@ describe('identity + lane badge (the SR-08 tenancy shape)', () => {
   it('a create session names its plane and Part; the lane badge is honest', () => {
     render(<ProfileStatusLine session={create()} isReal={false} />)
     const line = screen.getByTestId('profile-status')
-    expect(line.textContent).toContain('Profile Sketch — FRONT (xy)')
+    expect(line.textContent).toContain('Profile Sketch — TOP (xy)')
     expect(line.textContent).toContain('P-000001')
     expect(line.textContent).toContain('dev mock')
   })

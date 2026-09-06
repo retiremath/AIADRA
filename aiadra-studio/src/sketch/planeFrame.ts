@@ -156,19 +156,27 @@ export function frameFromNormalAndPoint(normal: Vec3, point: Vec3): PlaneFrameTS
 /**
  * The plane-pick arbitration rule (Codex2 B4.3, ONE rule for hover AND
  * click): an ELIGIBLE planar canonical face wins over a datum quad; with no
- * eligible face hit, the datum wins. Pure — the viewport feeds it raycast
+ * eligible face hit, an UNSUPPORTED face in front of the datum is reported for
+ * the owner's refusal (I3, Codex3 B2) and otherwise the datum wins. Pure — the viewport feeds it raycast
  * results; S1 passes an empty eligibility set (face picking arrives in S3).
  */
 export type PlanePickHit =
   | { kind: 'face'; faceId: string }
   | { kind: 'datum'; orientation: PlaneOrientation }
+  /** A canonical face the mode cannot accept (not planar, or a principal-only
+   *  continuation) that the user actually clicked — delivered for the owner's
+   *  refusal, never silently replaced by the datum behind it. */
+  | { kind: 'unsupported-face'; faceId: string }
 
 export function arbitratePlanePick(
-  faceHit: string | null,
-  datumHit: PlaneOrientation | null,
+  faceHit: { faceId: string; distance: number } | null,
+  datumHit: { orientation: PlaneOrientation; distance: number } | null,
   planarFaceIds: ReadonlySet<string>,
 ): PlanePickHit | null {
-  if (faceHit !== null && planarFaceIds.has(faceHit)) return { kind: 'face', faceId: faceHit }
-  if (datumHit !== null) return { kind: 'datum', orientation: datumHit }
+  if (faceHit !== null && planarFaceIds.has(faceHit.faceId)) return { kind: 'face', faceId: faceHit.faceId }
+  if (faceHit !== null && (datumHit === null || faceHit.distance <= datumHit.distance)) {
+    return { kind: 'unsupported-face', faceId: faceHit.faceId }
+  }
+  if (datumHit !== null) return { kind: 'datum', orientation: datumHit.orientation }
   return null
 }

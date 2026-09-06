@@ -2,8 +2,13 @@ import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useStat
 import Viewport, { type SketchInteractionMode, type ViewportApi } from './Viewport'
 import { useProfileSketch } from './sketch/useProfileSketch'
 import { runProfileClose } from './sketch/profileCloseRunner'
+import { resolveProfileEditEntry } from './sketch/profileEditEntry'
+import { activeSketchFrame } from './sketch/activeSketchFrame'
+import { placementRecordOf } from './authoring/authoringSession'
 import { invalidationAction, profileActivity, sketchRibbonActive } from './authoring/authoringActivity'
-import { deriveFrame as derivePlacementFrame } from './authoring/placementFrame'
+import { placementViewGlyph } from './authoring/placementFrame'
+import { acceptSketchPlacement } from './authoring/placementAccept'
+import { useContextInvalidation } from './authoring/useContextInvalidation'
 import { Toolbar } from './Toolbar'
 import { createBridgeSource } from './display/displaySource'
 import { createOperationStore, useOperation, type OperationStore } from './operation/store'
@@ -11,6 +16,9 @@ import { useCandidatePreview } from './operation/previewController'
 import { SessionPill } from './operation/SessionPill'
 import { Dock, startBracketSession } from './dock/Dock'
 import { HomeSurface } from './home/HomeSurface'
+import { NavigatorFrame } from './ui/NavigatorFrame'
+import { homeOrientation, type DefaultOrientationKind } from './display/viewOrientation'
+import { NavigatorToggle } from './ui/NavigatorToggle'
 import { HomeRibbon } from './home/HomeRibbon'
 import { FileMenu, type FileMenuItem } from './home/FileMenu'
 import { QuickAccessBar, type QatCommand } from './ui/QuickAccessBar'
@@ -656,7 +664,13 @@ function ModelTreePanel({
                 ...(selectable ? { cursor: 'pointer' } : null),
                 ...(selected ? { outline: '1px solid var(--accent, #6b9bd1)' } : null),
               }}
-              title={selectable ? 'Select this sketch (Extrude will consume it)' : undefined}
+              title={
+                selectable
+                  ? part.features.find((f) => f.id === row.featureId)?.kind === 'sketchV2'
+                    ? 'A drawn sketch — edit its geometry with the pencil; Extrude cannot consume a drawn sketch yet'
+                    : 'Select this sketch (Extrude will consume it)'
+                  : undefined
+              }
               onClick={
                 selectable
                   ? () => session.selectSketch(selected ? null : row.featureId)
@@ -671,13 +685,27 @@ function ModelTreePanel({
                 (() => {
                   const feat = part.features.find((f) => f.id === row.featureId)
                   const params = feat && feat.kind !== 'sketch' && feat.kind !== 'sketchV2' ? feat.parameters : []
-                  if (params.length === 0) return null
+                  // I3 (Codex1 N3): a v2 sketch's pencil — a drawn (0.2.2) sketch edits
+                  // its GEOMETRY (its placement is fixed once created); a placed
+                  // (0.2.1) references sketch redefines its placement; a 0.2.0
+                  // legacy frame is history and says so.
+                  const v2 = feat && feat.kind === 'sketchV2' ? feat : null
+                  if (params.length === 0 && v2 === null) return null
+                  const v2Title =
+                    v2 === null
+                      ? null
+                      : v2.version === '0.2.2'
+                        ? 'Edit the sketch geometry — placement of a drawn sketch is fixed once created (editable placement is a later step)'
+                        : v2.version === '0.2.1'
+                          ? 'Redefine this references sketch’s placement'
+                          : 'A legacy references sketch — its frame is fixed history'
+                  const legacyFrame = v2 !== null && v2.version === '0.2.0'
                   return (
                     <button
                       type="button"
                       className="link-btn small"
-                      disabled={onEditFeature.gate !== null}
-                      title={onEditFeature.gate ?? `Edit ${params.map((x) => x.name).join(', ')}`}
+                      disabled={onEditFeature.gate !== null || legacyFrame}
+                      title={onEditFeature.gate ?? v2Title ?? `Edit ${params.map((x) => x.name).join(', ')}`}
                       onClick={(ev) => {
                         ev.stopPropagation()
                         onEditFeature.start(row.featureId)
@@ -762,27 +790,16 @@ function Workbench({
     },
   })
   profileLaneRef.current = profileLane
-  // The temporary Profile Sketch CREATE entry (ADR/0044 A4): plane pick →
-  // profile session, with the v1 authoring store IDLE throughout — the two
-  // lifecycles are never nested (Codex6 B2).
-  const [profilePick, setProfilePick] = useState(false)
-  useEffect(() => {
-    if (!profilePick) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setProfilePick(false)
-        e.preventDefault()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [profilePick])
+  // I3 (arc 20260905-1): the Sketch pick lives in the authoring store's
+  // placement session (planePick -> placement -> the profile lane); there is
+  // no separate pick flag any more, so every global gate sees it as the ONE
+  // session it is.
 
   // Codex8 B1: profile activity is a RENDER derivation — "active now", the
   // same invariant the legacy store gives the gate. The previous effect
   // projection published one render late, and most gate consumers read
   // render-captured values, so a second operation could start in that frame.
-  const profileActive = profileActivity(profilePick, profileLane)
+  const profileActive = profileActivity(false /* I3: the pick is the store's placement session */, profileLane)
   const authoringBusy = authoringSession.mode !== 'idle' || profileActive
   // The live canonical selection (transient UI state — enablement only; the
   // capture happens at session start, D-R8).
@@ -882,7 +899,7 @@ function Workbench({
   // the drawing with the refusal surfaced).
   useEffect(() => {
     const action = invalidationAction(
-      profilePick,
+      false, // I3: no separate pick flag (the placement session dies through useContextInvalidation)
       profileLane.session === null
         ? null
         : {
@@ -891,8 +908,7 @@ function Workbench({
           },
       pc.generation,
     )
-    if (action === 'cancel-pick') setProfilePick(false)
-    else if (action === 'cancel-session') void profileLane.cancel()
+    if (action === 'cancel-session') void profileLane.cancel()
     // 'retain-terminal' | 'none': deliberately nothing
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pc.generation])
@@ -915,7 +931,11 @@ function Workbench({
   useEffect(() => {
     if (pc.partNumber !== null) setNavTabChoice('model')
   }, [pc.partNumber])
-  const navTab: NavTabKey = authoringSession.mode === 'planePick' ? 'model' : navTabChoice
+  const navTab: NavTabKey =
+    authoringSession.mode === 'planePick' ||
+    (authoringSession.mode === 'placement' && authoringSession.activeCollector !== null)
+      ? 'model'
+      : navTabChoice
   const [refsBusy, setRefsBusy] = useState(false)
   const authoringGate =
     (refsBusy ? 'the references commit is still running — wait for it to finish' : null) ??
@@ -1055,25 +1075,20 @@ function Workbench({
       if (feat && feat.kind === 'sketchV2' && feat.version === '0.2.2') {
         // ADR/0044 A4: the ✎ on a committed PROFILE sketch opens the Edit
         // session — baseline from the inspected record (id-form, byte-exact),
-        // frame from the persisted placement via the A3.5 TS mirror (the
-        // engine re-derives at commit; the preview echoes its own frame).
+        // frame from the ENGINE's display row (I3 — see below).
         if (!feat.placement || !feat.profile) {
           setShellNote('this profile sketch is missing its placement or profile block — refresh the Part')
           return
         }
-        const { u, v, n } = derivePlacementFrame(feat.placement)
-        const snap = partContext.getSnapshot()
-        if (snap.partNumber === null) return
-        profileLane.openEditSession(
-          featureId,
-          feat.profile,
-          { origin: [0, 0, 0], u, v, normal: n },
-          {
-            workspaceId: currentWs?.workspaceId ?? null,
-            partNumber: snap.partNumber,
-            generation: snap.generation,
-          },
-        )
+        // I3 (Codex1 N1 / Codex2): the frame is the ENGINE's `sketch_frames[]`
+        // row for THIS generation and the target comes from the SAME snapshot;
+        // a missing/stale row refuses (no mirror fallback for an edit).
+        const entry = resolveProfileEditEntry(partContext.getSnapshot(), featureId)
+        if (!entry.ok) {
+          setShellNote(entry.reason)
+          return
+        }
+        profileLane.openEditSession(featureId, feat.profile, entry.frame, entry.target)
         return
       }
       if (feat && feat.kind === 'sketchV2') {
@@ -1163,15 +1178,27 @@ function Workbench({
         )
       }
     } else if (kind === 'profile-sketch') {
-      // ADR/0044 A4 (Codex6 B2): the temporary CREATE entry. Enters the
-      // shared plane-pick surface with the v1 store idle; the pick opens the
-      // profile session directly — one lifecycle, never nested.
+      // I3 (arc 20260905-1): ordinary Sketch = the v2 two-reference session —
+      // plane pick -> the placement dialog -> Sketch -> the profile drawing
+      // session, with the v1 store idle throughout. The target is CAPTURED
+      // here and carried through the dialog (never recaptured at accept);
+      // placement commits nothing — Close is the only writer.
       const target = partFacts.readyPart
       if (!target) {
-        setShellNote('Commit a Part first (New…) — a profile sketch draws on a Part')
+        setShellNote('Commit a Part first (New…) — a sketch draws on a Part')
         return
       }
-      setProfilePick(true)
+      const snap = partContext.getSnapshot()
+      const captured = captureAuthoringTarget(snap)
+      if (!captured) {
+        setShellNote('the Part is not ready — refresh or reopen it, then start Sketch again')
+        return
+      }
+      authoringStore.startPlacementPick(
+        snap.generation,
+        { number: target.number, name: target.name },
+        { accept: 'sketch', capturedTarget: captured },
+      )
     } else if (kind === 'references-sketch') {
       // A3.6.1 / Codex1 B4 (pass sketch-place-1): References enters the ONE
       // placement session — support pick → the engine-default confirm panel
@@ -1425,9 +1452,12 @@ function Workbench({
 
   // sketch-ribbon-1: the ONE Sketch-view reorient (Codex10 B1 — the SUPPORT
   // is the sole frame authority), shared by the Sketch ribbon and the chrome.
+  // I3 (Claude2 D5'): Sketch View returns to the frame of WHICHEVER sketch
+  // lane is active — the profile session's own frame (create: the placement
+  // mirror; edit: the engine row) or the v1 lane's support frame.
   const sketchViewReturn = () => {
-    const st = authoringStore.getSnapshot()
-    if (st.mode === 'sketch') viewportApi.current?.sketchView(supportFrame(st.support))
+    const frame = activeSketchFrame(authoringStore.getSnapshot(), profileLane.session)
+    if (frame) viewportApi.current?.sketchView(frame)
   }
 
   // A3.6 (pass sketch-place-1): the placement session's EXPLICIT accept —
@@ -1444,6 +1474,14 @@ function Workbench({
     }
     const wireSupport = { kind: 'principal' as const, orientation: s.support }
     const wireRef = { kind: 'principal' as const, orientation: s.orientationRef }
+    if (s.accept === 'sketch') {
+      // I3 (Codex3 B5): the ONE production accept path — extracted so the real
+      // caller is what the tests exercise (real stores, real context).
+      acceptSketchPlacement(authoringStore, partContext.getSnapshot(), (placement, frame, target) =>
+        profileLane.openCreateSession(placement, frame, target),
+      )
+      return
+    }
     let ops: ReturnType<typeof buildReferenceSketchOps>
     if (s.redefineOf) {
       const cur = s.redefineOf.current
@@ -1586,10 +1624,17 @@ function Workbench({
     // The profile session takes the surface while it is open — it is the one
     // mode that owns both the drawing plane and what is rendered on it.
     if (profileLane.mode !== null) return profileLane.mode
-    // The Profile Sketch pick reuses the ONE planePick surface with the v1
-    // store idle — the pick resolves into the profile lane, never into a
-    // nested v1 session (Codex6 B2).
-    if (profilePick) return { kind: 'planePick' }
+    // I3 (arc 20260905-1): the placement dialog owns the surface while it is
+    // open — Creo's view-direction arrow stands on the support plane, and an
+    // ACTIVE collector reuses the ONE planePick surface (datum exposure +
+    // raycast) without entering a second authoring session (Codex1 N2).
+    if (authoringSession.mode === 'placement') {
+      return {
+        kind: 'placement',
+        picking: authoringSession.activeCollector !== null,
+        glyph: placementViewGlyph(placementRecordOf(authoringSession)),
+      }
+    }
     if (authoringSession.mode === 'planePick') return { kind: 'planePick' }
     if (
       authoringSession.mode === 'extrude'
@@ -1612,21 +1657,17 @@ function Workbench({
       }
     }
     return null
-  }, [authoringSession, solicitEligibleIds, profileLane.mode, profilePick])
+  }, [authoringSession, solicitEligibleIds, profileLane.mode])
 
   // A generation change INVALIDATES the whole pick→sketch interaction
   // FAIL-CLOSED (Codex4 B2) — a DISTINCT transition from user Escape/cancel:
   // it terminates to idle and never resurrects a captured chained session
   // from the old generation. The viewport unwinds (ghost/datums/overlay)
   // through the normal state transition.
-  useEffect(() => {
-    if (
-      (authoringSession.mode === 'planePick' || authoringSession.mode === 'sketch') &&
-      pc.generation !== authoringSession.generation
-    ) {
-      authoringStore.invalidateForGeneration()
-    }
-  }, [authoringSession, pc.generation, authoringStore])
+  // I3 (Codex3 B1): the placement dialog joins the same fail-closed path (a
+  // BUSY placement is its commit runner's) — ONE hook subscribed to the real
+  // context store, so the reaction to a real generation change is testable.
+  useContextInvalidation(partContext, authoringStore)
 
   useEffect(() => {
     if (!ready) return
@@ -1718,26 +1759,17 @@ function Workbench({
   // File menu — one behavior, two surfaces. Placement is a typed setting.
   const [qatBelowRibbon] = useSetting('qatBelowRibbon')
   const [gfxToolbarPos] = useSetting('graphicsToolbarPosition')
-  // The navigator sash (Creo drag-resize; same pattern as the dock grip).
-  const [navWidth, setNavWidth] = useSetting('navigatorWidth')
-  const navDragging = useRef(false)
-  const onNavGripDown = (e: React.PointerEvent) => {
-    navDragging.current = true
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-    const startX = e.clientX
-    const startW = navWidth as number
-    const move = (ev: PointerEvent) => {
-      if (!navDragging.current) return
-      setNavWidth(Math.min(640, Math.max(170, startW + (ev.clientX - startX))))
-    }
-    const up = () => {
-      navDragging.current = false
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }
+  // Creo's Default Orientation (the Reset / new-part view), resolved through
+  // the ONE orientation authority; the Viewport reads it at mount and on Reset.
+  const [defaultOrientation] = useSetting('defaultOrientation')
+  const [homeTurnDeg] = useSetting('defaultOrientationTurnDeg')
+  const [homeTiltDeg] = useSetting('defaultOrientationTiltDeg')
+  const homeView = homeOrientation(defaultOrientation as DefaultOrientationKind, {
+    turnDeg: homeTurnDeg as number,
+    tiltDeg: homeTiltDeg as number,
+  })
+  // The navigator's width + visibility live in NavigatorFrame (ONE frame for
+  // both app states; shell-1 S1-08/S1-15) — no sash logic here.
   const qatCommands: QatCommand[] = [
     {
       key: 'new',
@@ -1923,9 +1955,9 @@ function Workbench({
       {qatBelowRibbon === true && <div className="qat-row">{qatBar}</div>}
       {referenceImport.inputElement}
       <div className="workbench">
-        {/* the wrap owns width + the sash; the aside scrolls independently */}
-        <div className="sidebar-wrap" style={{ width: navWidth as number }}>
-        <aside className="sidebar">
+        {/* Creo's navigator: ONE resizable/dismissable frame shared with the
+            Home state (shell-1 S1-08/S1-15); the aside scrolls independently */}
+        <NavigatorFrame className="sidebar">
           {/* The tabbed navigator (Creo grammar): Model Tree / Workspace.
               A plane pick FORCES the Model Tree tab (its plane rows are an
               active pick surface); otherwise the user's choice stands, with
@@ -1941,7 +1973,11 @@ function Workbench({
                 onPlaneRow={
                   authoringSession.mode === 'planePick'
                     ? (ori) => authoringStore.resolvePlanePick(ori)
-                    : null
+                    : authoringSession.mode === 'placement' && authoringSession.activeCollector !== null
+                      ? // I3 (Codex1 N2): the tree route feeds the dialog's ARMED
+                        // collector through the same member setter as the viewport
+                        (ori) => authoringStore.resolvePlacementPick(ori)
+                      : null
                 }
               />
               <div className="muted small pad">
@@ -1970,9 +2006,7 @@ function Workbench({
             </>
           )}
           <AppearancePanel />
-        </aside>
-        <div className="nav-grip" onPointerDown={onNavGripDown} title="Drag to resize" />
-        </div>
+        </NavigatorFrame>
         <main className="viewport">
           {ready ? (
             <>
@@ -1981,6 +2015,7 @@ function Workbench({
                 apiRef={viewportApi}
                 theme={theme}
                 settleMs={registry.get('settleMs') as number}
+                homeView={homeView}
                 viewStore={viewStore}
                 selectionStore={selectionStore}
                 commandActions={actions}
@@ -1994,30 +2029,18 @@ function Workbench({
                     : new Set<string>()
                 }
                 onPlanePick={(hit) => {
-                  if (profilePick) {
-                    // BS-1 principal-only domain: a face pick is not offered
-                    // to the profile lane in I1 (same rule as placement).
-                    if (hit.kind !== 'datum') return
-                    setProfilePick(false)
-                    const snap = partContext.getSnapshot()
-                    if (snap.partNumber === null) return
-                    const placement = {
-                      support: { kind: 'principal' as const, orientation: hit.orientation },
-                    }
-                    profileLane.openCreateSession(
-                      placement,
-                      supportFrame({ kind: 'principal', orientation: hit.orientation }),
-                      // the authority tuple, CAPTURED at open (Codex7 B2)
-                      {
-                        workspaceId: currentWs?.workspaceId ?? null,
-                        partNumber: snap.partNumber,
-                        generation: snap.generation,
-                      },
+                  if (authoringSession.mode === 'placement') {
+                    // I3: the dialog's ACTIVE collector receives the pick — the
+                    // same member setter the list uses (Codex1 N2); a face is
+                    // refused with the honest copy, never applied.
+                    authoringStore.resolvePlacementPick(
+                      hit.kind === 'datum' ? hit.orientation : { faceId: hit.faceId },
                     )
                     return
                   }
                   if (hit.kind === 'datum') authoringStore.resolvePlanePick(hit.orientation)
-                  else authoringStore.resolvePlanePick({ faceId: hit.faceId, frame: hit.frame })
+                  else if (hit.kind === 'face') authoringStore.resolvePlanePick({ faceId: hit.faceId, frame: hit.frame })
+                  else authoringStore.resolvePlanePick({ faceId: hit.faceId }) // unsupported: the store refuses with copy
                 }}
                 onSketchSolicit={(sketchId) => {
                   // P (Codex1 B3 -> Codex14 B2): terminal REVALIDATION derives
@@ -2106,10 +2129,16 @@ function Workbench({
           {authoringSession.mode === 'planePick' && (
             <div className="pick-prompt">
               <span>
+                {/* N1 (Codex3): the copy follows the CONTINUATION, in the dialog's datum-only vocabulary */}
                 {authoringSession.continuation.type === 'placement'
-                  ? 'Select the SUPPORT plane for the references sketch — a principal datum plane'
-                  : 'Select a sketch plane — a datum plane or a flat face of the Part'}
+                  ? authoringSession.continuation.accept === 'sketch'
+                    ? 'Select the sketch plane — a datum plane (TOP, FRONT or RIGHT); flat faces arrive in a later step'
+                    : 'Select the SUPPORT plane for the references sketch — a datum plane (TOP, FRONT or RIGHT)'
+                  : authoringSession.continuation.type === 'chained'
+                    ? 'Select the base profile’s plane — a datum plane (TOP, FRONT or RIGHT)'
+                    : 'Select a sketch plane — a datum plane or a flat face of the Part'}
               </span>
+              {authoringSession.message && <span className="small err">{authoringSession.message}</span>}
               <button type="button" className="btn small" onClick={() => setPlaneListOpen(true)}>
                 Choose from list…
               </button>
@@ -2143,6 +2172,9 @@ function Workbench({
         </>
       )}
       <div className="statusbar">
+        {/* Creo's bottom-left navigator button — show/hide the navigator in
+            BOTH app states (shell-1 S1-15). */}
+        <NavigatorToggle />
         <SessionPill store={operationStore} dockOpen={dockOpen} onShowDock={() => setDockOpen(true)} />
         {/* B5 tenancy: the transient slot is EXCLUSIVE — shellNote replaces
             the sketch status line (which itself MERGES the hover readout);
